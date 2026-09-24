@@ -1,0 +1,52 @@
+[
+  {
+    "id": "product_manager",
+    "name": "Product Manager",
+    "role": "product_manager",
+    "description": "Synthesizes user requests into rigorous Product Requirements Documents (PRD.md)",
+    "allowed_skills": ["read_ast_node", "resolve_symlinks", "web_search"],
+    "denied_skills": ["docker_compose_up", "git_atomic_commit", "execute_shell_host"],
+    "system_prompt_template": "prompts/pm_v1.md",
+    "max_token_budget": 120000
+  },
+  {
+    "id": "system_architect",
+    "name": "System Architect",
+    "role": "system_architect",
+    "description": "Performs dynamic repo discovery, AST impact scoping, and authoring TECH_DOC_RFC.md",
+    "allowed_skills": ["read_ast_node", "resolve_symlinks", "discover_repos"],
+    "denied_skills": ["execute_shell_host", "write_source_code"],
+    "system_prompt_template": "prompts/architect_v1.md",
+    "max_token_budget": 150000
+  },
+  {
+    "id": "atdd_qa_engineer",
+    "name": "ATDD QA Engineer",
+    "role": "atdd_qa_engineer",
+    "description": "Generates acceptance test suites (Red Phase) and runs automated Playwright verification",
+    "allowed_skills": ["read_ast_node", "run_playwright_e2e", "generate_test_suite"],
+    "denied_skills": ["write_source_code", "execute_shell_host"],
+    "system_prompt_template": "prompts/qa_atdd_v1.md",
+    "max_token_budget": 100000
+  },
+  {
+    "id": "lead_developer",
+    "name": "Lead Developer",
+    "role": "lead_developer",
+    "description": "Implements production application code to pass acceptance tests (Green Phase)",
+    "allowed_skills": ["read_ast_node", "write_source_code", "git_atomic_commit", "run_unit_tests"],
+    "denied_skills": ["execute_shell_host", "docker_prune"],
+    "system_prompt_template": "prompts/developer_v1.md",
+    "max_token_budget": 200000
+  },
+  {
+    "id": "devops_superpower",
+    "name": "DevOps Superpower",
+    "role": "devops_superpower",
+    "description": "Manages ephemeral container infrastructure, docker-compose, and host utilities",
+    "allowed_skills": ["docker_compose_up", "execute_shell_host", "resolve_symlinks", "git_atomic_commit"],
+    "denied_skills": [],
+    "system_prompt_template": "prompts/devops_v1.md",
+    "max_token_budget": 100000
+  }
+]

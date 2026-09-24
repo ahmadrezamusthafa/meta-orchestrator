@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentProfile",
+  "type": "object",
+  "required": ["id", "name", "role", "allowed_skills", "denied_skills"],
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "role": { "type": "string" },
+    "description": { "type": "string" },
+    "allowed_skills": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "denied_skills": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "system_prompt_template": { "type": "string" },
+    "max_token_budget": { "type": "integer" }
+  }
+}
