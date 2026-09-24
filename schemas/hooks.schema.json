@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HookDefinition",
+  "type": "object",
+  "required": ["id", "event", "driver", "target"],
+  "properties": {
+    "id": { "type": "string" },
+    "event": {
+      "type": "string",
+      "enum": ["pre-stage", "post-stage", "on-failure", "on-gate", "pre-commit", "post-commit"]
+    },
+    "driver": {
+      "type": "string",
+      "enum": ["shell", "docker", "webhook"]
+    },
+    "target": { "type": "string" },
+    "is_blocking": { "type": "boolean" },
+    "timeout_sec": { "type": "integer" }
+  }
+}

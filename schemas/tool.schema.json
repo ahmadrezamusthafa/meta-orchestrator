@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ToolPackageManifest",
+  "type": "object",
+  "required": ["id", "name", "category", "active_version", "available_versions", "health_check_cmd"],
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "category": {
+      "type": "string",
+      "enum": ["methodology", "runtime", "parser", "ui", "utility"]
+    },
+    "active_version": { "type": "string" },
+    "available_versions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "required_runtimes": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "health_check_cmd": { "type": "string" },
+    "rollback_strategy": { "type": "string" }
+  }
+}

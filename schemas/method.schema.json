@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MethodDefinition",
+  "type": "object",
+  "required": ["id", "name", "execution_pattern", "allowed_roles"],
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "execution_pattern": {
+      "type": "string",
+      "enum": ["sequential", "hierarchical_supervisor", "single_react", "autonomous_infrastructure"]
+    },
+    "allowed_roles": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "max_consecutive_iterations": { "type": "integer" }
+  }
+}

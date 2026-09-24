@@ -1,0 +1,34 @@
+[
+  {
+    "id": "bmad",
+    "name": "BMAD Multi-Agent Agile Methodology",
+    "description": "Sequential role handoffs: PM -> ATDD QA -> Architect -> Developer -> QA Verifier",
+    "execution_pattern": "sequential",
+    "allowed_roles": ["product_manager", "atdd_qa_engineer", "system_architect", "lead_developer"],
+    "max_consecutive_iterations": 15
+  },
+  {
+    "id": "supervisor",
+    "name": "Hierarchical Supervisor",
+    "description": "Coordinator agent dispatching subtasks to parallel frontend and backend agents",
+    "execution_pattern": "hierarchical_supervisor",
+    "allowed_roles": ["system_architect", "lead_developer"],
+    "max_consecutive_iterations": 20
+  },
+  {
+    "id": "react",
+    "name": "ReAct Single Agent Loop",
+    "description": "Rapid reasoning and tool execution loop for focused tasks",
+    "execution_pattern": "single_react",
+    "allowed_roles": ["lead_developer", "atdd_qa_engineer"],
+    "max_consecutive_iterations": 10
+  },
+  {
+    "id": "superpower",
+    "name": "Superpower Autonomous Infrastructure",
+    "description": "Bare-metal plan-and-execute loop for container orchestration and system refactoring",
+    "execution_pattern": "autonomous_infrastructure",
+    "allowed_roles": ["devops_superpower", "lead_developer"],
+    "max_consecutive_iterations": 30
+  }
+]

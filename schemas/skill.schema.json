@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UniversalSkillContract",
+  "type": "object",
+  "required": ["name", "description", "source_format", "isolation"],
+  "properties": {
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "source_format": {
+      "type": "string",
+      "enum": ["claude", "bmad", "superpower", "mcp", "openai", "native"]
+    },
+    "source_location": { "type": "string" },
+    "isolation": {
+      "type": "string",
+      "enum": ["subprocess", "docker", "host"]
+    },
+    "input_schema": { "type": "object" },
+    "required_roles": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "timeout_seconds": { "type": "integer" },
+    "requires_network": { "type": "boolean" }
+  }
+}

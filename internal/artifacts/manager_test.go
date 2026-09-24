@@ -65,3 +65,25 @@ Feature: Authentication Flow
 		t.Fatalf("failed to write ATDD artifact: %v", err)
 	}
 }
+
+func TestArtifactValidator(t *testing.T) {
+	v := NewArtifactValidator()
+
+	// 1. Incomplete PRD
+	errs := v.ValidatePRD("# PRD: Some title\nNo user stories here")
+	if len(errs) == 0 {
+		t.Errorf("expected validation errors for PRD missing user stories")
+	}
+
+	// 2. Complete PRD
+	errs = v.ValidatePRD("# Product Requirements\n## Acceptance Criteria\n- AC1: pass")
+	if len(errs) != 0 {
+		t.Errorf("expected no errors for valid PRD, got %v", errs)
+	}
+
+	// 3. ATDD validator
+	errs = v.ValidateATDD("Feature: Order Payment\nScenario: Successful payment")
+	if len(errs) != 0 {
+		t.Errorf("expected valid ATDD, got %v", errs)
+	}
+}

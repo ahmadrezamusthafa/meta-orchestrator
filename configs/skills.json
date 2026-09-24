@@ -1,0 +1,47 @@
+[
+  {
+    "name": "resolve_symlinks",
+    "description": "Resolve symlinked repo paths and directory structures safely",
+    "source_format": "native",
+    "isolation": "subprocess",
+    "timeout_seconds": 30,
+    "requires_network": false,
+    "required_roles": ["system_architect", "lead_developer", "devops_superpower"]
+  },
+  {
+    "name": "docker_compose_up",
+    "description": "Spin up isolated multi-container workspace services",
+    "source_format": "native",
+    "isolation": "host",
+    "timeout_seconds": 180,
+    "requires_network": false,
+    "required_roles": ["devops_superpower"]
+  },
+  {
+    "name": "run_playwright_e2e",
+    "description": "Run automated Playwright browser tests with video recording",
+    "source_format": "native",
+    "isolation": "docker",
+    "timeout_seconds": 300,
+    "requires_network": true,
+    "required_roles": ["atdd_qa_engineer", "lead_developer"]
+  },
+  {
+    "name": "read_ast_node",
+    "description": "Extract precise AST syntactic nodes via Tree-sitter",
+    "source_format": "native",
+    "isolation": "subprocess",
+    "timeout_seconds": 15,
+    "requires_network": false,
+    "required_roles": ["product_manager", "system_architect", "atdd_qa_engineer", "lead_developer"]
+  },
+  {
+    "name": "git_atomic_commit",
+    "description": "Execute signed atomic git commit with cryptographic SHA hash",
+    "source_format": "native",
+    "isolation": "subprocess",
+    "timeout_seconds": 30,
+    "requires_network": false,
+    "required_roles": ["lead_developer", "devops_superpower"]
+  }
+]
