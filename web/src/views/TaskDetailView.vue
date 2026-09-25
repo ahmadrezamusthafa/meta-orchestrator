@@ -56,6 +56,10 @@ async function handleInjectGuidance(instruction: string) {
   await taskStore.injectContext(taskId.value, instruction)
 }
 
+async function handleBannerInject() {
+  await handleInjectGuidance('Operator reviewed failure trace and authorized retry from checkpoint.')
+}
+
 async function handleResetWorkspace() {
   await taskStore.resetWorkspace(taskId.value)
   showResetModal.value = false
@@ -110,7 +114,7 @@ async function handleGateReject() {
     <FrustrationBanner
       v-if="isFrustrated"
       :trace="currentTask?.metadata?.failing_trace"
-      @inject-guidance="() => {}"
+      @inject-guidance="handleBannerInject"
       @reset-workspace="showResetModal = true"
     />
 

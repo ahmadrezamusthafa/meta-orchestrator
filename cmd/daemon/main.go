@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/api"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/artifacts"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/circuitbreaker"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
@@ -94,13 +95,24 @@ func main() {
 		return nil
 	})
 
-	// 9. HTTP Server with WebSocket endpoint
+	// 9. HTTP Server with REST API & WebSocket endpoints
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHub.HandleWebSocket)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"healthy","version":"1.0.0"}`))
 	})
+
+	apiRouter := api.NewRouter(api.RouterConfig{
+		TaskStore:       taskStore,
+		WorkflowReg:     workflowReg,
+		ToolManager:     toolMgr,
+		ArtifactManager: artifactMgr,
+		ConfigResolver:  configResolver,
+		WSHub:           wsHub,
+		RootDir:         cwd,
+	})
+	mux.Handle("/api/", apiRouter)
 
 	server := &http.Server{
 		Addr:    ":8080",
