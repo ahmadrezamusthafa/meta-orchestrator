@@ -26,20 +26,6 @@ const nodes = [
     <!-- SVG Canvas -->
     <div class="flex-1 relative bg-slate-950 p-4 flex flex-col justify-between">
       <svg class="w-full h-64 overflow-visible">
-        <defs>
-          <style>
-            @keyframes dash {
-              to {
-                stroke-dashoffset: -20;
-              }
-            }
-            .dash-animated {
-              stroke-dasharray: 4, 4;
-              animation: dash 1s linear infinite;
-            }
-          </style>
-        </defs>
-
         <!-- Connecting IO Edges -->
         <!-- frontend-portal to backend-core -->
         <path
@@ -98,3 +84,15 @@ const nodes = [
     </div>
   </div>
 </template>
+
+<style scoped>
+@keyframes dash {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+.dash-animated {
+  stroke-dasharray: 4, 4;
+  animation: dash 1s linear infinite;
+}
+</style>
