@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useTaskStore } from '../../stores/tasks'
+import { useWorkflowStore } from '../../stores/workflows'
 import BtnPrimary from '../common/BtnPrimary.vue'
 import StageRangeSelector from './StageRangeSelector.vue'
 import ArtifactUploadDropzone from './ArtifactUploadDropzone.vue'
-import { X, Sparkles, Layers } from 'lucide-vue-next'
+import { X, Sparkles, Layers, GitFork } from 'lucide-vue-next'
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -12,9 +13,11 @@ const emit = defineEmits<{
 }>()
 
 const taskStore = useTaskStore()
+const workflowStore = useWorkflowStore()
 
 const title = ref('')
 const description = ref('')
+const selectedWorkflowId = ref(workflowStore.activeWorkflowId || 'general_ai_sdlc')
 const selectedRepos = ref<string[]>(['frontend-portal', 'backend-core'])
 const executionScope = ref<'full' | 'slice'>('full')
 const startStage = ref('task_implementation')
@@ -27,6 +30,31 @@ const isSubmitting = ref(false)
 
 const allRepos = ['frontend-portal', 'backend-core', 'api-contracts']
 
+const selectedWorkflow = computed(() => {
+  return workflowStore.workflows.find(w => w.id === selectedWorkflowId.value) || workflowStore.activeWorkflow
+})
+
+const stagesForSelector = computed(() => {
+  if (selectedWorkflow.value?.stages && selectedWorkflow.value.stages.length > 0) {
+    return selectedWorkflow.value.stages.map((s, idx) => ({
+      id: s.id,
+      name: `Stage ${idx + 1}: ${s.name}`,
+    }))
+  }
+  return []
+})
+
+watch(stagesForSelector, (stages) => {
+  if (stages.length > 0) {
+    if (!stages.some(s => s.id === startStage.value)) {
+      startStage.value = stages[0].id
+    }
+    if (!stages.some(s => s.id === haltStage.value)) {
+      haltStage.value = stages[stages.length - 1].id
+    }
+  }
+}, { immediate: true })
+
 async function handleSubmit() {
   if (!title.value.trim()) return
 
@@ -35,6 +63,7 @@ async function handleSubmit() {
     const payload: any = {
       title: title.value,
       description: description.value,
+      workflow_id: selectedWorkflowId.value,
       assigned_repos: selectedRepos.value,
       router_strategy: routerStrategy.value,
       selected_method: selectedMethod.value === 'Auto' ? 'BMAD' : selectedMethod.value,
@@ -124,6 +153,21 @@ async function handleSubmit() {
         </div>
 
         <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1.5">Workflow Pipeline Template</label>
+          <select
+            v-model="selectedWorkflowId"
+            class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+          >
+            <option v-if="workflowStore.workflows.length === 0" value="general_ai_sdlc">
+              General AI SDLC (9-Stage Factory) (Default)
+            </option>
+            <option v-for="w in workflowStore.workflows" :key="w.id" :value="w.id">
+              {{ w.name }} ({{ w.stages.length }} stages)
+            </option>
+          </select>
+        </div>
+
+        <div>
           <label class="block text-xs font-medium text-slate-300 mb-1.5">Execution Scope</label>
           <div class="grid grid-cols-2 gap-3">
             <label
@@ -134,7 +178,7 @@ async function handleSubmit() {
                 <input type="radio" value="full" v-model="executionScope" class="text-emerald-500" />
                 <span>Full SDLC Pipeline</span>
               </div>
-              <span class="text-[11px] text-slate-500">Stages 1 to 8: PRD to Evidence</span>
+              <span class="text-[11px] text-slate-500">Run all stages in selected workflow</span>
             </label>
 
             <label
@@ -155,6 +199,7 @@ async function handleSubmit() {
             v-model:start-stage="startStage"
             v-model:halt-stage="haltStage"
             v-model:produce-video="produceVideo"
+            :stages="stagesForSelector"
           />
 
           <ArtifactUploadDropzone
