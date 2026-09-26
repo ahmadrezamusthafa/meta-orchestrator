@@ -181,6 +181,7 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/projects", r.handleProjects)
 	r.mux.HandleFunc("/api/v1/projects/scan", r.handleProjectScan)
 	r.mux.HandleFunc("/api/v1/projects/", r.handleProjectItem)
+	r.mux.HandleFunc("/api/v1/fs/browse", r.handleFSBrowse)
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {

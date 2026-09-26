@@ -144,6 +144,8 @@ export interface ProjectRepo {
   symlink_path?: string
   status: 'linked' | 'missing_source' | 'error' | string
   error?: string
+  git_branch?: string
+  files_count?: number
   created_at?: string
 }
 
@@ -171,3 +173,32 @@ export interface ScanDirResult {
   scanned_path: string
   detected_repos: DetectedRepo[]
 }
+
+export interface BreadcrumbItem {
+  name: string
+  path: string
+}
+
+export interface DirectoryItem {
+  name: string
+  path: string
+  is_repo: boolean
+  manifest: string
+  suggested_role: ProjectRole
+  has_children: boolean
+}
+
+export interface QuickBookmark {
+  name: string
+  path: string
+  icon: string
+}
+
+export interface BrowseFSResponse {
+  current_path: string
+  parent_path: string
+  breadcrumbs: BreadcrumbItem[]
+  directories: DirectoryItem[]
+  quick_bookmarks: QuickBookmark[]
+}
+

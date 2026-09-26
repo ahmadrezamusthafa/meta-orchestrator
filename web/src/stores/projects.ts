@@ -49,6 +49,22 @@ export const useProjectStore = defineStore('projects', () => {
     }
   }
 
+  async function updateProject(id: string, payload: Partial<Project>) {
+    isLoading.value = true
+    try {
+      const updated = await api.updateProject(id, payload)
+      await fetchProjects()
+      activeProjectId.value = updated.id
+      toast.success('Project Updated', `Saved changes for project "${updated.name}" and refreshed symlinks`)
+      return updated
+    } catch (err: any) {
+      toast.error('Failed to update project', err.message)
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   async function resyncProject(id: string) {
     isLoading.value = true
     try {
@@ -102,6 +118,7 @@ export const useProjectStore = defineStore('projects', () => {
     isLoading,
     fetchProjects,
     createProject,
+    updateProject,
     resyncProject,
     deleteProject,
     scanDirectory,

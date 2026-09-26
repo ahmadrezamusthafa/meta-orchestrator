@@ -190,7 +190,9 @@ func (m *ProjectManager) Create(p *types.Project) (*types.Project, error) {
 	}
 
 	now := time.Now()
-	p.CreatedAt = now
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = now
+	}
 	p.UpdatedAt = now
 	p.Status = "provisioned"
 
@@ -203,6 +205,22 @@ func (m *ProjectManager) Create(p *types.Project) (*types.Project, error) {
 	projSDLCDir := filepath.Join(p.RootDir, ".sdlc")
 	_ = os.MkdirAll(projSDLCDir, 0755)
 
+	// Clean up any orphaned symlinks in project root that are no longer part of p.Repos
+	activeNames := make(map[string]bool)
+	for _, r := range p.Repos {
+		activeNames[r.Name] = true
+	}
+	if entries, err := os.ReadDir(p.RootDir); err == nil {
+		for _, entry := range entries {
+			if entry.Name() == ".sdlc" || strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+			if !activeNames[entry.Name()] {
+				_ = os.Remove(filepath.Join(p.RootDir, entry.Name()))
+			}
+		}
+	}
+
 	// Process and link each repository
 	hasErrors := false
 	for i := range p.Repos {
@@ -210,12 +228,18 @@ func (m *ProjectManager) Create(p *types.Project) (*types.Project, error) {
 		if repo.ID == "" {
 			repo.ID = fmt.Sprintf("repo-%s", slugify(repo.Name))
 		}
-		repo.CreatedAt = now
+		if repo.CreatedAt.IsZero() {
+			repo.CreatedAt = now
+		}
 
 		// Detect manifest if empty
 		if repo.ManifestType == "" {
 			repo.ManifestType = detectManifest(repo.Path)
 		}
+
+		// Detect Git branch and file count
+		repo.GitBranch = readGitBranch(repo.Path)
+		repo.FilesCount = countFiles(repo.Path)
 
 		symlinkTarget := filepath.Join(p.RootDir, repo.Name)
 		repo.SymlinkPath = symlinkTarget
@@ -272,12 +296,29 @@ func (m *ProjectManager) ResyncSymlinks(id string) (*types.Project, error) {
 		return nil, fmt.Errorf("failed to create project root directory %s: %w", p.RootDir, err)
 	}
 
+	activeNames := make(map[string]bool)
+	for _, r := range p.Repos {
+		activeNames[r.Name] = true
+	}
+	if entries, err := os.ReadDir(p.RootDir); err == nil {
+		for _, entry := range entries {
+			if entry.Name() == ".sdlc" || strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+			if !activeNames[entry.Name()] {
+				_ = os.Remove(filepath.Join(p.RootDir, entry.Name()))
+			}
+		}
+	}
+
 	hasErrors := false
 	for i := range p.Repos {
 		repo := &p.Repos[i]
 		if repo.ManifestType == "" {
 			repo.ManifestType = detectManifest(repo.Path)
 		}
+		repo.GitBranch = readGitBranch(repo.Path)
+		repo.FilesCount = countFiles(repo.Path)
 
 		symlinkTarget := filepath.Join(p.RootDir, repo.Name)
 		repo.SymlinkPath = symlinkTarget
@@ -320,7 +361,7 @@ func (m *ProjectManager) ResyncSymlinks(id string) (*types.Project, error) {
 // Update updates project metadata and re-links repos.
 func (m *ProjectManager) Update(id string, updated *types.Project) (*types.Project, error) {
 	m.mu.Lock()
-	_, exists := m.projects[id]
+	existing, exists := m.projects[id]
 	m.mu.Unlock()
 
 	if !exists {
@@ -328,6 +369,18 @@ func (m *ProjectManager) Update(id string, updated *types.Project) (*types.Proje
 	}
 
 	updated.ID = id
+	if updated.CreatedAt.IsZero() {
+		updated.CreatedAt = existing.CreatedAt
+	}
+	if updated.RootDir == "" {
+		updated.RootDir = existing.RootDir
+	}
+
+	// If root directory changed, clean up old root dir if it was under workspaces/
+	if existing.RootDir != "" && updated.RootDir != existing.RootDir && strings.Contains(existing.RootDir, "workspaces") {
+		_ = os.RemoveAll(existing.RootDir)
+	}
+
 	return m.Create(updated)
 }
 
@@ -507,3 +560,28 @@ func slugify(s string) string {
 	}
 	return res
 }
+
+func readGitBranch(repoPath string) string {
+	headFile := filepath.Join(repoPath, ".git", "HEAD")
+	data, err := os.ReadFile(headFile)
+	if err != nil {
+		return ""
+	}
+	content := strings.TrimSpace(string(data))
+	if strings.HasPrefix(content, "ref: refs/heads/") {
+		return strings.TrimPrefix(content, "ref: refs/heads/")
+	}
+	if len(content) > 8 {
+		return content[:8]
+	}
+	return content
+}
+
+func countFiles(repoPath string) int {
+	entries, err := os.ReadDir(repoPath)
+	if err != nil {
+		return 0
+	}
+	return len(entries)
+}
+

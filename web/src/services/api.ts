@@ -1,4 +1,4 @@
-import type { Task, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, Project, ScanDirResult } from '../types'
+import type { Task, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, Project, ScanDirResult, BrowseFSResponse } from '../types'
 
 const BASE_URL = '/api/v1'
 
@@ -202,6 +202,17 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Failed to scan directory' }))
       throw new Error(err.error || 'Failed to scan directory')
+    }
+    return res.json()
+  },
+
+  async browseDirectory(path?: string): Promise<BrowseFSResponse> {
+    const query = new URLSearchParams()
+    if (path) query.set('path', path)
+    const res = await fetch(`${BASE_URL}/fs/browse?${query.toString()}`)
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to browse directory' }))
+      throw new Error(err.error || 'Failed to browse directory')
     }
     return res.json()
   }

@@ -24,6 +24,8 @@ type ProjectRepo struct {
 	SymlinkPath  string      `json:"symlink_path"`  // Absolute symlink target inside project root
 	Status       string      `json:"status"`        // "linked", "missing_source", "error"
 	Error        string      `json:"error,omitempty"`
+	GitBranch    string      `json:"git_branch,omitempty"`
+	FilesCount   int         `json:"files_count,omitempty"`
 	CreatedAt    time.Time   `json:"created_at"`
 }
 
