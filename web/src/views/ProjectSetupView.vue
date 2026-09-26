@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { useProjectStore } from '../stores/projects'
 import { useToastStore } from '../stores/toast'
-import type { ProjectRole, ProjectRepo, Project } from '../types'
+import type { ProjectRole, ProjectRepo, Project, DirectoryItem } from '../types'
 import {
   FolderGit2,
   FolderPlus,
   RefreshCw,
   Trash2,
-  ExternalLink,
   Layers,
   Server,
   Layout,
@@ -22,38 +22,44 @@ import {
   Copy,
   Check,
   ArrowRight,
+  ArrowLeft,
   ShieldCheck,
   X,
   Play,
-  Edit3,
-  Sliders,
   GitBranch,
-  FileText,
   Network,
   Eye,
   Terminal,
   Grid,
-  Info,
   FolderOpen,
   HelpCircle,
   ChevronDown,
   ChevronUp
 } from 'lucide-vue-next'
-import { useRouter } from 'vue-router'
 import DirectoryPickerModal from '../components/common/DirectoryPickerModal.vue'
 import ConfirmDeleteModal from '../components/common/ConfirmDeleteModal.vue'
-import type { DirectoryItem } from '../types'
 
 const router = useRouter()
 const projectStore = useProjectStore()
 const toast = useToastStore()
 
-// Modal and Drawer States
+// Navigation & Screen View: 'list' (default) vs 'edit' (detail & edit mode)
+const currentView = ref<'list' | 'edit'>('list')
+const projectSearchQuery = ref('')
+
+// Dirty Tracking & Auto-Save State
+const isDirty = ref(false)
+const isSaving = ref(false)
+
+function markDirty() {
+  isDirty.value = true
+}
+
+// Modal States
 const isCreateModalOpen = ref(false)
-const isEditModalOpen = ref(false)
-const isQuickAddModalOpen = ref(false)
 const isDetailDrawerOpen = ref(false)
 const selectedRepoDetail = ref<ProjectRepo | null>(null)
+const isScannerOpen = ref(false)
 
 // Confirmation Dialog State
 const isConfirmDeleteOpen = ref(false)
@@ -95,10 +101,10 @@ async function handleExecuteConfirmDelete() {
   }
 }
 
-// View Toggle: "grid" vs "topology"
+// View Toggle in Edit Mode: "grid" vs "topology"
 const viewMode = ref<'grid' | 'topology'>('grid')
 
-// Search & Filtering
+// Search & Filtering inside active project
 const searchQuery = ref('')
 const roleFilter = ref<string>('all')
 const statusFilter = ref<string>('all')
@@ -118,18 +124,13 @@ const createFormRootDir = ref('')
 const createFormActiveSDLC = ref('general-ai-sdlc')
 const createFormRepos = ref<Array<{ name: string; path: string; role: ProjectRole; manifest: string }>>([])
 
-// Edit Form State
+// Edit Form State (active in edit mode)
 const editFormId = ref('')
 const editFormName = ref('')
 const editFormDesc = ref('')
 const editFormRootDir = ref('')
 const editFormActiveSDLC = ref('general-ai-sdlc')
-const editFormRepos = ref<Array<{ id?: string; name: string; path: string; role: ProjectRole; manifest: string }>>([])
-
-// Quick Add Repo State
-const quickAddName = ref('')
-const quickAddPath = ref('')
-const quickAddRole = ref<ProjectRole>('backend')
+const editFormRepos = ref<Array<{ id?: string; name: string; path: string; role: ProjectRole; manifest: string; status?: string; symlink_path?: string; git_branch?: string; error?: string }>>([])
 
 // Architecture Explainer Card State
 const showArchitectureExplainer = ref(true)
@@ -148,11 +149,9 @@ const pickerTarget = ref<
   | 'edit_scan'
   | 'edit_repo'
   | 'edit_browse_add'
-  | 'quick_add'
   | null
 >(null)
 const pickerRepoIndex = ref<number | null>(null)
-const pickerInitialCreateFolder = ref(false)
 
 function openDirectoryPicker(
   target:
@@ -163,20 +162,17 @@ function openDirectoryPicker(
     | 'edit_root'
     | 'edit_scan'
     | 'edit_repo'
-    | 'edit_browse_add'
-    | 'quick_add',
+    | 'edit_browse_add',
   repoIndex: number | null = null,
   initialPath: string = '',
   title: string = 'Select Directory',
-  helper: string = 'Choose a folder from your host filesystem',
-  initialCreateFolder: boolean = false
+  helper: string = 'Choose a folder from your host filesystem'
 ) {
   pickerTarget.value = target
   pickerRepoIndex.value = repoIndex
   pickerInitialPath.value = initialPath
   pickerTitle.value = title
   pickerHelperText.value = helper
-  pickerInitialCreateFolder.value = initialCreateFolder
   isDirectoryPickerOpen.value = true
 }
 
@@ -223,6 +219,7 @@ function handleDirectorySelected(chosenPath: string, directoryItem?: DirectoryIt
     }
     case 'edit_root':
       editFormRootDir.value = chosenPath
+      markDirty()
       break
     case 'edit_scan':
       scanPath.value = chosenPath
@@ -241,6 +238,7 @@ function handleDirectorySelected(chosenPath: string, directoryItem?: DirectoryIt
         if (directoryItem?.manifest && directoryItem.manifest !== 'unknown') {
           row.manifest = directoryItem.manifest
         }
+        markDirty()
       }
       break
     case 'edit_browse_add': {
@@ -253,20 +251,13 @@ function handleDirectorySelected(chosenPath: string, directoryItem?: DirectoryIt
         name,
         path: chosenPath,
         role,
-        manifest: directoryItem?.manifest || 'auto'
+        manifest: directoryItem?.manifest || 'auto',
+        status: 'pending'
       })
+      markDirty()
       toast.success('Repository Added', `Added ${name} to project from filesystem`)
       break
     }
-    case 'quick_add':
-      quickAddPath.value = chosenPath
-      if (!quickAddName.value) {
-        quickAddName.value = chosenPath.split('/').filter(Boolean).pop() || ''
-      }
-      if (directoryItem?.suggested_role && directoryItem.suggested_role !== 'other') {
-        quickAddRole.value = directoryItem.suggested_role
-      }
-      break
   }
 }
 
@@ -274,12 +265,147 @@ onMounted(async () => {
   await projectStore.fetchProjects()
 })
 
-const activeProject = computed(() => projectStore.activeProject)
+// Metrics for any project (used in list view cards)
+function getProjectMetrics(p: Project) {
+  const repos = p.repos || []
+  const total = repos.length
+  const linkedCount = repos.filter((r) => r.status === 'linked').length
+  const brokenCount = total - linkedCount
 
-// Filtered Repos for Matrix & Topology
+  const roleCounts: Record<string, number> = {
+    frontend: 0,
+    backend: 0,
+    'automation-test': 0,
+    contracts: 0,
+    artifact: 0,
+    other: 0,
+  }
+
+  for (const r of repos) {
+    if (roleCounts[r.role] !== undefined) {
+      roleCounts[r.role]++
+    } else {
+      roleCounts.other++
+    }
+  }
+
+  return {
+    total,
+    linkedCount,
+    brokenCount,
+    isHealthy: total > 0 && brokenCount === 0,
+    roleCounts,
+  }
+}
+
+// Filtered Projects for List View
+const filteredProjects = computed(() => {
+  if (!projectStore.projects) return []
+  if (!projectSearchQuery.value.trim()) return projectStore.projects
+  const q = projectSearchQuery.value.toLowerCase().trim()
+  return projectStore.projects.filter(
+    (p) =>
+      p.name.toLowerCase().includes(q) ||
+      p.id.toLowerCase().includes(q) ||
+      (p.description && p.description.toLowerCase().includes(q)) ||
+      (p.root_dir && p.root_dir.toLowerCase().includes(q))
+  )
+})
+
+// Open a project directly in Edit Mode
+function openProjectEdit(projectId: string) {
+  projectStore.selectProject(projectId)
+  const p = projectStore.projects.find((proj) => proj.id === projectId)
+  if (!p) return
+
+  editFormId.value = p.id
+  editFormName.value = p.name
+  editFormDesc.value = p.description || ''
+  editFormRootDir.value = p.root_dir
+  editFormActiveSDLC.value = p.active_sdlc || 'general-ai-sdlc'
+  editFormRepos.value = (p.repos || []).map((r) => ({
+    id: r.id,
+    name: r.name,
+    path: r.path,
+    role: r.role,
+    manifest: r.manifest_type || 'auto',
+    status: r.status,
+    symlink_path: r.symlink_path,
+    git_branch: r.git_branch,
+    error: r.error
+  }))
+  scannedCandidates.value = []
+  scanPath.value = ''
+  isScannerOpen.value = false
+  isDirty.value = false
+  currentView.value = 'edit'
+}
+
+// Auto-save logic
+async function saveProjectChanges(showToast = true): Promise<boolean> {
+  if (!editFormName.value.trim()) {
+    toast.error('Validation Error', 'Project name cannot be empty')
+    return false
+  }
+
+  if (editFormRepos.value.length === 0) {
+    toast.error('Validation Error', 'Project must have at least one repository')
+    return false
+  }
+
+  isSaving.value = true
+  try {
+    const payload: Partial<Project> = {
+      id: editFormId.value,
+      name: editFormName.value,
+      description: editFormDesc.value,
+      root_dir: editFormRootDir.value,
+      active_sdlc: editFormActiveSDLC.value,
+      repos: editFormRepos.value.map((r) => ({
+        id: r.id,
+        name: r.name,
+        path: r.path,
+        role: r.role,
+        manifest_type: r.manifest === 'auto' ? '' : r.manifest,
+      })) as ProjectRepo[],
+    }
+
+    await projectStore.updateProject(editFormId.value, payload)
+    isDirty.value = false
+    if (showToast) {
+      toast.success('Changes Saved', `Saved project "${editFormName.value}" and refreshed symlinks`)
+    }
+    return true
+  } catch (err: any) {
+    toast.error('Save Failed', err.message || 'Could not save project changes')
+    return false
+  } finally {
+    isSaving.value = false
+  }
+}
+
+// Handle Back button in Edit Mode: auto-saves if dirty and returns to list view
+async function handleBack() {
+  if (isDirty.value) {
+    const ok = await saveProjectChanges(true)
+    if (!ok) return // Validation failed, keep user in edit mode to fix
+  }
+  currentView.value = 'list'
+}
+
+// Handle Done button in Edit Mode: auto-saves if dirty and returns to list view
+async function handleDone() {
+  if (isDirty.value) {
+    const ok = await saveProjectChanges(true)
+    if (!ok) return
+  }
+  currentView.value = 'list'
+}
+
+// Filtered Repos for Matrix & Topology in Edit Mode
 const filteredRepos = computed(() => {
-  if (!activeProject.value?.repos) return []
-  let list = activeProject.value.repos
+  if (!editFormRepos.value) return []
+  let list = editFormRepos.value
 
   // Role filter
   if (roleFilter.value !== 'all') {
@@ -300,17 +426,16 @@ const filteredRepos = computed(() => {
       (r) =>
         r.name.toLowerCase().includes(q) ||
         r.path.toLowerCase().includes(q) ||
-        (r.git_branch && r.git_branch.toLowerCase().includes(q)) ||
-        (r.manifest_type && r.manifest_type.toLowerCase().includes(q))
+        (r.manifest && r.manifest.toLowerCase().includes(q))
     )
   }
 
   return list
 })
 
-// Metrics & Health Summaries
-const projectMetrics = computed(() => {
-  const repos = activeProject.value?.repos || []
+// Metrics & Health Summaries for Active Edit Form
+const editProjectMetrics = computed(() => {
+  const repos = editFormRepos.value || []
   const total = repos.length
   const linkedCount = repos.filter((r) => r.status === 'linked').length
   const brokenCount = total - linkedCount
@@ -418,11 +543,13 @@ function addScannedToEditForm() {
         path: s.path,
         role: s.role,
         manifest: s.manifest,
+        status: 'pending'
       })
     }
   }
   scannedCandidates.value = []
-  toast.info('Repositories Added', `Added ${selected.length} repositories to edit form.`)
+  markDirty()
+  toast.info('Repositories Added', `Added ${selected.length} repositories to project.`)
 }
 
 async function handleCreateProject() {
@@ -451,32 +578,12 @@ async function handleCreateProject() {
   }
 
   try {
-    await projectStore.createProject(payload)
+    const created = await projectStore.createProject(payload)
     isCreateModalOpen.value = false
+    openProjectEdit(created.id)
   } catch (err: any) {
     // Handled by store
   }
-}
-
-// Edit Modal Functions
-function openEditModal() {
-  if (!activeProject.value) return
-  const p = activeProject.value
-  editFormId.value = p.id
-  editFormName.value = p.name
-  editFormDesc.value = p.description || ''
-  editFormRootDir.value = p.root_dir
-  editFormActiveSDLC.value = p.active_sdlc || 'general-ai-sdlc'
-  editFormRepos.value = (p.repos || []).map((r) => ({
-    id: r.id,
-    name: r.name,
-    path: r.path,
-    role: r.role,
-    manifest: r.manifest_type,
-  }))
-  scannedCandidates.value = []
-  scanPath.value = ''
-  isEditModalOpen.value = true
 }
 
 function addEditRepoRow() {
@@ -485,7 +592,9 @@ function addEditRepoRow() {
     path: '',
     role: 'backend',
     manifest: 'auto',
+    status: 'pending',
   })
+  markDirty()
 }
 
 function removeEditRepoRow(idx: number) {
@@ -493,6 +602,7 @@ function removeEditRepoRow(idx: number) {
   if (!repo) return
   if (!repo.name && !repo.path) {
     editFormRepos.value.splice(idx, 1)
+    markDirty()
     return
   }
   triggerConfirmDelete({
@@ -502,137 +612,74 @@ function removeEditRepoRow(idx: number) {
     confirmText: 'Remove Row',
     onConfirm: async () => {
       editFormRepos.value.splice(idx, 1)
+      markDirty()
     }
   })
 }
 
-async function handleSaveProjectEdit() {
-  if (!editFormName.value.trim()) {
-    toast.error('Validation Error', 'Project name cannot be empty')
-    return
-  }
-
-  if (editFormRepos.value.length === 0) {
-    toast.error('Validation Error', 'Project must have at least one repository')
-    return
-  }
-
-  const payload: Partial<Project> = {
-    id: editFormId.value,
-    name: editFormName.value,
-    description: editFormDesc.value,
-    root_dir: editFormRootDir.value,
-    active_sdlc: editFormActiveSDLC.value,
-    repos: editFormRepos.value.map((r) => ({
-      id: r.id,
-      name: r.name,
-      path: r.path,
-      role: r.role,
-      manifest_type: r.manifest === 'auto' ? '' : r.manifest,
-    })) as ProjectRepo[],
-  }
-
-  try {
-    await projectStore.updateProject(editFormId.value, payload)
-    isEditModalOpen.value = false
-  } catch (err: any) {
-    // Handled by store
-  }
-}
-
-// Quick Add Repo
-function openQuickAddModal() {
-  quickAddName.value = ''
-  quickAddPath.value = ''
-  quickAddRole.value = 'backend'
-  isQuickAddModalOpen.value = true
-}
-
-async function handleQuickAddRepo() {
-  if (!activeProject.value) return
-  if (!quickAddName.value.trim() || !quickAddPath.value.trim()) {
-    toast.error('Validation Error', 'Repository name and source path are required')
-    return
-  }
-
-  const updatedRepos = [...activeProject.value.repos, {
-    name: quickAddName.value.trim(),
-    path: quickAddPath.value.trim(),
-    role: quickAddRole.value,
-  } as ProjectRepo]
-
-  try {
-    await projectStore.updateProject(activeProject.value.id, {
-      ...activeProject.value,
-      repos: updatedRepos,
-    })
-    isQuickAddModalOpen.value = false
-    toast.success('Repository Added', `Added ${quickAddName.value} to project ${activeProject.value.name}`)
-  } catch (err: any) {
-    // Handled by store
-  }
-}
-
 // Detail Drawer Functions
-function openRepoDetail(repo: ProjectRepo) {
+function openRepoDetail(repo: any) {
   selectedRepoDetail.value = { ...repo }
   isDetailDrawerOpen.value = true
 }
 
 async function handleSaveRepoRoleChange(newRole: ProjectRole) {
-  if (!activeProject.value || !selectedRepoDetail.value) return
-  const repoName = selectedRepoDetail.value.name
-  const updatedRepos = activeProject.value.repos.map((r) => {
-    if (r.name === repoName) {
-      return { ...r, role: newRole }
-    }
-    return r
-  })
-
-  try {
-    await projectStore.updateProject(activeProject.value.id, {
-      ...activeProject.value,
-      repos: updatedRepos,
-    })
-    selectedRepoDetail.value.role = newRole
-    toast.success('Role Updated', `Changed ${repoName} role to ${newRole}`)
-  } catch (err: any) {
-    // Handled by store
+  if (!selectedRepoDetail.value) return
+  selectedRepoDetail.value.role = newRole
+  const item = editFormRepos.value.find((r) => r.name === selectedRepoDetail.value?.name)
+  if (item) {
+    item.role = newRole
   }
+  markDirty()
+  await saveProjectChanges(false)
+  toast.info('Role Updated', `Changed role of ${selectedRepoDetail.value.name} to ${newRole}`)
 }
 
 function handleRemoveRepoFromDrawer() {
-  if (!activeProject.value || !selectedRepoDetail.value) return
+  if (!selectedRepoDetail.value) return
   const repoName = selectedRepoDetail.value.name
-  const projectId = activeProject.value.id
-  const projectName = activeProject.value.name
 
   triggerConfirmDelete({
     title: 'Unregister Service Repository',
-    message: `Are you sure you want to unregister "${repoName}" from project "${projectName}"? Its workspace symlink will be removed.`,
+    message: `Are you sure you want to unregister "${repoName}" from this project? Its workspace symlink will be removed.`,
     itemName: repoName,
     note: 'Your source code on host disk remains completely safe and untouched.',
     confirmText: 'Unregister Service',
     onConfirm: async () => {
-      const updatedRepos = activeProject.value!.repos.filter((r) => r.name !== repoName)
-      await projectStore.updateProject(projectId, {
-        ...activeProject.value!,
-        repos: updatedRepos,
-      })
+      editFormRepos.value = editFormRepos.value.filter((r) => r.name !== repoName)
+      markDirty()
       isDetailDrawerOpen.value = false
       selectedRepoDetail.value = null
+      await saveProjectChanges(false)
       toast.info('Repository Removed', `Unlinked ${repoName} from project workspace`)
     }
   })
 }
 
 async function handleResync() {
-  if (!activeProject.value) return
-  await projectStore.resyncProject(activeProject.value.id)
+  if (!editFormId.value) return
+  if (isDirty.value) {
+    await saveProjectChanges(false)
+  }
+  await projectStore.resyncProject(editFormId.value)
+  const updated = projectStore.projects.find((p) => p.id === editFormId.value)
+  if (updated) {
+    editFormRepos.value = (updated.repos || []).map((r) => ({
+      id: r.id,
+      name: r.name,
+      path: r.path,
+      role: r.role,
+      manifest: r.manifest_type || 'auto',
+      status: r.status,
+      symlink_path: r.symlink_path,
+      git_branch: r.git_branch,
+      error: r.error,
+    }))
+  }
 }
 
 function handleDeleteProject(id: string) {
-  const proj = projectStore.projects.find((p) => p.id === id) || activeProject.value
+  const proj = projectStore.projects.find((p) => p.id === id) || (editFormId.value === id ? { name: editFormName.value } : null)
   const name = proj?.name || id
 
   triggerConfirmDelete({
@@ -643,21 +690,23 @@ function handleDeleteProject(id: string) {
     confirmText: 'Yes, Delete Project',
     onConfirm: async () => {
       await projectStore.deleteProject(id)
+      isDirty.value = false
+      currentView.value = 'list'
     }
   })
 }
 
 function copyRootDir() {
-  if (!activeProject.value?.root_dir) return
-  navigator.clipboard.writeText(activeProject.value.root_dir)
+  if (!editFormRootDir.value) return
+  navigator.clipboard.writeText(editFormRootDir.value)
   copiedPath.value = true
   setTimeout(() => { copiedPath.value = false }, 2000)
   toast.info('Copied', 'Project root directory copied to clipboard')
 }
 
 function copyCliCommand() {
-  if (!activeProject.value?.root_dir) return
-  const cmd = `cd ${activeProject.value.root_dir} && ls -la`
+  if (!editFormRootDir.value) return
+  const cmd = `cd ${editFormRootDir.value} && ls -la`
   navigator.clipboard.writeText(cmd)
   copiedCliCmd.value = true
   setTimeout(() => { copiedCliCmd.value = false }, 2000)
@@ -712,281 +761,492 @@ function getRoleBadgeStyle(role: ProjectRole) {
 }
 
 function launchTaskForProject() {
-  router.push({ path: '/', query: { project: activeProject.value?.id } })
+  router.push({ path: '/', query: { project: editFormId.value } })
 }
 </script>
 
 <template>
   <div class="h-full w-full flex flex-col bg-slate-950 text-slate-100 overflow-y-auto">
-    <!-- View Header -->
-    <header class="p-6 border-b border-slate-800 bg-slate-900/50 backdrop-blur flex flex-col md:flex-row md:items-center justify-between gap-4">
-      <div>
-        <div class="flex items-center gap-2.5">
-          <div class="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-            <FolderGit2 class="w-6 h-6" />
-          </div>
-          <div>
-            <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-              Projects & Multi-Repo Workspaces
-              <span class="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-mono">
-                Auto-Symlink Ready
-              </span>
-            </h1>
-            <p class="text-xs text-slate-400 mt-0.5">
-              Register distributed multi-repos, tag functional roles (Frontend, Backend, Tests, Contracts), and synthesize unified project roots.
-            </p>
+    <!-- ========================================== -->
+    <!-- VIEW 1: PROJECTS LIST VIEW (DEFAULT)       -->
+    <!-- ========================================== -->
+    <template v-if="currentView === 'list'">
+      <!-- View Header -->
+      <header class="p-6 border-b border-slate-800 bg-slate-900/50 backdrop-blur flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div class="flex items-center gap-2.5">
+            <div class="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              <FolderGit2 class="w-6 h-6" />
+            </div>
+            <div>
+              <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                Projects & Multi-Repo Workspaces
+                <span class="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-mono">
+                  Auto-Symlink Ready
+                </span>
+              </h1>
+              <p class="text-xs text-slate-400 mt-0.5">
+                Click any project card to view and edit its workspace topology. Changes are automatically saved.
+              </p>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div class="flex items-center gap-2.5">
-        <button
-          v-if="activeProject"
-          @click="openEditModal"
-          class="px-3.5 py-2 rounded-lg border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-2 transition"
-        >
-          <Edit3 class="w-4 h-4 text-emerald-400" />
-          Edit Project & Topology
-        </button>
-
-        <button
-          v-if="activeProject"
-          @click="handleResync"
-          :disabled="projectStore.isLoading"
-          class="px-3.5 py-2 rounded-lg border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-2 transition"
-          title="Re-verify source paths and recreate symlinks"
-        >
-          <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': projectStore.isLoading }" />
-          Resync Symlinks
-        </button>
-
-        <button
-          @click="openCreateModal"
-          class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white flex items-center gap-2 shadow-lg shadow-emerald-900/30 transition"
-        >
-          <FolderPlus class="w-4 h-4" />
-          Register New Project
-        </button>
-      </div>
-    </header>
-
-    <div class="p-6 space-y-6 max-w-7xl mx-auto w-full">
-      <!-- Architectural Explainer Card: Clarifies Source vs Workspace vs Symlink -->
-      <div class="p-4 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900/90 to-slate-950 border border-slate-800 text-xs space-y-3 shadow-lg">
-        <div class="flex items-center justify-between cursor-pointer select-none" @click="showArchitectureExplainer = !showArchitectureExplainer">
-          <div class="flex items-center gap-2 text-slate-200 font-semibold">
-            <HelpCircle class="w-4 h-4 text-emerald-400" />
-            <span class="text-sm">Architecture Mental Model: Host Source vs. Unified Workspace vs. Symlink Mounts</span>
-          </div>
+        <div class="flex items-center gap-2.5">
           <button
-            type="button"
-            class="flex items-center gap-1.5 text-slate-400 hover:text-slate-200 text-[11px] font-mono transition"
+            @click="projectStore.fetchProjects"
+            :disabled="projectStore.isLoading"
+            class="p-2 rounded-lg border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition"
+            title="Refresh projects"
           >
-            <span>{{ showArchitectureExplainer ? 'Hide Guide' : 'Show Guide' }}</span>
-            <ChevronUp v-if="showArchitectureExplainer" class="w-4 h-4 text-slate-400" />
-            <ChevronDown v-else class="w-4 h-4 text-slate-400" />
+            <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': projectStore.isLoading }" />
+          </button>
+
+          <button
+            @click="openCreateModal"
+            class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white flex items-center gap-2 shadow-lg shadow-emerald-900/30 transition"
+          >
+            <FolderPlus class="w-4 h-4" />
+            Register New Project
           </button>
         </div>
+      </header>
 
-        <div v-if="showArchitectureExplainer" class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-3 border-t border-slate-800/80 animate-in fade-in duration-200">
-          <!-- Pillar 1: Host Source Repos -->
-          <div class="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1.5">
-            <div class="flex items-center justify-between">
-              <span class="flex items-center gap-1.5 text-sky-400 font-bold font-mono">
-                <FolderGit2 class="w-4 h-4" /> 1. Host Source Repos
-              </span>
-              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-500/10 text-sky-400 border border-sky-500/20">Disk Storage</span>
+      <div class="p-6 space-y-6 max-w-7xl mx-auto w-full">
+        <!-- Architectural Explainer Card -->
+        <div class="p-4 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900/90 to-slate-950 border border-slate-800 text-xs space-y-3 shadow-lg">
+          <div class="flex items-center justify-between cursor-pointer select-none" @click="showArchitectureExplainer = !showArchitectureExplainer">
+            <div class="flex items-center gap-2 text-slate-200 font-semibold">
+              <HelpCircle class="w-4 h-4 text-emerald-400" />
+              <span class="text-sm">Architecture Mental Model: Host Source vs. Unified Workspace vs. Symlink Mounts</span>
             </div>
-            <p class="text-slate-400 text-[11px] leading-relaxed">
-              Your real repositories on your machine (e.g. <code class="text-slate-300 font-mono">/Users/.../frontend</code>). Where your git history and commits live.
-            </p>
-            <div class="text-[10px] text-slate-400 font-mono pt-1">
-              Browse & pick these folders with 1-click.
-            </div>
+            <button
+              type="button"
+              class="flex items-center gap-1.5 text-slate-400 hover:text-slate-200 text-[11px] font-mono transition"
+            >
+              <span>{{ showArchitectureExplainer ? 'Hide Guide' : 'Show Guide' }}</span>
+              <ChevronUp v-if="showArchitectureExplainer" class="w-4 h-4 text-slate-400" />
+              <ChevronDown v-else class="w-4 h-4 text-slate-400" />
+            </button>
           </div>
 
-          <!-- Pillar 2: Workspace Symlinks -->
-          <div class="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1.5">
-            <div class="flex items-center justify-between">
-              <span class="flex items-center gap-1.5 text-emerald-400 font-bold font-mono">
-                <Network class="w-4 h-4" /> 2. Workspace Symlinks
-              </span>
-              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Zero-Copy Bridge</span>
+          <div v-if="showArchitectureExplainer" class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-3 border-t border-slate-800/80 animate-in fade-in duration-200">
+            <!-- Pillar 1: Host Source Repos -->
+            <div class="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1.5">
+              <div class="flex items-center justify-between">
+                <span class="flex items-center gap-1.5 text-sky-400 font-bold font-mono">
+                  <FolderGit2 class="w-4 h-4" /> 1. Host Source Repos
+                </span>
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-500/10 text-sky-400 border border-sky-500/20">Disk Storage</span>
+              </div>
+              <p class="text-slate-400 text-[11px] leading-relaxed">
+                Your real repositories on your machine (e.g. <code class="text-slate-300 font-mono">/Users/.../frontend</code>). Where your git history and commits live.
+              </p>
+              <div class="text-[10px] text-slate-400 font-mono pt-1">
+                Browse & select with 1-click dialog.
+              </div>
             </div>
-            <p class="text-slate-400 text-[11px] leading-relaxed">
-              Virtual symbolic links created inside the workspace. Any edits made by AI agents or tests update your real host source files instantly in real time.
-            </p>
-            <div class="text-[10px] text-emerald-400/90 font-mono pt-1">
-              Auto-wired by Meta-Orchestrator.
-            </div>
-          </div>
 
-          <!-- Pillar 3: Unified Workspace -->
-          <div class="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1.5">
-            <div class="flex items-center justify-between">
-              <span class="flex items-center gap-1.5 text-purple-400 font-bold font-mono">
-                <Layers class="w-4 h-4" /> 3. Unified Workspace Root
-              </span>
-              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-500/10 text-purple-400 border border-purple-500/20">Orchestrator Hub</span>
+            <!-- Pillar 2: Workspace Symlinks -->
+            <div class="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1.5">
+              <div class="flex items-center justify-between">
+                <span class="flex items-center gap-1.5 text-emerald-400 font-bold font-mono">
+                  <Network class="w-4 h-4" /> 2. Workspace Symlinks
+                </span>
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Zero-Copy Bridge</span>
+              </div>
+              <p class="text-slate-400 text-[11px] leading-relaxed">
+                Virtual symbolic links created inside the workspace. Any edits made by AI agents or tests update your real host source files instantly in real time.
+              </p>
+              <div class="text-[10px] text-emerald-400/90 font-mono pt-1">
+                Auto-wired by Meta-Orchestrator.
+              </div>
             </div>
-            <p class="text-slate-400 text-[11px] leading-relaxed">
-              The project's dedicated orchestrator root (e.g. <code class="text-slate-300 font-mono">workspaces/my-project/</code>) where agents, tasks, PRDs, and ATDD tests operate across all repos together.
-            </p>
-            <div class="text-[10px] text-purple-400/90 font-mono pt-1">
-              Houses all mounts in one single context.
+
+            <!-- Pillar 3: Unified Workspace -->
+            <div class="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1.5">
+              <div class="flex items-center justify-between">
+                <span class="flex items-center gap-1.5 text-purple-400 font-bold font-mono">
+                  <Layers class="w-4 h-4" /> 3. Unified Workspace Root
+                </span>
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-500/10 text-purple-400 border border-purple-500/20">Orchestrator Hub</span>
+              </div>
+              <p class="text-slate-400 text-[11px] leading-relaxed">
+                The project's dedicated orchestrator root (e.g. <code class="text-slate-300 font-mono">workspaces/my-project/</code>) where agents, tasks, PRDs, and ATDD tests operate across all repos together.
+              </p>
+              <div class="text-[10px] text-purple-400/90 font-mono pt-1">
+                Create new workspace folder right in browse dialog.
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      <!-- Project Selection Ribbon -->
-      <section class="space-y-3">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-bold uppercase tracking-wider text-slate-400 font-mono">
-            Registered Projects ({{ projectStore.projects.length }})
-          </span>
-        </div>
+        <!-- Project Grid Section -->
+        <section class="space-y-4">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h2 class="text-sm font-bold uppercase tracking-wider text-slate-300 font-mono flex items-center gap-2">
+                <span>Registered Projects</span>
+                <span class="px-2 py-0.5 rounded-full bg-slate-800 text-emerald-400 text-xs">{{ filteredProjects.length }}</span>
+              </h2>
+              <p class="text-xs text-slate-400 mt-0.5">Click any card to enter edit mode and customize services or workspace paths.</p>
+            </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <!-- Search input -->
+            <div class="relative w-full sm:w-72">
+              <Search class="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                v-model="projectSearchQuery"
+                type="text"
+                placeholder="Search projects by name, ID, path..."
+                class="w-full pl-9 pr-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-200 text-xs font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+          </div>
+
+          <!-- Empty State -->
           <div
-            v-for="p in projectStore.projects"
-            :key="p.id"
-            @click="projectStore.selectProject(p.id)"
-            class="p-4 rounded-xl border transition-all cursor-pointer text-left relative overflow-hidden group"
-            :class="projectStore.activeProjectId === p.id 
-              ? 'bg-slate-900/90 border-emerald-500/50 shadow-lg shadow-emerald-950/40 ring-1 ring-emerald-500/30' 
-              : 'bg-slate-900/40 border-slate-800 hover:border-slate-700 hover:bg-slate-900/60'"
+            v-if="filteredProjects.length === 0"
+            class="py-16 px-4 rounded-2xl border border-slate-800 bg-slate-900/40 text-center space-y-3"
           >
-            <div class="flex items-start justify-between gap-2">
-              <div>
-                <h3 class="font-bold text-sm text-white group-hover:text-emerald-400 transition">{{ p.name }}</h3>
-                <span class="text-[10px] font-mono text-slate-400">{{ p.id }}</span>
+            <FolderGit2 class="w-10 h-10 text-slate-500 mx-auto" />
+            <h3 class="text-sm font-bold text-white">No Projects Found</h3>
+            <p class="text-xs text-slate-400 max-w-sm mx-auto">
+              {{ projectSearchQuery ? 'No registered project matches your search query.' : 'Register your first multi-repo project to organize your microservices.' }}
+            </p>
+            <button
+              @click="openCreateModal"
+              class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white inline-flex items-center gap-2 shadow"
+            >
+              <FolderPlus class="w-4 h-4" />
+              Register New Project
+            </button>
+          </div>
+
+          <!-- Project Cards Grid -->
+          <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            <div
+              v-for="p in filteredProjects"
+              :key="p.id"
+              @click="openProjectEdit(p.id)"
+              class="p-5 rounded-2xl border border-slate-800 bg-slate-900/40 hover:bg-slate-900/80 hover:border-emerald-500/60 shadow-lg hover:shadow-emerald-950/30 transition-all duration-200 cursor-pointer flex flex-col justify-between group relative overflow-hidden"
+            >
+              <div class="space-y-3">
+                <div class="flex items-start justify-between gap-2">
+                  <div class="min-w-0 flex-1">
+                    <h3 class="font-bold text-base text-white group-hover:text-emerald-400 transition truncate flex items-center gap-1.5">
+                      {{ p.name }}
+                    </h3>
+                    <span class="text-[11px] font-mono text-slate-400">{{ p.id }}</span>
+                  </div>
+
+                  <span
+                    class="px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider font-mono border flex-shrink-0"
+                    :class="getProjectMetrics(p).isHealthy ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'"
+                  >
+                    {{ getProjectMetrics(p).isHealthy ? '● All Symlinks Healthy' : `● ${getProjectMetrics(p).brokenCount} Broken Link(s)` }}
+                  </span>
+                </div>
+
+                <p class="text-xs text-slate-400 line-clamp-2 leading-relaxed">
+                  {{ p.description || 'No project description provided.' }}
+                </p>
+
+                <!-- Role distribution badges -->
+                <div class="flex flex-wrap items-center gap-1.5 pt-1">
+                  <span
+                    v-if="getProjectMetrics(p).roleCounts.frontend > 0"
+                    class="px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20 text-[10px] font-medium flex items-center gap-1"
+                  >
+                    <Layout class="w-3 h-3" /> {{ getProjectMetrics(p).roleCounts.frontend }} Frontend
+                  </span>
+                  <span
+                    v-if="getProjectMetrics(p).roleCounts.backend > 0"
+                    class="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-medium flex items-center gap-1"
+                  >
+                    <Server class="w-3 h-3" /> {{ getProjectMetrics(p).roleCounts.backend }} Backend
+                  </span>
+                  <span
+                    v-if="getProjectMetrics(p).roleCounts['automation-test'] > 0"
+                    class="px-2 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20 text-[10px] font-medium flex items-center gap-1"
+                  >
+                    <FlaskConical class="w-3 h-3" /> {{ getProjectMetrics(p).roleCounts['automation-test'] }} Tests
+                  </span>
+                  <span
+                    v-if="getProjectMetrics(p).roleCounts.contracts > 0"
+                    class="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-medium flex items-center gap-1"
+                  >
+                    <FileCode2 class="w-3 h-3" /> {{ getProjectMetrics(p).roleCounts.contracts }} Contracts
+                  </span>
+                  <span
+                    v-if="getProjectMetrics(p).roleCounts.artifact > 0"
+                    class="px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px] font-medium flex items-center gap-1"
+                  >
+                    <FolderArchive class="w-3 h-3" /> {{ getProjectMetrics(p).roleCounts.artifact }} Docs
+                  </span>
+                  <span
+                    v-if="p.repos?.length === 0"
+                    class="text-[10px] font-mono text-slate-500 italic"
+                  >
+                    No services attached
+                  </span>
+                </div>
+
+                <!-- Workspace Root path -->
+                <div class="p-2 rounded-lg bg-slate-950/70 border border-slate-800 text-[11px] font-mono text-slate-300 flex items-center gap-2 truncate">
+                  <FolderOpen class="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                  <span class="truncate text-emerald-300">{{ p.root_dir }}</span>
+                </div>
               </div>
-              <span
-                class="px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider font-mono border"
-                :class="p.status === 'provisioned' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'"
-              >
-                {{ p.status }}
-              </span>
+
+              <!-- Card Footer -->
+              <div class="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
+                <span class="text-emerald-400 font-semibold text-xs flex items-center gap-1 group-hover:underline">
+                  <span>Open & Edit Project</span>
+                  <ArrowRight class="w-3.5 h-3.5 group-hover:translate-x-1 transition" />
+                </span>
+
+                <div class="flex items-center gap-1.5" @click.stop>
+                  <button
+                    @click="router.push({ path: '/', query: { project: p.id } })"
+                    class="p-1.5 rounded-lg bg-slate-800 hover:bg-emerald-600/30 text-slate-300 hover:text-emerald-300 border border-slate-700/60 transition"
+                    title="Launch new task in this project"
+                  >
+                    <Play class="w-3.5 h-3.5 fill-current" />
+                  </button>
+                  <button
+                    @click="projectStore.resyncProject(p.id)"
+                    class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/60 transition"
+                    title="Resync symlinks"
+                  >
+                    <RefreshCw class="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    @click="handleDeleteProject(p.id)"
+                    class="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 transition"
+                    title="Delete project"
+                  >
+                    <Trash2 class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </template>
+
+    <!-- ========================================== -->
+    <!-- VIEW 2: PROJECT DETAIL & EDIT MODE         -->
+    <!-- ========================================== -->
+    <template v-else-if="currentView === 'edit'">
+      <!-- Edit Mode Top Bar -->
+      <header class="p-4 sm:p-6 border-b border-slate-800 bg-slate-900/60 backdrop-blur sticky top-0 z-30 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div class="flex items-center gap-3">
+          <button
+            @click="handleBack"
+            class="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2 transition shadow-sm"
+            title="Return to projects list (auto-saves any changes)"
+          >
+            <ArrowLeft class="w-4 h-4 text-emerald-400" />
+            <span>Back to Projects</span>
+          </button>
+
+          <div class="h-5 w-px bg-slate-800"></div>
+
+          <div>
+            <div class="flex items-center gap-2">
+              <h1 class="text-base sm:text-lg font-bold text-white flex items-center gap-2 truncate">
+                {{ editFormName || 'Untitled Project' }}
+                <span class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
+                  {{ editFormId }}
+                </span>
+              </h1>
             </div>
 
-            <p class="text-xs text-slate-400 mt-2 line-clamp-2 leading-relaxed">
-              {{ p.description || 'No project description provided.' }}
-            </p>
-
-            <div class="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400 font-mono">
-              <span class="flex items-center gap-1.5">
-                <Layers class="w-3.5 h-3.5 text-slate-400" />
-                {{ p.repos?.length || 0 }} Repositories
+            <!-- Auto-save state indicator -->
+            <div class="flex items-center gap-2 mt-0.5">
+              <span v-if="isSaving" class="text-[11px] text-emerald-400 font-mono flex items-center gap-1.5">
+                <RefreshCw class="w-3 h-3 animate-spin" />
+                <span>Auto-saving changes...</span>
               </span>
-              <span class="text-[11px] text-slate-400 truncate max-w-[120px]">{{ p.active_sdlc }}</span>
+              <span v-else-if="isDirty" class="text-[11px] text-amber-400 font-mono flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                <span>Unsaved changes (auto-saves on Back or Done)</span>
+              </span>
+              <span v-else class="text-[11px] text-slate-400 font-mono flex items-center gap-1.5">
+                <Check class="w-3.5 h-3.5 text-emerald-400" />
+                <span>All changes saved</span>
+              </span>
             </div>
           </div>
         </div>
-      </section>
 
-      <!-- Active Project Deep Dive -->
-      <section v-if="activeProject" class="space-y-6">
-        <!-- Project Banner & Health Stats -->
-        <div class="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900/95 to-slate-950 border border-slate-800 space-y-5">
-          <div class="flex flex-col md:flex-row md:items-start justify-between gap-4">
+        <div class="flex items-center gap-2.5">
+          <button
+            @click="handleResync"
+            :disabled="projectStore.isLoading || isSaving"
+            class="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-1.5 transition"
+            title="Save and re-verify symlinks on disk"
+          >
+            <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': projectStore.isLoading }" />
+            <span>Resync Symlinks</span>
+          </button>
+
+          <button
+            @click="launchTaskForProject"
+            class="px-3.5 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 text-xs font-semibold flex items-center gap-1.5 transition"
+            title="Launch an AI task in this project"
+          >
+            <Play class="w-3.5 h-3.5 fill-current" />
+            <span>Launch Task</span>
+          </button>
+
+          <button
+            @click="handleDeleteProject(editFormId)"
+            class="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs transition"
+            title="Delete this project and workspace"
+          >
+            <Trash2 class="w-4 h-4" />
+          </button>
+
+          <!-- Done Button: auto-saves and returns to list view -->
+          <button
+            @click="handleDone"
+            :disabled="isSaving"
+            class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white flex items-center gap-1.5 shadow-lg shadow-emerald-950/50 transition ml-1"
+          >
+            <Check class="w-4 h-4" />
+            <span>Done</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="p-6 space-y-6 max-w-7xl mx-auto w-full">
+        <!-- Section 1: Project Settings Card -->
+        <div class="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900/95 to-slate-950 border border-slate-800 space-y-5 shadow-lg">
+          <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div class="flex items-center gap-2">
+              <Sliders class="w-4 h-4 text-emerald-400" />
+              <h2 class="text-sm font-bold uppercase tracking-wider text-slate-200 font-mono">
+                Project Configuration
+              </h2>
+            </div>
+            <span class="text-xs text-slate-400">Edits are auto-saved on Back / Done</span>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
             <div class="space-y-1.5">
-              <div class="flex flex-wrap items-center gap-3">
-                <h2 class="text-xl font-bold text-white">{{ activeProject.name }}</h2>
-                <span class="px-2.5 py-0.5 rounded-full text-xs font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  {{ activeProject.active_sdlc }}
-                </span>
-                <span
-                  class="px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider font-mono border"
-                  :class="projectMetrics.isHealthy ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'"
-                >
-                  {{ projectMetrics.isHealthy ? '● All Symlinks Healthy' : `● ${projectMetrics.brokenCount} Broken Link(s)` }}
-                </span>
-              </div>
-              <p class="text-xs text-slate-400 max-w-3xl leading-relaxed">{{ activeProject.description }}</p>
+              <label class="font-semibold text-slate-200">Project Name *</label>
+              <input
+                v-model="editFormName"
+                @input="markDirty"
+                type="text"
+                placeholder="e.g. Fintech Payment Gateway"
+                class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 focus:outline-none focus:border-emerald-500 font-medium"
+              />
             </div>
 
-            <!-- Action Controls -->
-            <div class="flex flex-wrap items-center gap-2">
-              <button
-                @click="openQuickAddModal"
-                class="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-1.5 transition"
+            <div class="space-y-1.5">
+              <label class="font-semibold text-slate-200">Active SDLC Workflow</label>
+              <select
+                v-model="editFormActiveSDLC"
+                @change="markDirty"
+                class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
               >
-                <Plus class="w-3.5 h-3.5 text-emerald-400" />
-                Add Service
-              </button>
-              <button
-                @click="launchTaskForProject"
-                class="px-3.5 py-1.5 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 text-xs font-semibold text-white flex items-center gap-1.5 shadow transition"
-              >
-                <Play class="w-3.5 h-3.5 fill-current" />
-                New Task in Project
-              </button>
-              <button
-                @click="handleDeleteProject(activeProject.id)"
-                class="p-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs transition"
-                title="Delete Project"
-              >
-                <Trash2 class="w-4 h-4" />
-              </button>
+                <option value="general-ai-sdlc">General AI SDLC (9 Stages)</option>
+                <option value="microservice-api">Microservice API Contract Workflow (4 Stages)</option>
+                <option value="hotfix-fast-track">Hotfix Fast-Track (3 Stages)</option>
+              </select>
+            </div>
+
+            <div class="space-y-1.5 md:col-span-2">
+              <label class="font-semibold text-slate-200">Description</label>
+              <input
+                v-model="editFormDesc"
+                @input="markDirty"
+                type="text"
+                placeholder="Description of multi-repo architecture, target domain, and testing criteria..."
+                class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+
+            <!-- Unified Workspace Directory with single Browse button (folder creation inside browse dialog) -->
+            <div class="space-y-1.5 md:col-span-2">
+              <label class="font-semibold text-slate-200">Unified Workspace Directory (Root Target)</label>
+              <div class="flex gap-2">
+                <input
+                  v-model="editFormRootDir"
+                  @input="markDirty"
+                  type="text"
+                  placeholder="workspaces/project-id"
+                  class="flex-1 px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-emerald-400 font-mono text-xs focus:outline-none focus:border-emerald-500"
+                />
+                <button
+                  type="button"
+                  @click="openDirectoryPicker('edit_root', null, editFormRootDir, 'Select Workspace Directory', 'Choose where the unified project workspace and symlinks will reside')"
+                  class="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0"
+                >
+                  <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
+                  Browse
+                </button>
+              </div>
+              <p class="text-[11px] text-slate-400">The root orchestrator folder where tasks, tools, and symlink mounts reside.</p>
             </div>
           </div>
 
-          <!-- Role Distribution Quick Chips -->
-          <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 pt-2 border-t border-slate-800/80">
+          <!-- Role & Health Overview Chips -->
+          <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 pt-3 border-t border-slate-800/80">
             <div class="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80 flex items-center justify-between text-xs">
               <span class="flex items-center gap-1.5 text-sky-400 font-medium">
                 <Layout class="w-3.5 h-3.5" /> Frontend
               </span>
-              <span class="font-mono font-bold text-white">{{ projectMetrics.roleCounts.frontend }}</span>
+              <span class="font-mono font-bold text-white">{{ editProjectMetrics.roleCounts.frontend }}</span>
             </div>
 
             <div class="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80 flex items-center justify-between text-xs">
               <span class="flex items-center gap-1.5 text-emerald-400 font-medium">
                 <Server class="w-3.5 h-3.5" /> Backend
               </span>
-              <span class="font-mono font-bold text-white">{{ projectMetrics.roleCounts.backend }}</span>
+              <span class="font-mono font-bold text-white">{{ editProjectMetrics.roleCounts.backend }}</span>
             </div>
 
             <div class="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80 flex items-center justify-between text-xs">
               <span class="flex items-center gap-1.5 text-purple-400 font-medium">
                 <FlaskConical class="w-3.5 h-3.5" /> Tests
               </span>
-              <span class="font-mono font-bold text-white">{{ projectMetrics.roleCounts['automation-test'] }}</span>
+              <span class="font-mono font-bold text-white">{{ editProjectMetrics.roleCounts['automation-test'] }}</span>
             </div>
 
             <div class="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80 flex items-center justify-between text-xs">
               <span class="flex items-center gap-1.5 text-amber-400 font-medium">
                 <FileCode2 class="w-3.5 h-3.5" /> Contracts
               </span>
-              <span class="font-mono font-bold text-white">{{ projectMetrics.roleCounts.contracts }}</span>
+              <span class="font-mono font-bold text-white">{{ editProjectMetrics.roleCounts.contracts }}</span>
             </div>
 
             <div class="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80 flex items-center justify-between text-xs">
               <span class="flex items-center gap-1.5 text-blue-400 font-medium">
                 <FolderArchive class="w-3.5 h-3.5" /> Artifacts
               </span>
-              <span class="font-mono font-bold text-white">{{ projectMetrics.roleCounts.artifact }}</span>
+              <span class="font-mono font-bold text-white">{{ editProjectMetrics.roleCounts.artifact }}</span>
             </div>
 
             <div class="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80 flex items-center justify-between text-xs">
               <span class="flex items-center gap-1.5 text-slate-400 font-medium">
                 <Layers class="w-3.5 h-3.5" /> Total
               </span>
-              <span class="font-mono font-bold text-white">{{ projectMetrics.total }}</span>
+              <span class="font-mono font-bold text-white">{{ editProjectMetrics.total }}</span>
             </div>
           </div>
 
-          <!-- Root Dir Box & Terminal helper -->
+          <!-- Root Dir Box & Terminal Helper -->
           <div class="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
             <div class="flex items-center gap-2.5 min-w-0">
               <ShieldCheck class="w-4 h-4 text-emerald-400 flex-shrink-0" />
               <div class="truncate">
-                <span class="text-slate-400 font-mono">Unified Workspace Root: </span>
-                <span class="text-emerald-400 font-mono font-medium">{{ activeProject.root_dir }}</span>
-                <span class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">
-                  Orchestrator Base
-                </span>
+                <span class="text-slate-400 font-mono">Workspace Mount Path: </span>
+                <span class="text-emerald-400 font-mono font-medium">{{ editFormRootDir }}</span>
               </div>
             </div>
 
@@ -994,7 +1254,7 @@ function launchTaskForProject() {
               <button
                 @click="copyCliCommand"
                 class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1.5 transition"
-                title="Copy shell command to cd into unified workspace directory"
+                title="Copy cd command"
               >
                 <Terminal class="w-3.5 h-3.5 text-sky-400" />
                 <span>{{ copiedCliCmd ? 'Copied' : 'Copy CLI cd' }}</span>
@@ -1003,7 +1263,7 @@ function launchTaskForProject() {
               <button
                 @click="copyRootDir"
                 class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1.5 transition"
-                title="Copy workspace root path"
+                title="Copy root path"
               >
                 <Check v-if="copiedPath" class="w-3.5 h-3.5 text-emerald-400" />
                 <Copy v-else class="w-3.5 h-3.5" />
@@ -1013,30 +1273,15 @@ function launchTaskForProject() {
           </div>
         </div>
 
-        <!-- Toolbar: View Mode Toggle, Search & Filters -->
-        <div class="space-y-4">
+        <!-- Section 2: Registered Repositories & Services -->
+        <section class="space-y-4">
+          <!-- Toolbar -->
           <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-            <!-- Search & Status Filter -->
-            <div class="flex flex-wrap items-center gap-2.5">
-              <div class="relative w-64">
-                <Search class="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  v-model="searchQuery"
-                  type="text"
-                  placeholder="Search repos, paths, branches..."
-                  class="w-full pl-9 pr-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-200 text-xs font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <!-- Status filter dropdown -->
-              <select
-                v-model="statusFilter"
-                class="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 text-xs font-mono focus:outline-none focus:border-emerald-500"
-              >
-                <option value="all">All Statuses</option>
-                <option value="linked">Linked Only</option>
-                <option value="broken">Broken / Missing Only</option>
-              </select>
+            <div class="flex items-center gap-3">
+              <h3 class="text-sm font-bold uppercase tracking-wider text-slate-200 font-mono flex items-center gap-2">
+                <span>Service Repositories</span>
+                <span class="px-2 py-0.5 rounded-full bg-slate-800 text-emerald-400 text-xs">{{ editFormRepos.length }}</span>
+              </h3>
 
               <!-- View Mode Toggle -->
               <div class="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-xs">
@@ -1046,7 +1291,7 @@ function launchTaskForProject() {
                   :class="viewMode === 'grid' ? 'bg-slate-800 text-white shadow' : 'text-slate-400 hover:text-slate-200'"
                 >
                   <Grid class="w-3.5 h-3.5" />
-                  Matrix
+                  Services Table
                 </button>
                 <button
                   @click="viewMode = 'topology'"
@@ -1054,134 +1299,214 @@ function launchTaskForProject() {
                   :class="viewMode === 'topology' ? 'bg-slate-800 text-white shadow' : 'text-slate-400 hover:text-slate-200'"
                 >
                   <Network class="w-3.5 h-3.5 text-emerald-400" />
-                  Topology Tree
+                  Topology Map
                 </button>
               </div>
             </div>
 
-            <!-- Role Filter Pills -->
-            <div class="flex flex-wrap items-center gap-1.5 bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs">
+            <!-- Action buttons: Add repo & Auto-scanner -->
+            <div class="flex flex-wrap items-center gap-2">
               <button
-                @click="roleFilter = 'all'"
-                class="px-2.5 py-1 rounded text-xs transition font-medium"
-                :class="roleFilter === 'all' ? 'bg-slate-800 text-white shadow' : 'text-slate-400 hover:text-slate-200'"
+                @click="isScannerOpen = !isScannerOpen"
+                class="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-1.5 transition"
               >
-                All ({{ activeProject.repos?.length || 0 }})
+                <Search class="w-3.5 h-3.5 text-emerald-400" />
+                <span>{{ isScannerOpen ? 'Hide Auto-Scanner' : 'Auto-Scan Folder' }}</span>
               </button>
+
               <button
-                @click="roleFilter = 'frontend'"
-                class="px-2.5 py-1 rounded text-xs transition font-medium flex items-center gap-1"
-                :class="roleFilter === 'frontend' ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30' : 'text-slate-400 hover:text-slate-200'"
+                @click="openDirectoryPicker('edit_browse_add', null, '', 'Select Repository to Add', 'Pick a repository codebase from your disk to add to this project')"
+                class="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-1.5 transition"
               >
-                <Layout class="w-3 h-3" /> Frontend
+                <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
+                <span>Browse & Add</span>
               </button>
+
               <button
-                @click="roleFilter = 'backend'"
-                class="px-2.5 py-1 rounded text-xs transition font-medium flex items-center gap-1"
-                :class="roleFilter === 'backend' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'text-slate-400 hover:text-slate-200'"
+                @click="addEditRepoRow"
+                class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white flex items-center gap-1.5 shadow transition"
               >
-                <Server class="w-3 h-3" /> Backend
-              </button>
-              <button
-                @click="roleFilter = 'automation-test'"
-                class="px-2.5 py-1 rounded text-xs transition font-medium flex items-center gap-1"
-                :class="roleFilter === 'automation-test' ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'text-slate-400 hover:text-slate-200'"
-              >
-                <FlaskConical class="w-3 h-3" /> Tests
-              </button>
-              <button
-                @click="roleFilter = 'contracts'"
-                class="px-2.5 py-1 rounded text-xs transition font-medium flex items-center gap-1"
-                :class="roleFilter === 'contracts' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'text-slate-400 hover:text-slate-200'"
-              >
-                <FileCode2 class="w-3 h-3" /> Contracts
-              </button>
-              <button
-                @click="roleFilter = 'artifact'"
-                class="px-2.5 py-1 rounded text-xs transition font-medium flex items-center gap-1"
-                :class="roleFilter === 'artifact' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' : 'text-slate-400 hover:text-slate-200'"
-              >
-                <FolderArchive class="w-3 h-3" /> Artifacts
+                <Plus class="w-3.5 h-3.5" />
+                <span>Add Service Row</span>
               </button>
             </div>
           </div>
 
-          <!-- View Mode A: Matrix Cards View -->
-          <div v-if="viewMode === 'grid'" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Collapsible Auto-Scanner Panel -->
+          <div v-if="isScannerOpen" class="p-4 rounded-xl bg-slate-900/90 border border-slate-800 space-y-3 animate-in fade-in duration-150">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <Search class="w-4 h-4 text-emerald-400" />
+                <h4 class="font-bold text-slate-200 uppercase tracking-wider text-xs font-mono">Scan Local Directory for Services</h4>
+              </div>
+              <span class="text-[11px] text-slate-400">Detects package.json, go.mod, playwright, openapi and classifies roles</span>
+            </div>
+
+            <div class="flex gap-2 text-xs">
+              <input
+                v-model="scanPath"
+                type="text"
+                placeholder="Parent folder path to scan for child repositories..."
+                class="flex-1 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
+              />
+              <button
+                type="button"
+                @click="openDirectoryPicker('edit_scan', null, scanPath, 'Select Parent Folder to Scan', 'Select a directory to automatically detect child repositories')"
+                class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0"
+              >
+                <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
+                Browse
+              </button>
+              <button
+                @click="handleScanDirectory"
+                :disabled="isScanning"
+                class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0"
+              >
+                <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isScanning }" />
+                Scan
+              </button>
+            </div>
+
+            <!-- Scanned Candidates -->
+            <div v-if="scannedCandidates.length > 0" class="pt-2 border-t border-slate-800/80 space-y-2">
+              <div class="flex items-center justify-between text-xs">
+                <span class="font-semibold text-emerald-400">Discovered Repositories ({{ scannedCandidates.length }}):</span>
+                <button
+                  type="button"
+                  @click="addScannedToEditForm"
+                  class="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-1"
+                >
+                  <Plus class="w-3.5 h-3.5" />
+                  Add Selected to Project
+                </button>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto">
+                <label
+                  v-for="c in scannedCandidates"
+                  :key="c.path"
+                  class="flex items-center gap-2.5 p-2 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 text-xs"
+                >
+                  <input type="checkbox" v-model="c.selected" class="rounded border-slate-700 text-emerald-500 focus:ring-0" />
+                  <div class="truncate flex-1 font-mono">
+                    <span class="font-bold text-white">{{ c.name }}</span>
+                    <span class="text-[10px] text-slate-400 block truncate">{{ c.path }}</span>
+                  </div>
+                  <span class="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono flex-shrink-0">
+                    {{ c.role }}
+                  </span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- VIEW MODE A: Services Rows/Cards Table -->
+          <div v-if="viewMode === 'grid'" class="space-y-2.5">
             <div
-              v-for="repo in filteredRepos"
-              :key="repo.id || repo.name"
-              @click="openRepoDetail(repo)"
-              class="p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-3 relative overflow-hidden group hover:border-slate-700 hover:bg-slate-900/90 transition cursor-pointer"
+              v-for="(repo, idx) in editFormRepos"
+              :key="repo.id || idx"
+              class="p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-3 hover:border-slate-700 transition"
             >
-              <div class="flex items-start justify-between gap-3">
-                <div class="flex items-center gap-2">
-                  <div
-                    class="p-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5"
-                    :class="getRoleBadgeStyle(repo.role).bg"
-                  >
-                    <component :is="getRoleBadgeStyle(repo.role).icon" class="w-3.5 h-3.5" />
-                    <span>{{ getRoleBadgeStyle(repo.role).label }}</span>
+              <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-xs">
+                <!-- Repo Name & Role -->
+                <div class="flex flex-wrap items-center gap-2.5 flex-1 min-w-0">
+                  <div class="w-48">
+                    <input
+                      v-model="repo.name"
+                      @input="markDirty"
+                      type="text"
+                      placeholder="Service name (e.g. backend-core)"
+                      class="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-emerald-500 font-bold"
+                    />
                   </div>
-                  <span class="font-bold text-sm text-white font-mono group-hover:text-emerald-400 transition">
-                    {{ repo.name }}
-                  </span>
+
+                  <select
+                    v-model="repo.role"
+                    @change="markDirty"
+                    class="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 text-xs font-mono focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="frontend">🎨 Frontend UI</option>
+                    <option value="backend">⚙️ Backend Service</option>
+                    <option value="automation-test">🧪 Automation Test</option>
+                    <option value="contracts">📜 API Contracts</option>
+                    <option value="artifact">📁 Artifacts & PRD</option>
+                    <option value="other">🔌 Other Service</option>
+                  </select>
+
+                  <select
+                    v-model="repo.manifest"
+                    @change="markDirty"
+                    class="px-2 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 text-[11px] font-mono focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="auto">Auto-detect Manifest</option>
+                    <option value="package.json">package.json</option>
+                    <option value="go.mod">go.mod</option>
+                    <option value="playwright.config.ts">playwright.config.ts</option>
+                    <option value="openapi.yaml">openapi.yaml</option>
+                    <option value="composer.json">composer.json</option>
+                    <option value="Cargo.toml">Cargo.toml</option>
+                    <option value="requirements.txt">requirements.txt</option>
+                  </select>
                 </div>
 
-                <div class="flex items-center gap-2 text-xs font-mono">
+                <!-- Status & Action buttons -->
+                <div class="flex items-center gap-2 flex-shrink-0">
                   <span
-                    v-if="repo.git_branch"
-                    class="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-[10px] text-slate-300"
-                    title="Git active branch"
+                    class="px-2 py-0.5 rounded text-[10px] font-mono uppercase font-semibold border"
+                    :class="repo.status === 'linked' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'"
                   >
-                    <GitBranch class="w-3 h-3 text-emerald-400" />
-                    {{ repo.git_branch }}
+                    {{ repo.status || 'pending' }}
                   </span>
 
-                  <span
-                    class="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border"
-                    :class="repo.status === 'linked' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'"
+                  <button
+                    type="button"
+                    @click="openRepoDetail(repo)"
+                    class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1 transition"
+                    title="View details & health"
                   >
-                    <CheckCircle2 v-if="repo.status === 'linked'" class="w-3 h-3" />
-                    <AlertTriangle v-else class="w-3 h-3" />
-                    {{ repo.status === 'linked' ? 'Linked' : (repo.status || 'Broken') }}
-                  </span>
+                    <Eye class="w-3.5 h-3.5" />
+                    <span>Inspect</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    @click="removeEditRepoRow(idx)"
+                    class="p-1.5 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 transition"
+                    title="Remove repository"
+                  >
+                    <Trash2 class="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
 
-              <!-- Paths Details -->
-              <div class="space-y-1.5 text-xs font-mono">
-                <div class="flex items-center justify-between text-slate-400 gap-2">
-                  <span class="text-[11px] text-slate-400 flex-shrink-0" title="Physical source path on host machine">Host Source:</span>
-                  <span class="text-slate-300 truncate max-w-[280px]" :title="repo.path">{{ repo.path }}</span>
-                </div>
-
-                <div class="flex items-center justify-between text-slate-400 gap-2">
-                  <span class="text-[11px] text-emerald-400/90 flex-shrink-0" title="Unified symlink mount point inside workspace root">Workspace Mount:</span>
-                  <span class="text-emerald-400 font-medium truncate max-w-[280px]" :title="repo.symlink_path">{{ repo.symlink_path }}</span>
-                </div>
-
-                <div class="flex items-center justify-between text-slate-400 pt-1.5 border-t border-slate-800/60">
-                  <div class="flex items-center gap-2">
-                    <span class="text-[10px] text-slate-400">Manifest:</span>
-                    <span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-bold">
-                      {{ repo.manifest_type || 'unknown' }}
-                    </span>
-                  </div>
-
-                  <span class="text-[11px] text-emerald-400/80 group-hover:text-emerald-300 font-sans flex items-center gap-1">
-                    <Eye class="w-3.5 h-3.5" /> View Details →
-                  </span>
-                </div>
+              <!-- Host Path with single Browse button -->
+              <div class="flex items-center gap-2 text-xs">
+                <span class="text-slate-400 font-mono text-[11px] flex-shrink-0">Host Source:</span>
+                <input
+                  v-model="repo.path"
+                  @input="markDirty"
+                  type="text"
+                  placeholder="/Users/name/Projects/service-codebase"
+                  class="flex-1 px-2.5 py-1 rounded bg-slate-950 border border-slate-800 text-slate-300 font-mono text-xs focus:outline-none focus:border-emerald-500"
+                />
+                <button
+                  type="button"
+                  @click="openDirectoryPicker('edit_repo', idx, repo.path, 'Select Repository Directory', 'Choose the local source repository folder on your machine')"
+                  class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1 transition flex-shrink-0"
+                >
+                  <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
+                  Browse
+                </button>
               </div>
 
-              <div v-if="repo.error" class="p-2 rounded bg-rose-950/40 border border-rose-900/50 text-[11px] text-rose-300 font-mono">
-                {{ repo.error }}
+              <div v-if="repo.name && editFormRootDir" class="text-[11px] font-mono text-slate-400 flex items-center gap-2">
+                <span>Mount Target:</span>
+                <span class="text-emerald-400">{{ editFormRootDir }}/{{ repo.name }}</span>
               </div>
             </div>
           </div>
 
-          <!-- View Mode B: Interactive Topology Visualizer -->
+          <!-- VIEW MODE B: Topology Visualizer -->
           <div v-else class="p-6 rounded-2xl bg-slate-950 border border-slate-800 space-y-4">
             <div class="flex items-center justify-between">
               <div>
@@ -1191,7 +1516,7 @@ function launchTaskForProject() {
                 </h4>
                 <p class="text-xs text-slate-400">Visual topology showing how distributed host repositories are mounted into the unified project workspace.</p>
               </div>
-              <span class="text-xs font-mono text-slate-400">{{ filteredRepos.length }} Services Connected</span>
+              <span class="text-xs font-mono text-slate-400">{{ editFormRepos.length }} Services Configured</span>
             </div>
 
             <div class="p-8 rounded-xl bg-slate-900/40 border border-slate-800/80 flex flex-col items-center justify-center space-y-8 relative overflow-hidden">
@@ -1201,10 +1526,10 @@ function launchTaskForProject() {
                   <FolderGit2 class="w-5 h-5 text-emerald-400" />
                   <div>
                     <div class="flex items-center gap-2">
-                      <span>{{ activeProject.name }}</span>
+                      <span>{{ editFormName || 'Unified Workspace' }}</span>
                       <span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono">Workspace Root</span>
                     </div>
-                    <div class="text-[10px] text-emerald-400/70 font-normal mt-0.5">{{ activeProject.root_dir }}</div>
+                    <div class="text-[10px] text-emerald-400/70 font-normal mt-0.5">{{ editFormRootDir }}</div>
                   </div>
                 </div>
                 <div class="w-0.5 h-8 bg-gradient-to-b from-emerald-500 to-slate-700"></div>
@@ -1213,7 +1538,7 @@ function launchTaskForProject() {
               <!-- Radiating Service Nodes -->
               <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 w-full max-w-4xl relative z-10">
                 <div
-                  v-for="repo in filteredRepos"
+                  v-for="repo in editFormRepos"
                   :key="repo.name"
                   @click="openRepoDetail(repo)"
                   class="p-3.5 rounded-xl border bg-slate-900/90 shadow-md cursor-pointer hover:scale-[1.02] transition"
@@ -1226,24 +1551,26 @@ function launchTaskForProject() {
                     </div>
                     <span
                       class="w-2 h-2 rounded-full"
-                      :class="repo.status === 'linked' ? 'bg-emerald-400' : 'bg-rose-400 animate-pulse'"
-                      :title="repo.status"
+                      :class="repo.status === 'linked' ? 'bg-emerald-400' : 'bg-amber-400'"
+                      :title="repo.status || 'pending'"
                     ></span>
                   </div>
 
                   <div class="mt-2 text-[10px] font-mono text-slate-400 space-y-0.5 truncate">
-                    <div class="truncate text-emerald-400">Mount: {{ repo.symlink_path }}</div>
-                    <div class="truncate text-slate-400">Source: {{ repo.path }}</div>
+                    <div class="truncate text-emerald-400">Mount: {{ editFormRootDir }}/{{ repo.name }}</div>
+                    <div class="truncate text-slate-400">Source: {{ repo.path || 'No path configured' }}</div>
                   </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
-      </section>
-    </div>
+        </section>
+      </div>
+    </template>
 
-    <!-- Repository Detail Slide-Over Drawer -->
+    <!-- ========================================== -->
+    <!-- SLIDE-OVER DRAWER: REPO DETAIL & HEALTH    -->
+    <!-- ========================================== -->
     <div
       v-if="isDetailDrawerOpen && selectedRepoDetail"
       class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex justify-end transition-opacity"
@@ -1266,15 +1593,15 @@ function launchTaskForProject() {
         <!-- Symlink Status Callout -->
         <div
           class="p-3.5 rounded-xl border flex items-center justify-between text-xs font-mono"
-          :class="selectedRepoDetail.status === 'linked' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border-rose-500/30 text-rose-300'"
+          :class="selectedRepoDetail.status === 'linked' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-amber-500/10 border-amber-500/30 text-amber-300'"
         >
           <div class="flex items-center gap-2">
             <CheckCircle2 v-if="selectedRepoDetail.status === 'linked'" class="w-4 h-4 text-emerald-400" />
-            <AlertTriangle v-else class="w-4 h-4 text-rose-400" />
-            <span>{{ selectedRepoDetail.status === 'linked' ? 'Symlink Active & Resolving' : 'Source Path Missing or Broken' }}</span>
+            <AlertTriangle v-else class="w-4 h-4 text-amber-400" />
+            <span>{{ selectedRepoDetail.status === 'linked' ? 'Symlink Active & Resolving' : 'Symlink Pending or Path Unverified' }}</span>
           </div>
           <span class="uppercase text-[10px] font-bold px-2 py-0.5 rounded bg-black/30 border border-current">
-            {{ selectedRepoDetail.status }}
+            {{ selectedRepoDetail.status || 'pending' }}
           </span>
         </div>
 
@@ -1298,136 +1625,52 @@ function launchTaskForProject() {
 
         <!-- Deep Specs Grid -->
         <div class="space-y-3 border-t border-slate-800 pt-4 text-xs font-mono">
-          <div class="space-y-1">
-            <span class="text-slate-400 text-[11px] font-sans font-semibold">Host Source Directory (Real Code on Disk):</span>
-            <div class="p-2.5 rounded-lg bg-slate-950 border border-slate-800/80 text-slate-300 break-all select-all">
+          <div>
+            <span class="text-slate-400 block mb-1 text-[11px]">Host Source Path (Disk):</span>
+            <div class="p-2.5 rounded bg-slate-950 border border-slate-800 text-slate-200 break-all select-all">
               {{ selectedRepoDetail.path }}
             </div>
           </div>
 
-          <div class="space-y-1">
-            <span class="text-emerald-400/90 text-[11px] font-sans font-semibold">Workspace Symlink Mount (Virtual Link):</span>
-            <div class="p-2.5 rounded-lg bg-slate-950 border border-slate-800/80 text-emerald-400 break-all select-all">
-              {{ selectedRepoDetail.symlink_path }}
+          <div>
+            <span class="text-slate-400 block mb-1 text-[11px]">Unified Workspace Mount:</span>
+            <div class="p-2.5 rounded bg-slate-950 border border-slate-800 text-emerald-400 break-all select-all">
+              {{ editFormRootDir }}/{{ selectedRepoDetail.name }}
             </div>
-            <p class="text-[10px] text-slate-400 font-sans">
-              Tasks and tools executing inside the unified workspace read and write to this mount, syncing directly to host source files.
-            </p>
           </div>
 
-          <div class="grid grid-cols-2 gap-2 pt-1">
-            <div class="p-2.5 rounded-lg bg-slate-950 border border-slate-800/80 space-y-0.5">
-              <span class="text-slate-400 text-[10px]">Detected Manifest:</span>
-              <div class="font-bold text-slate-200 text-xs">{{ selectedRepoDetail.manifest_type || 'unknown' }}</div>
-            </div>
-
-            <div class="p-2.5 rounded-lg bg-slate-950 border border-slate-800/80 space-y-0.5">
-              <span class="text-slate-400 text-[10px]">Git Branch:</span>
-              <div class="font-bold text-emerald-400 text-xs">{{ selectedRepoDetail.git_branch || 'main / detached' }}</div>
+          <div v-if="selectedRepoDetail.git_branch">
+            <span class="text-slate-400 block mb-1 text-[11px]">Active Git Branch:</span>
+            <div class="flex items-center gap-2 p-2 rounded bg-slate-950 border border-slate-800 text-slate-200">
+              <GitBranch class="w-3.5 h-3.5 text-emerald-400" />
+              <span>{{ selectedRepoDetail.git_branch }}</span>
             </div>
           </div>
         </div>
 
-        <!-- Drawer Action Footer -->
-        <div class="pt-6 border-t border-slate-800 space-y-2 mt-auto">
+        <div class="pt-4 border-t border-slate-800 flex items-center justify-between">
           <button
             @click="handleRemoveRepoFromDrawer"
-            class="w-full py-2.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-semibold flex items-center justify-center gap-2 transition"
+            class="px-3 py-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-semibold flex items-center gap-1.5 transition"
           >
-            <Trash2 class="w-4 h-4" />
-            Unregister Repository
+            <Trash2 class="w-3.5 h-3.5" />
+            Unregister Service
+          </button>
+          <button
+            @click="isDetailDrawerOpen = false"
+            class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+          >
+            Close
           </button>
         </div>
       </div>
     </div>
 
-    <!-- Quick Add Single Repo Modal -->
+    <!-- ========================================== -->
+    <!-- CREATE PROJECT MODAL                       -->
+    <!-- ========================================== -->
     <div
-      v-if="isQuickAddModalOpen"
-      class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
-    >
-      <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-5">
-        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-          <div class="flex items-center gap-2">
-            <Plus class="w-5 h-5 text-emerald-400" />
-            <h3 class="font-bold text-base text-white">Add Service to Project</h3>
-          </div>
-          <button @click="isQuickAddModalOpen = false" class="text-slate-400 hover:text-white">
-            <X class="w-5 h-5" />
-          </button>
-        </div>
-
-        <div class="space-y-4 text-xs">
-          <div class="space-y-1.5">
-            <label class="font-semibold text-slate-300">Service / Repo Name *</label>
-            <input
-              v-model="quickAddName"
-              type="text"
-              placeholder="e.g. billing-service"
-              class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
-            />
-          </div>
-
-          <div class="space-y-1.5">
-            <label class="font-semibold text-slate-300">Role / Type *</label>
-            <select
-              v-model="quickAddRole"
-              class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
-            >
-              <option value="frontend">🎨 Frontend UI</option>
-              <option value="backend">⚙️ Backend Service</option>
-              <option value="automation-test">🧪 Automation Test</option>
-              <option value="contracts">📜 API Contracts</option>
-              <option value="artifact">📁 Artifacts & PRD</option>
-              <option value="other">🔌 Other Service</option>
-            </select>
-          </div>
-
-          <div class="space-y-1.5">
-            <label class="font-semibold text-slate-300">Host Source Directory *</label>
-            <div class="flex gap-2">
-              <input
-                v-model="quickAddPath"
-                type="text"
-                placeholder="/Users/name/Projects/service-name"
-                class="flex-1 px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 font-mono text-xs focus:outline-none focus:border-emerald-500"
-              />
-              <button
-                type="button"
-                @click="openDirectoryPicker('quick_add', null, quickAddPath, 'Select Service Source Directory', 'Choose the repository folder on your machine')"
-                class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0"
-              >
-                <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
-                Browse
-              </button>
-            </div>
-            <div v-if="quickAddName && activeProject" class="text-[11px] font-mono text-slate-400 pt-0.5">
-              Workspace Mount: <span class="text-emerald-400">{{ activeProject.root_dir }}/{{ quickAddName }}</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="flex items-center justify-between pt-4 border-t border-slate-800">
-          <button
-            @click="isQuickAddModalOpen = false"
-            class="px-4 py-2 rounded-lg bg-slate-800 text-slate-300 text-xs font-semibold hover:bg-slate-700 transition"
-          >
-            Cancel
-          </button>
-          <button
-            @click="handleQuickAddRepo"
-            class="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-2 shadow transition"
-          >
-            <Plus class="w-4 h-4" />
-            Add & Symlink
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Complete Project Edit Modal -->
-    <div
-      v-if="isEditModalOpen"
+      v-if="isCreateModalOpen"
       class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
     >
       <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden my-8">
@@ -1435,14 +1678,14 @@ function launchTaskForProject() {
         <div class="p-5 border-b border-slate-800 flex items-center justify-between bg-slate-900/90">
           <div class="flex items-center gap-2.5">
             <div class="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              <Edit3 class="w-5 h-5" />
+              <FolderPlus class="w-5 h-5" />
             </div>
             <div>
-              <h2 class="font-bold text-base text-white">Edit Project Configuration & Repositories</h2>
-              <p class="text-xs text-slate-400">Modify project topology, adjust service roles, and re-provision filesystem symlinks</p>
+              <h3 class="font-bold text-base text-white">Register Unified Multi-Repo Project</h3>
+              <p class="text-xs text-slate-400">Map multiple independent git repositories into a synchronized workspace.</p>
             </div>
           </div>
-          <button @click="isEditModalOpen = false" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition">
+          <button @click="isCreateModalOpen = false" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition">
             <X class="w-5 h-5" />
           </button>
         </div>
@@ -1454,288 +1697,6 @@ function launchTaskForProject() {
             <div class="space-y-1.5">
               <label class="font-semibold text-slate-200">Project Name *</label>
               <input
-                v-model="editFormName"
-                type="text"
-                class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 focus:outline-none focus:border-emerald-500 font-medium"
-              />
-            </div>
-
-            <div class="space-y-1.5">
-              <label class="font-semibold text-slate-200">Active SDLC Workflow</label>
-              <select
-                v-model="editFormActiveSDLC"
-                class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
-              >
-                <option value="general-ai-sdlc">General AI SDLC (9 Stages)</option>
-                <option value="microservice-api">Microservice API Contract Workflow (4 Stages)</option>
-                <option value="hotfix-fast-track">Hotfix Fast-Track (3 Stages)</option>
-              </select>
-            </div>
-
-            <div class="space-y-1.5 md:col-span-2">
-              <label class="font-semibold text-slate-200">Description</label>
-              <input
-                v-model="editFormDesc"
-                type="text"
-                class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 focus:outline-none focus:border-emerald-500"
-              />
-            </div>
-
-            <div class="space-y-1.5 md:col-span-2">
-              <div class="flex items-center justify-between">
-                <label class="font-semibold text-slate-200">Unified Workspace Directory (Root Target)</label>
-                <button
-                  type="button"
-                  @click="openDirectoryPicker('edit_root', null, editFormRootDir, 'Create & Select Root Directory', 'Create a new workspace folder or choose an existing root directory', true)"
-                  class="text-[11px] text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1 hover:underline"
-                >
-                  <FolderPlus class="w-3.5 h-3.5" />
-                  <span>+ Create New Folder</span>
-                </button>
-              </div>
-              <div class="flex gap-2">
-                <input
-                  v-model="editFormRootDir"
-                  type="text"
-                  placeholder="workspaces/project-id"
-                  class="flex-1 px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-emerald-400 font-mono text-xs focus:outline-none focus:border-emerald-500"
-                />
-                <button
-                  type="button"
-                  @click="openDirectoryPicker('edit_root', null, editFormRootDir, 'Select Workspace Directory', 'Choose where the unified project workspace and symlinks will reside')"
-                  class="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0"
-                >
-                  <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
-                  Browse
-                </button>
-              </div>
-              <p class="text-[11px] text-slate-400">The root orchestrator folder where tasks, tools, and symlink mounts reside.</p>
-            </div>
-          </div>
-
-          <!-- Directory Auto-Scanner inside Edit Modal -->
-          <div class="p-4 rounded-xl bg-slate-950 border border-slate-800/80 space-y-3">
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2">
-                <Search class="w-4 h-4 text-emerald-400" />
-                <h4 class="font-bold text-slate-200 uppercase tracking-wider text-[11px] font-mono">Scan Local Directory for Additional Services</h4>
-              </div>
-              <span class="text-[10px] text-slate-400">Detects manifests and auto-assigns roles</span>
-            </div>
-
-            <div class="flex gap-2">
-              <input
-                v-model="scanPath"
-                type="text"
-                placeholder="Parent folder path to discover repos..."
-                class="flex-1 px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 font-mono text-xs focus:outline-none focus:border-emerald-500"
-              />
-              <button
-                type="button"
-                @click="openDirectoryPicker('edit_scan', null, scanPath, 'Select Parent Folder to Scan', 'Select a directory to automatically detect child repositories and service manifests')"
-                class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0"
-              >
-                <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
-                Browse
-              </button>
-              <button
-                @click="handleScanDirectory"
-                :disabled="isScanning"
-                class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0"
-              >
-                <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isScanning }" />
-                Scan
-              </button>
-            </div>
-
-            <!-- Scanned candidates -->
-            <div v-if="scannedCandidates.length > 0" class="space-y-2 pt-2 border-t border-slate-800">
-              <div class="text-[11px] font-mono text-emerald-400 flex items-center justify-between">
-                <span>Discovered {{ scannedCandidates.length }} repositories:</span>
-                <button @click="addScannedToEditForm" class="text-xs underline text-emerald-400 hover:text-emerald-300 font-bold">
-                  + Add Selected Repositories to Project
-                </button>
-              </div>
-
-              <div class="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-                <div
-                  v-for="(cand, idx) in scannedCandidates"
-                  :key="idx"
-                  class="flex items-center justify-between p-2 rounded-lg bg-slate-900/80 border border-slate-800 text-xs"
-                >
-                  <div class="flex items-center gap-2">
-                    <input type="checkbox" v-model="cand.selected" class="rounded text-emerald-500 focus:ring-emerald-500" />
-                    <span class="font-mono font-bold text-slate-200">{{ cand.name }}</span>
-                    <span class="text-[10px] text-slate-400 font-mono">({{ cand.manifest }})</span>
-                  </div>
-
-                  <select
-                    v-model="cand.role"
-                    class="px-2 py-1 rounded bg-slate-950 border border-slate-700 text-slate-300 text-[11px] font-mono"
-                  >
-                    <option value="frontend">Frontend UI</option>
-                    <option value="backend">Backend Service</option>
-                    <option value="automation-test">Automation Test</option>
-                    <option value="contracts">API Contracts</option>
-                    <option value="artifact">Artifacts & PRD</option>
-                    <option value="other">Other Service</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Repositories List -->
-          <div class="space-y-3">
-            <div class="flex items-center justify-between">
-              <h4 class="font-bold text-slate-200 uppercase tracking-wider text-[11px] font-mono">
-                Project Repositories & Role Mappings ({{ editFormRepos.length }})
-              </h4>
-              <div class="flex items-center gap-2">
-                <button
-                  type="button"
-                  @click="openDirectoryPicker('edit_browse_add', null, '', 'Browse & Add Service Repository', 'Choose a service folder from host disk to add it directly')"
-                  class="px-2.5 py-1 rounded bg-emerald-600/90 hover:bg-emerald-600 text-white text-xs font-semibold flex items-center gap-1 transition shadow-sm"
-                >
-                  <FolderOpen class="w-3.5 h-3.5" />
-                  Browse & Add Repo
-                </button>
-                <button
-                  type="button"
-                  @click="addEditRepoRow"
-                  class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-emerald-400 text-xs font-semibold flex items-center gap-1 transition"
-                >
-                  <Plus class="w-3.5 h-3.5" />
-                  Add Row
-                </button>
-              </div>
-            </div>
-
-            <div class="space-y-2.5">
-              <div
-                v-for="(repo, idx) in editFormRepos"
-                :key="idx"
-                class="p-3.5 rounded-xl bg-slate-950 border border-slate-800/80 space-y-2.5"
-              >
-                <div class="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-center">
-                  <div class="md:col-span-3">
-                    <label class="text-[10px] text-slate-400 font-mono">Service Name</label>
-                    <input
-                      v-model="repo.name"
-                      type="text"
-                      class="w-full px-2.5 py-1.5 rounded bg-slate-900 border border-slate-800 text-slate-200 font-mono text-xs focus:outline-none focus:border-emerald-500"
-                    />
-                  </div>
-
-                  <div class="md:col-span-3">
-                    <label class="text-[10px] text-slate-400 font-mono">Role / Type</label>
-                    <select
-                      v-model="repo.role"
-                      class="w-full px-2.5 py-1.5 rounded bg-slate-900 border border-slate-800 text-slate-200 font-mono text-xs focus:outline-none focus:border-emerald-500"
-                    >
-                      <option value="frontend">🎨 Frontend UI</option>
-                      <option value="backend">⚙️ Backend Service</option>
-                      <option value="automation-test">🧪 Automation Test</option>
-                      <option value="contracts">📜 API Contracts</option>
-                      <option value="artifact">📁 Artifacts & PRD</option>
-                      <option value="other">🔌 Other Service</option>
-                    </select>
-                  </div>
-
-                  <div class="md:col-span-5">
-                    <label class="text-[10px] text-slate-400 font-mono">Host Source Path</label>
-                    <div class="flex gap-1.5 mt-0.5">
-                      <input
-                        v-model="repo.path"
-                        type="text"
-                        placeholder="/path/to/source"
-                        class="flex-1 px-2.5 py-1.5 rounded bg-slate-900 border border-slate-800 text-slate-200 font-mono text-xs focus:outline-none focus:border-emerald-500"
-                      />
-                      <button
-                        type="button"
-                        @click="openDirectoryPicker('edit_repo', idx, repo.path, `Select Source Folder for ${repo.name}`, 'Pick the source code repository folder on your machine')"
-                        class="px-2.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0"
-                        title="Browse filesystem for this repository"
-                      >
-                        <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
-                        Browse
-                      </button>
-                    </div>
-                  </div>
-
-                  <div class="md:col-span-1 flex justify-end pt-3">
-                    <button
-                      @click="removeEditRepoRow(idx)"
-                      class="p-1.5 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-900 transition"
-                      title="Remove repository"
-                    >
-                      <Trash2 class="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-
-                <div class="flex items-center justify-between text-[10px] font-mono text-slate-400 px-1 pt-1.5 border-t border-slate-800/40">
-                  <div class="truncate">
-                    <span>Workspace Mount: </span>
-                    <span class="text-emerald-400">{{ editFormRootDir }}/{{ repo.name || 'service' }}</span>
-                  </div>
-                  <div v-if="repo.manifest && repo.manifest !== 'auto'" class="flex-shrink-0">
-                    <span>Manifest: </span>
-                    <span class="text-slate-300">{{ repo.manifest }}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Modal Footer -->
-        <div class="p-4 border-t border-slate-800 bg-slate-900/90 flex items-center justify-between">
-          <button
-            @click="isEditModalOpen = false"
-            class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition"
-          >
-            Cancel
-          </button>
-
-          <button
-            @click="handleSaveProjectEdit"
-            :disabled="projectStore.isLoading"
-            class="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white flex items-center gap-2 shadow-lg shadow-emerald-950/50 transition"
-          >
-            <Check class="w-4 h-4" />
-            Save & Update Symlinks
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Register Project Modal (Original creation wizard) -->
-    <div
-      v-if="isCreateModalOpen"
-      class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
-    >
-      <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden my-8">
-        <div class="p-5 border-b border-slate-800 flex items-center justify-between bg-slate-900/90">
-          <div class="flex items-center gap-2.5">
-            <div class="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              <FolderPlus class="w-5 h-5" />
-            </div>
-            <div>
-              <h2 class="font-bold text-base text-white">Register New Multi-Repo Project</h2>
-              <p class="text-xs text-slate-400">Configure project topology, auto-scan repositories, and create atomic symlinks</p>
-            </div>
-          </div>
-          <button @click="isCreateModalOpen = false" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition">
-            <X class="w-5 h-5" />
-          </button>
-        </div>
-
-        <div class="p-6 space-y-6 overflow-y-auto flex-1 text-xs">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div class="space-y-1.5">
-              <label class="font-semibold text-slate-200">Project Name <span class="text-emerald-400">*</span></label>
-              <input
                 v-model="createFormName"
                 @input="onCreateNameInput"
                 type="text"
@@ -1745,16 +1706,28 @@ function launchTaskForProject() {
             </div>
 
             <div class="space-y-1.5">
-              <label class="font-semibold text-slate-200">Project ID (Slug)</label>
+              <label class="font-semibold text-slate-200">Project Identifier (Slug)</label>
               <input
                 v-model="createFormId"
                 type="text"
                 placeholder="fintech-payment-gateway"
-                class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-400 font-mono focus:outline-none"
+                class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-400 font-mono text-xs focus:outline-none focus:border-emerald-500"
               />
             </div>
 
-            <div class="space-y-1.5 md:col-span-2">
+            <div class="space-y-1.5">
+              <label class="font-semibold text-slate-200">Active SDLC Workflow</label>
+              <select
+                v-model="createFormActiveSDLC"
+                class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
+              >
+                <option value="general-ai-sdlc">General AI SDLC (9 Stages)</option>
+                <option value="microservice-api">Microservice API Contract Workflow (4 Stages)</option>
+                <option value="hotfix-fast-track">Hotfix Fast-Track (3 Stages)</option>
+              </select>
+            </div>
+
+            <div class="space-y-1.5">
               <label class="font-semibold text-slate-200">Description</label>
               <input
                 v-model="createFormDesc"
@@ -1764,18 +1737,9 @@ function launchTaskForProject() {
               />
             </div>
 
+            <!-- Unified Workspace Directory with single Browse button -->
             <div class="space-y-1.5 md:col-span-2">
-              <div class="flex items-center justify-between">
-                <label class="font-semibold text-slate-200">Unified Workspace Directory (Root Target)</label>
-                <button
-                  type="button"
-                  @click="openDirectoryPicker('create_root', null, createFormRootDir, 'Create & Select Root Directory', 'Create a new workspace folder or choose an existing root directory', true)"
-                  class="text-[11px] text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1 hover:underline"
-                >
-                  <FolderPlus class="w-3.5 h-3.5" />
-                  <span>+ Create New Folder</span>
-                </button>
-              </div>
+              <label class="font-semibold text-slate-200">Unified Workspace Directory (Root Target)</label>
               <div class="flex gap-2">
                 <input
                   v-model="createFormRootDir"
@@ -1810,12 +1774,12 @@ function launchTaskForProject() {
               <input
                 v-model="scanPath"
                 type="text"
-                placeholder="Parent folder path to discover repos..."
+                placeholder="Parent folder path (e.g. /Users/.../my-repos)"
                 class="flex-1 px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 font-mono text-xs focus:outline-none focus:border-emerald-500"
               />
               <button
                 type="button"
-                @click="openDirectoryPicker('create_scan', null, scanPath, 'Select Parent Folder to Scan', 'Select a directory to automatically detect child repositories and service manifests')"
+                @click="openDirectoryPicker('create_scan', null, scanPath, 'Select Parent Folder to Scan', 'Select a directory to automatically detect child repositories')"
                 class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0"
               >
                 <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
@@ -1827,65 +1791,61 @@ function launchTaskForProject() {
                 class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0"
               >
                 <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isScanning }" />
-                Scan Repos
+                Scan
               </button>
             </div>
 
-            <div v-if="scannedCandidates.length > 0" class="space-y-2 pt-2 border-t border-slate-800">
-              <div class="text-[11px] font-mono text-emerald-400 flex items-center justify-between">
-                <span>Discovered {{ scannedCandidates.length }} repositories:</span>
-                <button @click="addScannedToCreateForm" class="text-xs underline text-emerald-400 hover:text-emerald-300 font-bold">
-                  + Add Selected Repositories
+            <div v-if="scannedCandidates.length > 0" class="pt-2 border-t border-slate-800/80 space-y-2">
+              <div class="flex items-center justify-between text-xs">
+                <span class="font-semibold text-emerald-400">Discovered Services ({{ scannedCandidates.length }}):</span>
+                <button
+                  type="button"
+                  @click="addScannedToCreateForm"
+                  class="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-1"
+                >
+                  <Plus class="w-3.5 h-3.5" />
+                  Add Selected
                 </button>
               </div>
 
-              <div class="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                <div
-                  v-for="(cand, idx) in scannedCandidates"
-                  :key="idx"
-                  class="flex items-center justify-between p-2 rounded-lg bg-slate-900/80 border border-slate-800 text-xs"
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto">
+                <label
+                  v-for="c in scannedCandidates"
+                  :key="c.path"
+                  class="flex items-center gap-2 p-2 rounded-lg bg-slate-900 border border-slate-800 cursor-pointer hover:border-slate-700 text-xs"
                 >
-                  <div class="flex items-center gap-2">
-                    <input type="checkbox" v-model="cand.selected" class="rounded text-emerald-500 focus:ring-emerald-500" />
-                    <span class="font-mono font-bold text-slate-200">{{ cand.name }}</span>
-                    <span class="text-[10px] text-slate-400 font-mono">({{ cand.manifest }})</span>
+                  <input type="checkbox" v-model="c.selected" class="rounded border-slate-700 text-emerald-500 focus:ring-0" />
+                  <div class="truncate flex-1 font-mono">
+                    <span class="font-bold text-white">{{ c.name }}</span>
+                    <span class="text-[10px] text-slate-400 block truncate">{{ c.path }}</span>
                   </div>
-
-                  <select
-                    v-model="cand.role"
-                    class="px-2 py-1 rounded bg-slate-950 border border-slate-700 text-slate-300 text-[11px] font-mono"
-                  >
-                    <option value="frontend">Frontend UI</option>
-                    <option value="backend">Backend Service</option>
-                    <option value="automation-test">Automation Test</option>
-                    <option value="contracts">API Contracts</option>
-                    <option value="artifact">Artifacts & PRD</option>
-                    <option value="other">Other Service</option>
-                  </select>
-                </div>
+                  <span class="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono flex-shrink-0">
+                    {{ c.role }}
+                  </span>
+                </label>
               </div>
             </div>
           </div>
 
-          <!-- Repositories List -->
+          <!-- Repos Table in Create Modal -->
           <div class="space-y-3">
             <div class="flex items-center justify-between">
-              <h4 class="font-bold text-slate-200 uppercase tracking-wider text-[11px] font-mono">
-                Repositories to Mount in Workspace ({{ createFormRepos.length }})
-              </h4>
+              <label class="font-bold uppercase tracking-wider text-slate-300 text-xs font-mono">
+                Component Repositories ({{ createFormRepos.length }})
+              </label>
               <div class="flex items-center gap-2">
                 <button
                   type="button"
-                  @click="openDirectoryPicker('create_browse_add', null, '', 'Browse & Add Service Repository', 'Choose a service folder from host disk to add it directly')"
-                  class="px-2.5 py-1 rounded bg-emerald-600/90 hover:bg-emerald-600 text-white text-xs font-semibold flex items-center gap-1 transition shadow-sm"
+                  @click="openDirectoryPicker('create_browse_add', null, '', 'Select Repository to Add', 'Pick a repository codebase from your disk to add to this project')"
+                  class="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-1.5 transition"
                 >
-                  <FolderOpen class="w-3.5 h-3.5" />
-                  Browse & Add Repo
+                  <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
+                  Browse & Add
                 </button>
                 <button
                   type="button"
                   @click="createFormRepos.push({ name: `service-${createFormRepos.length + 1}`, path: '', role: 'backend', manifest: 'auto' })"
-                  class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-emerald-400 text-xs font-semibold flex items-center gap-1 transition"
+                  class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-emerald-400 flex items-center gap-1.5 transition"
                 >
                   <Plus class="w-3.5 h-3.5" />
                   Add Row
@@ -1893,91 +1853,68 @@ function launchTaskForProject() {
               </div>
             </div>
 
-            <div class="space-y-2.5">
+            <div class="space-y-2">
               <div
                 v-for="(repo, idx) in createFormRepos"
                 :key="idx"
-                class="p-3.5 rounded-xl bg-slate-950 border border-slate-800/80 space-y-2.5"
+                class="p-3 rounded-xl bg-slate-950 border border-slate-800/80 space-y-2"
               >
-                <div class="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-center">
-                  <div class="md:col-span-3">
-                    <label class="text-[10px] text-slate-400 font-mono">Service Name</label>
-                    <input
-                      v-model="repo.name"
-                      type="text"
-                      class="w-full px-2.5 py-1.5 rounded bg-slate-900 border border-slate-800 text-slate-200 font-mono text-xs focus:outline-none focus:border-emerald-500"
-                    />
-                  </div>
-
-                  <div class="md:col-span-3">
-                    <label class="text-[10px] text-slate-400 font-mono">Role / Type</label>
-                    <select
-                      v-model="repo.role"
-                      class="w-full px-2.5 py-1.5 rounded bg-slate-900 border border-slate-800 text-slate-200 font-mono text-xs focus:outline-none focus:border-emerald-500"
-                    >
-                      <option value="frontend">🎨 Frontend UI</option>
-                      <option value="backend">⚙️ Backend Service</option>
-                      <option value="automation-test">🧪 Automation Test</option>
-                      <option value="contracts">📜 API Contracts</option>
-                      <option value="artifact">📁 Artifacts & PRD</option>
-                      <option value="other">🔌 Other Service</option>
-                    </select>
-                  </div>
-
-                  <div class="md:col-span-5">
-                    <label class="text-[10px] text-slate-400 font-mono">Host Source Path</label>
-                    <div class="flex gap-1.5 mt-0.5">
-                      <input
-                        v-model="repo.path"
-                        type="text"
-                        placeholder="/path/to/source"
-                        class="flex-1 px-2.5 py-1.5 rounded bg-slate-900 border border-slate-800 text-slate-200 font-mono text-xs focus:outline-none focus:border-emerald-500"
-                      />
-                      <button
-                        type="button"
-                        @click="openDirectoryPicker('create_repo', idx, repo.path, `Select Source Folder for ${repo.name}`, 'Pick the source code repository folder on your machine')"
-                        class="px-2.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0"
-                        title="Browse filesystem for this repository"
-                      >
-                        <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
-                        Browse
-                      </button>
-                    </div>
-                  </div>
-
-                  <div class="md:col-span-1 flex justify-end pt-3">
-                    <button
-                      @click="createFormRepos.splice(idx, 1)"
-                      class="p-1.5 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-900 transition"
-                    >
-                      <Trash2 class="w-4 h-4" />
-                    </button>
-                  </div>
+                <div class="flex items-center gap-2">
+                  <input
+                    v-model="repo.name"
+                    type="text"
+                    placeholder="Repo name (e.g. frontend-portal)"
+                    class="flex-1 px-2.5 py-1 rounded bg-slate-900 border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-emerald-500 font-medium"
+                  />
+                  <select
+                    v-model="repo.role"
+                    class="px-2.5 py-1 rounded bg-slate-900 border border-slate-800 text-slate-200 text-xs font-mono focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="frontend">🎨 Frontend</option>
+                    <option value="backend">⚙️ Backend</option>
+                    <option value="automation-test">🧪 Test</option>
+                    <option value="contracts">📜 Contracts</option>
+                    <option value="artifact">📁 Artifacts</option>
+                    <option value="other">🔌 Other</option>
+                  </select>
+                  <button
+                    type="button"
+                    @click="createFormRepos.splice(idx, 1)"
+                    class="p-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 transition"
+                  >
+                    <Trash2 class="w-3.5 h-3.5" />
+                  </button>
                 </div>
 
-                <div class="flex items-center justify-between text-[10px] font-mono text-slate-400 px-1 pt-1.5 border-t border-slate-800/40">
-                  <div class="truncate">
-                    <span>Workspace Mount: </span>
-                    <span class="text-emerald-400">{{ createFormRootDir || 'workspaces/<project-id>' }}/{{ repo.name || 'service' }}</span>
-                  </div>
-                  <div v-if="repo.manifest && repo.manifest !== 'auto'" class="flex-shrink-0">
-                    <span>Manifest: </span>
-                    <span class="text-slate-300">{{ repo.manifest }}</span>
-                  </div>
+                <div class="flex items-center gap-2">
+                  <input
+                    v-model="repo.path"
+                    type="text"
+                    placeholder="/Users/.../absolute/path/to/repo"
+                    class="flex-1 px-2.5 py-1 rounded bg-slate-900 border border-slate-800 text-slate-300 font-mono text-xs focus:outline-none focus:border-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    @click="openDirectoryPicker('create_repo', idx, repo.path, 'Select Repository Directory', 'Choose the repository folder on your machine')"
+                    class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1 transition flex-shrink-0"
+                  >
+                    <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
+                    Browse
+                  </button>
                 </div>
               </div>
             </div>
           </div>
         </div>
 
-        <div class="p-4 border-t border-slate-800 bg-slate-900/90 flex items-center justify-between">
+        <!-- Modal Footer -->
+        <div class="p-5 border-t border-slate-800 flex items-center justify-between bg-slate-900/90">
           <button
             @click="isCreateModalOpen = false"
             class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition"
           >
             Cancel
           </button>
-
           <button
             @click="handleCreateProject"
             :disabled="projectStore.isLoading"
@@ -1990,18 +1927,21 @@ function launchTaskForProject() {
       </div>
     </div>
 
-    <!-- Interactive Directory Picker Modal -->
+    <!-- ========================================== -->
+    <!-- INTERACTIVE DIRECTORY PICKER MODAL         -->
+    <!-- (Folder creation lives inside here)        -->
+    <!-- ========================================== -->
     <DirectoryPickerModal
       :is-open="isDirectoryPickerOpen"
       :initial-path="pickerInitialPath"
       :title="pickerTitle"
       :helper-text="pickerHelperText"
-      :initial-create-folder="pickerInitialCreateFolder"
+      :can-create-folder="true"
       @select="handleDirectorySelected"
       @close="isDirectoryPickerOpen = false"
     />
 
-    <!-- Confirmation Dialog Modal for Project and Service Deletions -->
+    <!-- Confirmation Dialog Modal -->
     <ConfirmDeleteModal
       :is-open="isConfirmDeleteOpen"
       :title="confirmDeleteTitle"
