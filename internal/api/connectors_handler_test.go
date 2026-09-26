@@ -171,3 +171,87 @@ func TestConnectorsEndpoints(t *testing.T) {
 		t.Errorf("expected task confluence_page_url %s, got %s", pubResp.PageURL, taskInStore.Metadata["confluence_page_url"])
 	}
 }
+
+func TestConnectorsCatalogEndpoints(t *testing.T) {
+	router, tempDir := setupTestRouterWithConnectors(t)
+	defer os.RemoveAll(tempDir)
+
+	// 1. GET /api/v1/connectors/catalog
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/connectors/catalog", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/connectors/catalog returned %d", rec.Code)
+	}
+	var catalog []*types.ConnectorItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &catalog); err != nil {
+		t.Fatalf("failed to decode catalog: %v", err)
+	}
+	if len(catalog) < 8 {
+		t.Fatalf("expected at least 8 catalog items, got %d", len(catalog))
+	}
+
+	// 2. GET /api/v1/connectors/items/slack
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/connectors/items/slack", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/connectors/items/slack returned %d", rec.Code)
+	}
+	var slackItem types.ConnectorItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &slackItem); err != nil {
+		t.Fatalf("failed to decode slack item: %v", err)
+	}
+	if slackItem.ID != "slack" || slackItem.Category != types.ConnectorCategoryChatOps {
+		t.Errorf("unexpected slack item: %+v", slackItem)
+	}
+
+	// 3. POST /api/v1/connectors/items/slack/toggle
+	toggleReq := types.ToggleConnectorRequest{Enabled: true}
+	b, _ := json.Marshal(toggleReq)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/connectors/items/slack/toggle", bytes.NewReader(b))
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v1/connectors/items/slack/toggle returned %d: %s", rec.Code, rec.Body.String())
+	}
+	var toggledItem types.ConnectorItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &toggledItem); err != nil {
+		t.Fatalf("failed to decode toggled item: %v", err)
+	}
+	if !toggledItem.Enabled {
+		t.Errorf("expected slack to be enabled after toggle")
+	}
+
+	// 4. PUT /api/v1/connectors/items/slack
+	slackItem.TargetEntity = "#engineering-alerts"
+	slackItem.BaseURL = "https://hooks.slack.com/services/T00/B00/X00"
+	b, _ = json.Marshal(slackItem)
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/connectors/items/slack", bytes.NewReader(b))
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT /api/v1/connectors/items/slack returned %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 5. POST /api/v1/connectors/items/slack/test
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/connectors/items/slack/test", bytes.NewReader(b))
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v1/connectors/items/slack/test returned %d", rec.Code)
+	}
+	var testResp types.TestConnectorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &testResp); err != nil {
+		t.Fatalf("failed to decode test response: %v", err)
+	}
+	if !testResp.Success {
+		t.Errorf("expected test success, got false. Message: %s", testResp.Message)
+	}
+}
+

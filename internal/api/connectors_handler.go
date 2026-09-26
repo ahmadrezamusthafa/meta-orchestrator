@@ -12,7 +12,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
-// handleConnectors returns the full connectors configuration.
+// handleConnectors returns the full connectors configuration including the extensible catalog.
 func (r *Router) handleConnectors(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -20,7 +20,97 @@ func (r *Router) handleConnectors(w http.ResponseWriter, req *http.Request) {
 	}
 
 	cfg := r.cfg.ConnectorsManager.GetConfig()
-	r.writeJSON(w, http.StatusOK, cfg)
+	items := r.cfg.ConnectorsManager.ListConnectors()
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"jira":       cfg.Jira,
+		"confluence": cfg.Confluence,
+		"items":      items,
+	})
+}
+
+// handleConnectorCatalog returns all connectors in the catalog.
+func (r *Router) handleConnectorCatalog(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	items := r.cfg.ConnectorsManager.ListConnectors()
+	r.writeJSON(w, http.StatusOK, items)
+}
+
+// handleConnectorItemAction routes actions for a specific connector item (/api/v1/connectors/items/{id}...).
+func (r *Router) handleConnectorItemAction(w http.ResponseWriter, req *http.Request) {
+	subPath := strings.TrimPrefix(req.URL.Path, "/api/v1/connectors/items/")
+	parts := strings.Split(strings.Trim(subPath, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		r.writeError(w, http.StatusBadRequest, "Connector ID is required")
+		return
+	}
+
+	id := parts[0]
+
+	// 1. POST /api/v1/connectors/items/{id}/toggle
+	if len(parts) == 2 && parts[1] == "toggle" {
+		if req.Method != http.MethodPost && req.Method != http.MethodPatch {
+			r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		var toggleReq types.ToggleConnectorRequest
+		if err := json.NewDecoder(req.Body).Decode(&toggleReq); err != nil {
+			r.writeError(w, http.StatusBadRequest, "Invalid JSON payload: "+err.Error())
+			return
+		}
+		updated, err := r.cfg.ConnectorsManager.ToggleConnector(id, toggleReq.Enabled)
+		if err != nil {
+			r.writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		r.writeJSON(w, http.StatusOK, updated)
+		return
+	}
+
+	// 2. POST /api/v1/connectors/items/{id}/test
+	if len(parts) == 2 && parts[1] == "test" {
+		if req.Method != http.MethodPost {
+			r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		var item types.ConnectorItem
+		_ = json.NewDecoder(req.Body).Decode(&item) // Optional override body
+		res := r.cfg.ConnectorsManager.TestGenericConnector(req.Context(), id, &item)
+		r.writeJSON(w, http.StatusOK, res)
+		return
+	}
+
+	// 3. /api/v1/connectors/items/{id}
+	switch req.Method {
+	case http.MethodGet:
+		item, err := r.cfg.ConnectorsManager.GetConnector(id)
+		if err != nil {
+			r.writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		r.writeJSON(w, http.StatusOK, item)
+
+	case http.MethodPut, http.MethodPost:
+		var item types.ConnectorItem
+		if err := json.NewDecoder(req.Body).Decode(&item); err != nil {
+			r.writeError(w, http.StatusBadRequest, "Invalid JSON payload: "+err.Error())
+			return
+		}
+		item.ID = id
+		updated, err := r.cfg.ConnectorsManager.UpdateConnector(item)
+		if err != nil {
+			r.writeError(w, http.StatusInternalServerError, "Failed to update connector: "+err.Error())
+			return
+		}
+		r.writeJSON(w, http.StatusOK, updated)
+
+	default:
+		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
 }
 
 // handleConnectorJira updates JIRA configuration.

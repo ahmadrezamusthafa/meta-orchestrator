@@ -1,122 +1,246 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { api } from '../services/api'
 import { useToastStore } from '../stores/toast'
-import type { ConnectorsConfig, JiraConfig, ConfluenceConfig, TestConnectorResponse, JiraIssueDTO } from '../types'
+import type { 
+  ConnectorItem, ConnectorCategory, TestConnectorResponse, 
+  JiraIssueDTO 
+} from '../types'
 import JiraImportModal from '../components/kanban/JiraImportModal.vue'
 import { 
   Plug, CheckCircle2, AlertCircle, RefreshCw, Wifi, Save, ExternalLink, 
-  Eye, EyeOff, Search, Download, FileText, Check, ShieldCheck, ArrowRight, Layers
+  Eye, EyeOff, Search, Download, FileText, Check, ShieldCheck, ArrowRight, 
+  ArrowLeft, Layers, GitBranch, MessageSquare, BookOpen, Globe, Sliders, 
+  CheckSquare, Sparkles, Zap, Activity, Settings
 } from 'lucide-vue-next'
 
 const toastStore = useToastStore()
 
-const activeTab = ref<'jira' | 'confluence' | 'explorer'>('jira')
+// View Modes: 'list' (catalog gallery) vs 'edit' (setup/edit connector)
+const currentView = ref<'list' | 'edit'>('list')
+const selectedConnector = ref<ConnectorItem | null>(null)
+const activeEditTab = ref<'settings' | 'explorer'>('settings')
+
+// Catalog state
+const catalog = ref<ConnectorItem[]>([])
 const isLoading = ref(true)
+const searchQuery = ref('')
+const activeCategory = ref<'all' | ConnectorCategory>('all')
+const togglingIds = ref<Set<string>>(new Set())
+
+// Edit & Diagnostics state
 const isSaving = ref(false)
-const isTestingJira = ref(false)
-const isTestingConf = ref(false)
+const isTesting = ref(false)
+const testResult = ref<TestConnectorResponse | null>(null)
+const showToken = ref(false)
 
-const showJiraToken = ref(false)
-const showConfToken = ref(false)
-const showImportModal = ref(false)
-
-const jiraTestResult = ref<TestConnectorResponse | null>(null)
-const confTestResult = ref<TestConnectorResponse | null>(null)
-
-const jiraForm = ref<JiraConfig>({
-  enabled: true,
-  base_url: 'https://jira.atlassian.net',
-  username: 'devops@meta-orchestrator.io',
-  api_token: '••••••••••••••••••••••••',
-  project_key: 'PAY',
-  jql_filter: 'project = PAY AND status != Done ORDER BY created DESC',
-  auto_detect_keys: true,
-  auto_sync_status: true,
-  status: 'connected',
-})
-
-const confForm = ref<ConfluenceConfig>({
-  enabled: true,
-  base_url: 'https://wiki.atlassian.net',
-  username: 'devops@meta-orchestrator.io',
-  api_token: '••••••••••••••••••••••••',
-  space_key: 'ARCH',
-  parent_page_id: '',
-  auto_publish_tech_docs: true,
-  auto_publish_prd: true,
-  status: 'connected',
-})
-
-// Explorer Tab State
+// Explorer Tab State (for JIRA)
 const explorerQuery = ref('')
 const explorerIssues = ref<JiraIssueDTO[]>([])
 const isSearchingExplorer = ref(false)
+const showImportModal = ref(false)
 
-async function loadConfig() {
+// Categories metadata
+const categoryTabs = [
+  { key: 'all', label: 'All Connectors' },
+  { key: 'issue_tracker', label: 'Issue Trackers' },
+  { key: 'documentation', label: 'Documentation' },
+  { key: 'chatops', label: 'ChatOps & Alerts' },
+  { key: 'vcs', label: 'Source Control (VCS)' },
+  { key: 'custom', label: 'Custom Webhooks' },
+]
+
+// Computed Stats
+const stats = computed(() => {
+  const total = catalog.value.length
+  const enabledCount = catalog.value.filter(c => c.enabled).length
+  const connectedCount = catalog.value.filter(c => c.status === 'connected' && c.enabled).length
+  return { total, enabledCount, connectedCount }
+})
+
+// Filtered Catalog
+const filteredCatalog = computed(() => {
+  return catalog.value.filter(c => {
+    // Category filter
+    if (activeCategory.value !== 'all' && c.category !== activeCategory.value) {
+      return false
+    }
+    // Search query filter
+    if (searchQuery.value.trim()) {
+      const q = searchQuery.value.toLowerCase().trim()
+      const matchName = c.name.toLowerCase().includes(q)
+      const matchId = c.id.toLowerCase().includes(q)
+      const matchDesc = c.description.toLowerCase().includes(q)
+      const matchCategory = c.category_label?.toLowerCase().includes(q)
+      const matchCaps = c.capabilities?.some(cap => cap.toLowerCase().includes(q))
+      return matchName || matchId || matchDesc || matchCategory || matchCaps
+    }
+    return true
+  })
+})
+
+function getCategoryCount(catKey: string): number {
+  if (catKey === 'all') return catalog.value.length
+  return catalog.value.filter(c => c.category === catKey).length
+}
+
+// Brand Visual Helpers
+function getBrandColor(c: ConnectorItem) {
+  switch (c.id) {
+    case 'jira':
+      return {
+        bg: 'bg-blue-500/10',
+        border: 'border-blue-500/30',
+        text: 'text-blue-400',
+        badgeBg: 'bg-blue-950 text-blue-300 border-blue-800/60',
+        accentBorder: 'group-hover:border-blue-500/50',
+        gradient: 'from-blue-600/10 via-transparent to-transparent'
+      }
+    case 'confluence':
+      return {
+        bg: 'bg-indigo-500/10',
+        border: 'border-indigo-500/30',
+        text: 'text-indigo-400',
+        badgeBg: 'bg-indigo-950 text-indigo-300 border-indigo-800/60',
+        accentBorder: 'group-hover:border-indigo-500/50',
+        gradient: 'from-indigo-600/10 via-transparent to-transparent'
+      }
+    case 'github':
+      return {
+        bg: 'bg-slate-700/30',
+        border: 'border-slate-600/40',
+        text: 'text-slate-200',
+        badgeBg: 'bg-slate-800 text-slate-300 border-slate-700',
+        accentBorder: 'group-hover:border-slate-500/60',
+        gradient: 'from-slate-700/20 via-transparent to-transparent'
+      }
+    case 'gitlab':
+      return {
+        bg: 'bg-amber-500/10',
+        border: 'border-amber-500/30',
+        text: 'text-amber-400',
+        badgeBg: 'bg-amber-950 text-amber-300 border-amber-800/60',
+        accentBorder: 'group-hover:border-amber-500/50',
+        gradient: 'from-amber-600/10 via-transparent to-transparent'
+      }
+    case 'slack':
+      return {
+        bg: 'bg-purple-500/10',
+        border: 'border-purple-500/30',
+        text: 'text-purple-400',
+        badgeBg: 'bg-purple-950 text-purple-300 border-purple-800/60',
+        accentBorder: 'group-hover:border-purple-500/50',
+        gradient: 'from-purple-600/10 via-transparent to-transparent'
+      }
+    case 'linear':
+      return {
+        bg: 'bg-violet-500/10',
+        border: 'border-violet-500/30',
+        text: 'text-violet-400',
+        badgeBg: 'bg-violet-950 text-violet-300 border-violet-800/60',
+        accentBorder: 'group-hover:border-violet-500/50',
+        gradient: 'from-violet-600/10 via-transparent to-transparent'
+      }
+    case 'notion':
+      return {
+        bg: 'bg-stone-700/30',
+        border: 'border-stone-600/40',
+        text: 'text-stone-300',
+        badgeBg: 'bg-stone-800 text-stone-300 border-stone-700',
+        accentBorder: 'group-hover:border-stone-500/60',
+        gradient: 'from-stone-700/20 via-transparent to-transparent'
+      }
+    default:
+      return {
+        bg: 'bg-emerald-500/10',
+        border: 'border-emerald-500/30',
+        text: 'text-emerald-400',
+        badgeBg: 'bg-emerald-950 text-emerald-300 border-emerald-800/60',
+        accentBorder: 'group-hover:border-emerald-500/50',
+        gradient: 'from-emerald-600/10 via-transparent to-transparent'
+      }
+  }
+}
+
+// Load Catalog
+async function loadCatalog() {
   isLoading.value = true
   try {
-    const cfg = await api.getConnectors()
-    if (cfg.jira) jiraForm.value = { ...cfg.jira }
-    if (cfg.confluence) confForm.value = { ...cfg.confluence }
+    const items = await api.getConnectorCatalog()
+    catalog.value = items
   } catch (err: any) {
-    toastStore.error('Connectors', 'Failed to load configuration')
+    toastStore.error('Connectors', 'Failed to load connector catalog')
   } finally {
     isLoading.value = false
   }
 }
 
-async function testJira() {
-  isTestingJira.value = true
-  jiraTestResult.value = null
+// Quick Card-Level Enable / Disable Toggle
+async function handleToggle(c: ConnectorItem, event?: Event) {
+  if (event) {
+    event.stopPropagation()
+  }
+  const nextState = !c.enabled
+  togglingIds.value.add(c.id)
   try {
-    const res = await api.testConnector({
-      type: 'jira',
-      jira: jiraForm.value
-    })
-    jiraTestResult.value = res
-    if (res.success) {
-      jiraForm.value.status = 'connected'
-      toastStore.success('JIRA Connected', `${res.message} (${res.latency_ms}ms)`)
-    } else {
-      jiraForm.value.status = 'error'
-      toastStore.error('JIRA Test Failed', res.message)
+    const updated = await api.toggleConnector(c.id, nextState)
+    c.enabled = updated.enabled
+    c.status = updated.status
+    if (selectedConnector.value && selectedConnector.value.id === c.id) {
+      selectedConnector.value.enabled = updated.enabled
+      selectedConnector.value.status = updated.status
     }
+    toastStore.success(
+      c.name,
+      nextState ? 'Connector enabled successfully' : 'Connector disabled'
+    )
   } catch (err: any) {
-    toastStore.error('Test Failed', err.message)
+    toastStore.error('Toggle Failed', err.message)
   } finally {
-    isTestingJira.value = false
+    togglingIds.value.delete(c.id)
   }
 }
 
-async function testConfluence() {
-  isTestingConf.value = true
-  confTestResult.value = null
-  try {
-    const res = await api.testConnector({
-      type: 'confluence',
-      confluence: confForm.value
-    })
-    confTestResult.value = res
-    if (res.success) {
-      confForm.value.status = 'connected'
-      toastStore.success('Confluence Connected', `${res.message} (${res.latency_ms}ms)`)
-    } else {
-      confForm.value.status = 'error'
-      toastStore.error('Confluence Test Failed', res.message)
-    }
-  } catch (err: any) {
-    toastStore.error('Test Failed', err.message)
-  } finally {
-    isTestingConf.value = false
+// Enter Setup / Edit Mode
+function openConnectorSetup(c: ConnectorItem) {
+  selectedConnector.value = JSON.parse(JSON.stringify(c))
+  if (!selectedConnector.value?.extra_settings) {
+    selectedConnector.value!.extra_settings = {}
+  }
+  testResult.value = null
+  showToken.value = false
+  activeEditTab.value = 'settings'
+  currentView.value = 'edit'
+
+  // If JIRA, trigger explorer search in background
+  if (c.id === 'jira') {
+    searchExplorer()
   }
 }
 
-async function saveJira() {
+// Back to Cards Catalog
+async function returnToCatalog() {
+  currentView.value = 'list'
+  selectedConnector.value = null
+  testResult.value = null
+  await loadCatalog()
+}
+
+// Save Changes
+async function saveConnector() {
+  if (!selectedConnector.value) return
   isSaving.value = true
   try {
-    await api.updateJira(jiraForm.value)
-    toastStore.success('Saved', 'JIRA configuration updated successfully')
+    const updated = await api.updateConnector(selectedConnector.value.id, selectedConnector.value)
+    selectedConnector.value = { ...updated }
+    
+    // In-place catalog update
+    const idx = catalog.value.findIndex(item => item.id === updated.id)
+    if (idx !== -1) {
+      catalog.value[idx] = { ...updated }
+    }
+    
+    toastStore.success('Settings Saved', `${updated.name} configuration updated successfully`)
   } catch (err: any) {
     toastStore.error('Save Failed', err.message)
   } finally {
@@ -124,18 +248,30 @@ async function saveJira() {
   }
 }
 
-async function saveConfluence() {
-  isSaving.value = true
+// Test Connection
+async function testConnection() {
+  if (!selectedConnector.value) return
+  isTesting.value = true
+  testResult.value = null
   try {
-    await api.updateConfluence(confForm.value)
-    toastStore.success('Saved', 'Confluence configuration updated successfully')
+    const res = await api.testGenericConnector(selectedConnector.value.id, selectedConnector.value)
+    testResult.value = res
+    if (res.success) {
+      selectedConnector.value.status = 'connected'
+      selectedConnector.value.latency_ms = res.latency_ms
+      toastStore.success('Connection Successful', `${res.message} (${res.latency_ms}ms)`)
+    } else {
+      selectedConnector.value.status = 'error'
+      toastStore.error('Connection Test Failed', res.message)
+    }
   } catch (err: any) {
-    toastStore.error('Save Failed', err.message)
+    toastStore.error('Test Failed', err.message)
   } finally {
-    isSaving.value = false
+    isTesting.value = false
   }
 }
 
+// Explorer Tab (JIRA)
 async function searchExplorer() {
   isSearchingExplorer.value = true
   try {
@@ -148,505 +284,790 @@ async function searchExplorer() {
 }
 
 onMounted(async () => {
-  await loadConfig()
-  searchExplorer()
+  await loadCatalog()
 })
 </script>
 
 <template>
-  <div class="h-full flex flex-col bg-slate-950 overflow-hidden">
-    <!-- View Header -->
-    <div class="px-8 py-5 border-b border-slate-800 bg-slate-900/60 flex items-center justify-between">
-      <div class="flex items-center gap-3">
-        <div class="w-10 h-10 rounded-xl bg-blue-950/80 border border-blue-800/80 flex items-center justify-center text-blue-400 shadow-md">
-          <Plug class="w-5 h-5" />
-        </div>
-        <div>
-          <div class="flex items-center gap-2.5">
-            <h1 class="text-base font-semibold text-slate-100">Third-Party Connectors</h1>
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-blue-950 text-blue-400 border border-blue-800/50">
-              Ecosystem Hub
-            </span>
+  <div class="h-full flex flex-col bg-slate-950 overflow-hidden text-slate-100">
+
+    <!-- ==================== VIEW 1: CATALOG OF CARDS (DEFAULT) ==================== -->
+    <template v-if="currentView === 'list'">
+      <!-- Catalog Header -->
+      <div class="px-8 py-5 border-b border-slate-800 bg-slate-900/60 flex flex-wrap items-center justify-between gap-4">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-blue-950/80 border border-blue-800/80 flex items-center justify-center text-blue-400 shadow-md">
+            <Plug class="w-5 h-5" />
           </div>
-          <p class="text-xs text-slate-400 mt-0.5">
-            Connect JIRA for automatic ticket detection & two-way sync, and Confluence for zero-touch RFC tech doc publishing.
-          </p>
+          <div>
+            <div class="flex items-center gap-2.5">
+              <h1 class="text-base font-semibold text-slate-100">Third-Party Connectors</h1>
+              <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-blue-950 text-blue-400 border border-blue-800/50">
+                Modular Integration Hub
+              </span>
+            </div>
+            <p class="text-xs text-slate-400 mt-0.5">
+              Connect external issue trackers, documentation wikis, source control repos, and ChatOps alerts.
+            </p>
+          </div>
+        </div>
+
+        <!-- Ecosystem Status Badges -->
+        <div class="flex items-center gap-2.5">
+          <div class="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center gap-2 text-xs font-mono">
+            <span class="text-slate-400">Catalog:</span>
+            <span class="text-slate-200 font-semibold">{{ stats.total }} Connectors</span>
+          </div>
+
+          <div class="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center gap-2 text-xs font-mono">
+            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span class="text-slate-400">Active:</span>
+            <span class="text-emerald-400 font-semibold">{{ stats.enabledCount }} Enabled</span>
+          </div>
+
+          <button
+            @click="loadCatalog"
+            :disabled="isLoading"
+            class="p-2 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-850 text-slate-400 hover:text-white transition"
+            title="Refresh Catalog"
+          >
+            <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': isLoading }" />
+          </button>
         </div>
       </div>
 
-      <!-- Quick Status Badges -->
-      <div class="flex items-center gap-2">
-        <div class="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center gap-2 text-xs font-mono">
-          <span class="w-2 h-2 rounded-full" :class="jiraForm.status === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'"></span>
-          <span class="text-slate-300">JIRA:</span>
-          <span class="text-emerald-400 font-semibold uppercase">{{ jiraForm.status }}</span>
+      <!-- Filters & Category Tabs -->
+      <div class="px-8 border-b border-slate-800 bg-slate-900/30 flex flex-wrap items-center justify-between gap-4 py-2.5">
+        <!-- Category Filter Pills -->
+        <div class="flex items-center gap-2 overflow-x-auto py-1 scrollbar-none">
+          <button
+            v-for="cat in categoryTabs"
+            :key="cat.key"
+            @click="activeCategory = (cat.key as any)"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 whitespace-nowrap"
+            :class="activeCategory === cat.key
+              ? 'bg-blue-600 text-white shadow-md shadow-blue-950 font-semibold'
+              : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'"
+          >
+            <span>{{ cat.label }}</span>
+            <span 
+              class="px-1.5 py-0.2 rounded-full text-[10px] font-mono"
+              :class="activeCategory === cat.key ? 'bg-blue-700 text-white' : 'bg-slate-800 text-slate-400'"
+            >
+              {{ getCategoryCount(cat.key) }}
+            </span>
+          </button>
         </div>
 
-        <div class="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center gap-2 text-xs font-mono">
-          <span class="w-2 h-2 rounded-full" :class="confForm.status === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'"></span>
-          <span class="text-slate-300">Confluence:</span>
-          <span class="text-emerald-400 font-semibold uppercase">{{ confForm.status }}</span>
+        <!-- Search Bar -->
+        <div class="relative w-full sm:w-72">
+          <Search class="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="Filter connectors..."
+            class="w-full pl-9 pr-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-200 text-xs font-mono placeholder-slate-500 focus:outline-none focus:border-blue-500 transition"
+          />
         </div>
       </div>
-    </div>
 
-    <!-- Navigation Tabs -->
-    <div class="px-8 border-b border-slate-800 bg-slate-900/30 flex items-center justify-between">
-      <div class="flex items-center gap-6">
+      <!-- Cards Grid Area -->
+      <div class="flex-1 overflow-y-auto p-8">
+        <div class="max-w-7xl mx-auto space-y-6">
+          
+          <!-- Loading State -->
+          <div v-if="isLoading" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+            <div 
+              v-for="i in 8" 
+              :key="i"
+              class="p-5 rounded-2xl border border-slate-800 bg-slate-900/40 h-56 animate-pulse flex flex-col justify-between"
+            >
+              <div class="space-y-3">
+                <div class="flex items-center justify-between">
+                  <div class="w-10 h-10 rounded-xl bg-slate-800"></div>
+                  <div class="w-12 h-6 rounded-full bg-slate-800"></div>
+                </div>
+                <div class="w-32 h-4 rounded bg-slate-800"></div>
+                <div class="w-full h-8 rounded bg-slate-800/60"></div>
+              </div>
+              <div class="w-24 h-4 rounded bg-slate-800"></div>
+            </div>
+          </div>
+
+          <!-- Empty Search State -->
+          <div 
+            v-else-if="filteredCatalog.length === 0" 
+            class="py-16 px-4 rounded-2xl border border-slate-800 bg-slate-900/40 text-center space-y-3"
+          >
+            <Plug class="w-10 h-10 text-slate-500 mx-auto" />
+            <h3 class="text-sm font-bold text-white">No Connectors Found</h3>
+            <p class="text-xs text-slate-400 max-w-sm mx-auto">
+              {{ searchQuery ? `No connectors match "${searchQuery}".` : 'No connectors available in this category.' }}
+            </p>
+            <button
+              v-if="searchQuery"
+              @click="searchQuery = ''; activeCategory = 'all'"
+              class="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white inline-flex items-center gap-1.5 transition shadow"
+            >
+              Clear Filters
+            </button>
+          </div>
+
+          <!-- Connector Cards Grid -->
+          <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+            <div
+              v-for="c in filteredCatalog"
+              :key="c.id"
+              @click="openConnectorSetup(c)"
+              class="p-5 rounded-2xl border border-slate-800 bg-slate-900/40 hover:bg-slate-900/80 transition-all duration-200 cursor-pointer flex flex-col justify-between group relative overflow-hidden shadow-lg hover:shadow-2xl"
+              :class="[
+                getBrandColor(c).accentBorder,
+                c.enabled ? 'ring-1 ring-emerald-500/20' : 'opacity-90'
+              ]"
+            >
+              <!-- Card Top Ambient Gradient -->
+              <div 
+                class="absolute -top-12 -left-12 w-32 h-32 rounded-full blur-2xl pointer-events-none opacity-30 transition-opacity group-hover:opacity-60 bg-gradient-to-br"
+                :class="getBrandColor(c).gradient"
+              ></div>
+
+              <!-- Top Row: Icon + Category Badge + Direct Toggle Switch -->
+              <div class="space-y-3.5 relative z-10">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="flex items-center gap-2.5">
+                    <!-- Icon Container -->
+                    <div 
+                      class="w-10 h-10 rounded-xl border flex items-center justify-center shadow-md transition-transform group-hover:scale-105"
+                      :class="[getBrandColor(c).bg, getBrandColor(c).border, getBrandColor(c).text]"
+                    >
+                      <CheckSquare v-if="c.id === 'jira'" class="w-5 h-5" />
+                      <BookOpen v-else-if="c.id === 'confluence'" class="w-5 h-5" />
+                      <GitBranch v-else-if="c.id === 'github' || c.id === 'gitlab'" class="w-5 h-5" />
+                      <MessageSquare v-else-if="c.id === 'slack'" class="w-5 h-5" />
+                      <Layers v-else-if="c.id === 'linear'" class="w-5 h-5" />
+                      <FileText v-else-if="c.id === 'notion'" class="w-5 h-5" />
+                      <Zap v-else class="w-5 h-5" />
+                    </div>
+
+                    <span 
+                      class="px-2 py-0.5 rounded text-[10px] font-mono border"
+                      :class="getBrandColor(c).badgeBg"
+                    >
+                      {{ c.category_label || c.category }}
+                    </span>
+                  </div>
+
+                  <!-- DIRECT TOGGLE SWITCH (Stops Propagation) -->
+                  <div 
+                    @click.stop="handleToggle(c, $event)"
+                    class="flex items-center gap-1.5 p-1 -m-1 rounded-lg hover:bg-slate-800/60 transition"
+                    :title="c.enabled ? 'Click to disable' : 'Click to enable'"
+                  >
+                    <div 
+                      class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                      :class="c.enabled ? 'bg-emerald-500 shadow-sm shadow-emerald-950' : 'bg-slate-700'"
+                    >
+                      <span 
+                        class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out"
+                        :class="c.enabled ? 'translate-x-4' : 'translate-x-0'"
+                      >
+                        <RefreshCw 
+                          v-if="togglingIds.has(c.id)" 
+                          class="w-3 h-3 text-slate-600 animate-spin m-0.5" 
+                        />
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Connector Info -->
+                <div>
+                  <h3 class="font-bold text-sm text-white group-hover:text-blue-400 transition flex items-center justify-between">
+                    <span>{{ c.name }}</span>
+                  </h3>
+                  <p class="text-xs text-slate-400 line-clamp-2 leading-relaxed mt-1">
+                    {{ c.description }}
+                  </p>
+                </div>
+
+                <!-- Capabilities Badges -->
+                <div v-if="c.capabilities && c.capabilities.length > 0" class="flex flex-wrap items-center gap-1.5 pt-1">
+                  <span
+                    v-for="(cap, idx) in c.capabilities.slice(0, 3)"
+                    :key="idx"
+                    class="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-950/70 text-slate-300 border border-slate-800"
+                  >
+                    {{ cap }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- Card Bottom: Status & Setup Prompt -->
+              <div class="pt-4 mt-4 border-t border-slate-800/80 flex items-center justify-between text-xs relative z-10">
+                <!-- Status Badge -->
+                <div class="flex items-center gap-2 font-mono text-[11px]">
+                  <template v-if="!c.enabled">
+                    <span class="w-2 h-2 rounded-full bg-slate-600"></span>
+                    <span class="text-slate-500 font-semibold uppercase">Disabled</span>
+                  </template>
+                  <template v-else-if="c.status === 'connected'">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span class="text-emerald-400 font-semibold uppercase">Connected</span>
+                    <span v-if="c.latency_ms" class="text-[10px] text-slate-400">({{ c.latency_ms }}ms)</span>
+                  </template>
+                  <template v-else-if="c.status === 'configured'">
+                    <span class="w-2 h-2 rounded-full bg-sky-400"></span>
+                    <span class="text-sky-400 font-semibold uppercase">Configured</span>
+                  </template>
+                  <template v-else-if="c.status === 'error'">
+                    <span class="w-2 h-2 rounded-full bg-rose-400"></span>
+                    <span class="text-rose-400 font-semibold uppercase">Error</span>
+                  </template>
+                  <template v-else>
+                    <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+                    <span class="text-amber-400 font-semibold uppercase">Ready</span>
+                  </template>
+                </div>
+
+                <!-- Setup / Configure CTA -->
+                <div class="flex items-center gap-1 text-[11px] font-medium text-slate-400 group-hover:text-blue-400 transition">
+                  <span>Setup</span>
+                  <ArrowRight class="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition-transform" />
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </template>
+
+    <!-- ==================== VIEW 2: SETUP / EDIT MODE ==================== -->
+    <template v-else-if="currentView === 'edit' && selectedConnector">
+      <!-- Breadcrumb Bar & Header -->
+      <div class="px-8 py-4 border-b border-slate-800 bg-slate-900/60 flex flex-wrap items-center justify-between gap-4">
+        <div class="flex items-center gap-3">
+          <button
+            @click="returnToCatalog"
+            class="px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition"
+          >
+            <ArrowLeft class="w-3.5 h-3.5" />
+            <span>All Connectors</span>
+          </button>
+
+          <div class="h-4 w-px bg-slate-800"></div>
+
+          <div class="flex items-center gap-2.5">
+            <div 
+              class="w-7 h-7 rounded-lg border flex items-center justify-center text-xs"
+              :class="[getBrandColor(selectedConnector).bg, getBrandColor(selectedConnector).border, getBrandColor(selectedConnector).text]"
+            >
+              <CheckSquare v-if="selectedConnector.id === 'jira'" class="w-4 h-4" />
+              <BookOpen v-else-if="selectedConnector.id === 'confluence'" class="w-4 h-4" />
+              <GitBranch v-else-if="selectedConnector.id === 'github' || selectedConnector.id === 'gitlab'" class="w-4 h-4" />
+              <MessageSquare v-else-if="selectedConnector.id === 'slack'" class="w-4 h-4" />
+              <Layers v-else-if="selectedConnector.id === 'linear'" class="w-4 h-4" />
+              <FileText v-else-if="selectedConnector.id === 'notion'" class="w-4 h-4" />
+              <Zap v-else class="w-4 h-4" />
+            </div>
+            <div>
+              <h2 class="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                {{ selectedConnector.name }}
+                <span 
+                  class="px-2 py-0.5 rounded text-[10px] font-mono border"
+                  :class="getBrandColor(selectedConnector).badgeBg"
+                >
+                  {{ selectedConnector.category_label }}
+                </span>
+              </h2>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Top Actions: Enable Switch, Test Connection, Save -->
+        <div class="flex items-center gap-3">
+          <!-- Live Master Enable Toggle -->
+          <label class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 cursor-pointer text-xs">
+            <span class="text-slate-400 font-mono text-[11px]">Enabled:</span>
+            <input
+              v-model="selectedConnector.enabled"
+              type="checkbox"
+              class="w-4 h-4 rounded text-blue-600 focus:ring-0 focus:ring-offset-0 bg-slate-950 border-slate-700 cursor-pointer"
+            />
+            <span :class="selectedConnector.enabled ? 'text-emerald-400 font-bold' : 'text-slate-500'">
+              {{ selectedConnector.enabled ? 'ON' : 'OFF' }}
+            </span>
+          </label>
+
+          <!-- Test Connection Button -->
+          <button
+            @click="testConnection"
+            :disabled="isTesting"
+            type="button"
+            class="h-8 px-3 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-750 text-xs font-medium text-slate-200 flex items-center gap-1.5 transition"
+          >
+            <Wifi class="w-3.5 h-3.5 text-blue-400" :class="{ 'animate-pulse text-emerald-400': isTesting }" />
+            <span>{{ isTesting ? 'Pinging...' : 'Test Connection' }}</span>
+          </button>
+
+          <!-- Save Button -->
+          <button
+            @click="saveConnector"
+            :disabled="isSaving"
+            type="button"
+            class="h-8 px-4 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white flex items-center gap-1.5 transition shadow-md shadow-blue-950"
+          >
+            <Save class="w-3.5 h-3.5" :class="{ 'animate-spin': isSaving }" />
+            <span>{{ isSaving ? 'Saving...' : 'Save Settings' }}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Optional Sub-tabs (when JIRA is selected, offers Backlog Explorer) -->
+      <div v-if="selectedConnector.id === 'jira'" class="px-8 border-b border-slate-800 bg-slate-900/30 flex items-center gap-6">
         <button
-          @click="activeTab = 'jira'"
+          @click="activeEditTab = 'settings'"
           class="py-3 text-xs font-medium border-b-2 transition-colors flex items-center gap-2"
-          :class="activeTab === 'jira' ? 'border-blue-500 text-blue-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'"
+          :class="activeEditTab === 'settings' ? 'border-blue-500 text-blue-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'"
         >
-          <span class="w-2 h-2 rounded-full bg-blue-400"></span>
-          <span>JIRA Settings & Auto-Detect</span>
+          <Settings class="w-3.5 h-3.5" />
+          <span>Configuration & Credentials</span>
         </button>
 
         <button
-          @click="activeTab = 'confluence'"
+          @click="activeEditTab = 'explorer'"
           class="py-3 text-xs font-medium border-b-2 transition-colors flex items-center gap-2"
-          :class="activeTab === 'confluence' ? 'border-indigo-500 text-indigo-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'"
-        >
-          <span class="w-2 h-2 rounded-full bg-indigo-400"></span>
-          <span>Confluence Tech Docs Publishing</span>
-        </button>
-
-        <button
-          @click="activeTab = 'explorer'"
-          class="py-3 text-xs font-medium border-b-2 transition-colors flex items-center gap-2"
-          :class="activeTab === 'explorer' ? 'border-emerald-500 text-emerald-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'"
+          :class="activeEditTab === 'explorer' ? 'border-emerald-500 text-emerald-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'"
         >
           <Download class="w-3.5 h-3.5 text-emerald-400" />
           <span>JIRA Backlog Explorer & Importer</span>
         </button>
       </div>
 
-      <div class="text-[11px] font-mono text-slate-500">
-        Active Environment: <span class="text-slate-300">Default Workspace</span>
-      </div>
-    </div>
+      <!-- Main Edit View Scroll Area -->
+      <div class="flex-1 overflow-y-auto p-8">
+        <div class="max-w-4xl mx-auto space-y-6">
 
-    <!-- Tab Contents -->
-    <div class="flex-1 overflow-y-auto p-8">
-      <div class="max-w-4xl mx-auto space-y-6">
-
-        <!-- =================== JIRA TAB =================== -->
-        <div v-if="activeTab === 'jira'" class="space-y-6 animate-fade-in">
-          <!-- Overview Card -->
-          <div class="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
-            <div class="flex items-center justify-between">
-              <div>
-                <h3 class="text-sm font-semibold text-slate-100 flex items-center gap-2">
-                  Atlassian JIRA Integration
-                  <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-950 text-emerald-400 border border-emerald-800/60">
-                    Live Connector
-                  </span>
-                </h3>
-                <p class="text-xs text-slate-400 mt-0.5">
-                  Synchronizes Kanban tasks with JIRA issues. Automatically parses ticket keys like 
-                  <code class="text-blue-400 bg-slate-950 px-1 py-0.5 rounded">[PAY-1042]</code> in task titles and creates clickable deep links.
-                </p>
+          <!-- Diagnostic Result Banner -->
+          <div
+            v-if="testResult"
+            class="p-4 rounded-xl border text-xs font-mono flex items-start gap-3 transition-all animate-fade-in"
+            :class="testResult.success ? 'bg-emerald-950/40 border-emerald-800/70 text-emerald-300' : 'bg-rose-950/40 border-rose-800/70 text-rose-300'"
+          >
+            <CheckCircle2 v-if="testResult.success" class="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+            <AlertCircle v-else class="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
+            <div class="space-y-1 flex-1">
+              <div class="font-semibold">{{ testResult.message }}</div>
+              <div class="text-[11px] text-slate-400 flex flex-wrap gap-x-4">
+                <span>Latency: <strong class="text-slate-200">{{ testResult.latency_ms }}ms</strong></span>
+                <span v-if="testResult.connected_as">Connected As: <strong class="text-slate-200">{{ testResult.connected_as }}</strong></span>
+                <span v-if="testResult.server_info">Host/Server: <strong class="text-slate-200">{{ testResult.server_info }}</strong></span>
+                <span v-if="testResult.target_entity">Target: <strong class="text-slate-200">{{ testResult.target_entity }}</strong></span>
               </div>
-
-              <div class="flex items-center gap-2">
-                <button
-                  @click="testJira"
-                  :disabled="isTestingJira"
-                  type="button"
-                  class="h-8 px-3 rounded-lg bg-blue-950/70 hover:bg-blue-900 border border-blue-800/80 text-xs font-medium text-blue-300 hover:text-blue-100 flex items-center gap-1.5 transition-colors"
-                >
-                  <Wifi class="w-3.5 h-3.5" :class="{ 'animate-pulse text-blue-400': isTestingJira }" />
-                  <span>{{ isTestingJira ? 'Pinging...' : 'Test Connection' }}</span>
-                </button>
-              </div>
-            </div>
-
-            <!-- Diagnostics Test Banner -->
-            <div
-              v-if="jiraTestResult"
-              class="p-3.5 rounded-lg border text-xs font-mono flex items-start gap-2.5 transition-all"
-              :class="jiraTestResult.success ? 'bg-emerald-950/40 border-emerald-800/70 text-emerald-300' : 'bg-rose-950/40 border-rose-800/70 text-rose-300'"
-            >
-              <CheckCircle2 v-if="jiraTestResult.success" class="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
-              <AlertCircle v-else class="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
-              <div class="space-y-1">
-                <div class="font-semibold">{{ jiraTestResult.message }}</div>
-                <div class="text-[11px] text-slate-400 flex flex-wrap gap-x-4">
-                  <span>Latency: <strong class="text-slate-200">{{ jiraTestResult.latency_ms }}ms</strong></span>
-                  <span v-if="jiraTestResult.connected_as">Connected As: <strong class="text-slate-200">{{ jiraTestResult.connected_as }}</strong></span>
-                  <span v-if="jiraTestResult.server_info">Server: <strong class="text-slate-200">{{ jiraTestResult.server_info }}</strong></span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Form Fields -->
-            <div class="grid grid-cols-2 gap-4 pt-2">
-              <div>
-                <label class="block text-xs font-medium text-slate-300 mb-1.5">JIRA Base URL</label>
-                <input
-                  v-model="jiraForm.base_url"
-                  type="text"
-                  placeholder="https://company.atlassian.net"
-                  class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div>
-                <label class="block text-xs font-medium text-slate-300 mb-1.5">Username / Service Account Email</label>
-                <input
-                  v-model="jiraForm.username"
-                  type="text"
-                  placeholder="devops@company.com"
-                  class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div>
-                <label class="block text-xs font-medium text-slate-300 mb-1.5">API Token / Personal Access Token</label>
-                <div class="relative">
-                  <input
-                    v-model="jiraForm.api_token"
-                    :type="showJiraToken ? 'text' : 'password'"
-                    placeholder="Atlassian Cloud API Token"
-                    class="w-full h-9 pl-3 pr-9 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
-                  />
-                  <button
-                    @click="showJiraToken = !showJiraToken"
-                    type="button"
-                    class="absolute right-2.5 top-2.5 text-slate-500 hover:text-slate-300"
-                  >
-                    <EyeOff v-if="showJiraToken" class="w-4 h-4" />
-                    <Eye v-else class="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label class="block text-xs font-medium text-slate-300 mb-1.5">Default Project Key</label>
-                <input
-                  v-model="jiraForm.project_key"
-                  type="text"
-                  placeholder="e.g. PAY or PROJ"
-                  class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500 uppercase"
-                />
-              </div>
-
-              <div class="col-span-2">
-                <label class="block text-xs font-medium text-slate-300 mb-1.5">Default JQL Query Filter</label>
-                <input
-                  v-model="jiraForm.jql_filter"
-                  type="text"
-                  placeholder="project = PAY AND status != Done ORDER BY created DESC"
-                  class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
-                />
-              </div>
-            </div>
-
-            <!-- Toggles -->
-            <div class="pt-4 border-t border-slate-800/80 space-y-3">
-              <label class="flex items-center justify-between p-3 rounded-lg bg-slate-950 border border-slate-800/80 cursor-pointer hover:border-slate-700 transition-colors">
-                <div>
-                  <div class="text-xs font-medium text-slate-200">Automatically Detect JIRA Keys on Kanban Cards</div>
-                  <div class="text-[11px] text-slate-400">Scans task titles and descriptions for ticket keys (e.g. PAY-1042) and adds deep-link badges.</div>
-                </div>
-                <input
-                  v-model="jiraForm.auto_detect_keys"
-                  type="checkbox"
-                  class="w-4 h-4 rounded text-blue-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                />
-              </label>
-
-              <label class="flex items-center justify-between p-3 rounded-lg bg-slate-950 border border-slate-800/80 cursor-pointer hover:border-slate-700 transition-colors">
-                <div>
-                  <div class="text-xs font-medium text-slate-200">Auto-Sync Stage Transitions to JIRA Status</div>
-                  <div class="text-[11px] text-slate-400">Advances JIRA issue workflow (e.g. In Progress → In Review → Done) as pipeline stages complete.</div>
-                </div>
-                <input
-                  v-model="jiraForm.auto_sync_status"
-                  type="checkbox"
-                  class="w-4 h-4 rounded text-blue-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                />
-              </label>
-            </div>
-
-            <!-- Save Action -->
-            <div class="pt-3 flex justify-end">
-              <button
-                @click="saveJira"
-                :disabled="isSaving"
-                type="button"
-                class="h-9 px-5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-medium text-white flex items-center gap-1.5 transition-colors shadow-md shadow-blue-950"
-              >
-                <Save class="w-3.5 h-3.5" />
-                <span>{{ isSaving ? 'Saving...' : 'Save JIRA Settings' }}</span>
-              </button>
             </div>
           </div>
-        </div>
 
-        <!-- =================== CONFLUENCE TAB =================== -->
-        <div v-if="activeTab === 'confluence'" class="space-y-6 animate-fade-in">
-          <div class="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
-            <div class="flex items-center justify-between">
-              <div>
-                <h3 class="text-sm font-semibold text-slate-100 flex items-center gap-2">
-                  Atlassian Confluence Documentation
-                  <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-950 text-indigo-400 border border-indigo-800/60">
-                    Auto-Publishing
-                  </span>
-                </h3>
-                <p class="text-xs text-slate-400 mt-0.5">
-                  Publishes synthesized Technical Design RFCs (<code class="text-indigo-400 bg-slate-950 px-1 py-0.5 rounded">TECH_DOC_RFC.md</code>) 
-                  and PRDs directly to your Confluence team spaces.
-                </p>
-              </div>
-
-              <div class="flex items-center gap-2">
-                <button
-                  @click="testConfluence"
-                  :disabled="isTestingConf"
-                  type="button"
-                  class="h-8 px-3 rounded-lg bg-indigo-950/70 hover:bg-indigo-900 border border-indigo-800/80 text-xs font-medium text-indigo-300 hover:text-indigo-100 flex items-center gap-1.5 transition-colors"
-                >
-                  <Wifi class="w-3.5 h-3.5" :class="{ 'animate-pulse text-indigo-400': isTestingConf }" />
-                  <span>{{ isTestingConf ? 'Testing...' : 'Test Connection' }}</span>
-                </button>
-              </div>
-            </div>
-
-            <!-- Diagnostics Test Banner -->
-            <div
-              v-if="confTestResult"
-              class="p-3.5 rounded-lg border text-xs font-mono flex items-start gap-2.5 transition-all"
-              :class="confTestResult.success ? 'bg-emerald-950/40 border-emerald-800/70 text-emerald-300' : 'bg-rose-950/40 border-rose-800/70 text-rose-300'"
-            >
-              <CheckCircle2 v-if="confTestResult.success" class="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
-              <AlertCircle v-else class="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
-              <div class="space-y-1">
-                <div class="font-semibold">{{ confTestResult.message }}</div>
-                <div class="text-[11px] text-slate-400 flex flex-wrap gap-x-4">
-                  <span>Latency: <strong class="text-slate-200">{{ confTestResult.latency_ms }}ms</strong></span>
-                  <span v-if="confTestResult.target_entity">Space: <strong class="text-slate-200">{{ confTestResult.target_entity }}</strong></span>
-                  <span v-if="confTestResult.server_info">Server: <strong class="text-slate-200">{{ confTestResult.server_info }}</strong></span>
+          <!-- ================= TAB: SETTINGS & CONFIGURATION ================= -->
+          <div v-if="activeEditTab === 'settings'" class="space-y-6">
+            <!-- Form Card -->
+            <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-6">
+              
+              <!-- Section 1: Endpoints & Credentials -->
+              <div class="space-y-4">
+                <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div>
+                    <h3 class="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                      Authentication & Connection Endpoints
+                    </h3>
+                    <p class="text-xs text-slate-400 mt-0.5">
+                      Configure base URLs and service account authentication credentials.
+                    </p>
+                  </div>
+                  <div class="text-[11px] font-mono text-slate-500">
+                    ID: <code class="text-blue-400">{{ selectedConnector.id }}</code>
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            <!-- Form Fields -->
-            <div class="grid grid-cols-2 gap-4 pt-2">
-              <div>
-                <label class="block text-xs font-medium text-slate-300 mb-1.5">Confluence Base URL</label>
-                <input
-                  v-model="confForm.base_url"
-                  type="text"
-                  placeholder="https://company.atlassian.net/wiki"
-                  class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-              <div>
-                <label class="block text-xs font-medium text-slate-300 mb-1.5">Username / Email</label>
-                <input
-                  v-model="confForm.username"
-                  type="text"
-                  placeholder="devops@company.com"
-                  class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-              <div>
-                <label class="block text-xs font-medium text-slate-300 mb-1.5">API Token</label>
-                <div class="relative">
-                  <input
-                    v-model="confForm.api_token"
-                    :type="showConfToken ? 'text' : 'password'"
-                    placeholder="Confluence API Token"
-                    class="w-full h-9 pl-3 pr-9 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500"
-                  />
-                  <button
-                    @click="showConfToken = !showConfToken"
-                    type="button"
-                    class="absolute right-2.5 top-2.5 text-slate-500 hover:text-slate-300"
-                  >
-                    <EyeOff v-if="showConfToken" class="w-4 h-4" />
-                    <Eye v-else class="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label class="block text-xs font-medium text-slate-300 mb-1.5">Target Confluence Space Key</label>
-                <input
-                  v-model="confForm.space_key"
-                  type="text"
-                  placeholder="e.g. ARCH or ENG"
-                  class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500 uppercase"
-                />
-              </div>
-
-              <div class="col-span-2">
-                <label class="block text-xs font-medium text-slate-300 mb-1.5">Parent Page ID (Optional)</label>
-                <input
-                  v-model="confForm.parent_page_id"
-                  type="text"
-                  placeholder="e.g. 1048576 (Leave blank to publish under Space Root)"
-                  class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-            </div>
-
-            <!-- Toggles -->
-            <div class="pt-4 border-t border-slate-800/80 space-y-3">
-              <label class="flex items-center justify-between p-3 rounded-lg bg-slate-950 border border-slate-800/80 cursor-pointer hover:border-slate-700 transition-colors">
-                <div>
-                  <div class="text-xs font-medium text-slate-200">Automatically Publish Tech Doc RFCs</div>
-                  <div class="text-[11px] text-slate-400">Pushes Technical Architecture Design documents to Confluence upon reaching the RFC design stage.</div>
-                </div>
-                <input
-                  v-model="confForm.auto_publish_tech_docs"
-                  type="checkbox"
-                  class="w-4 h-4 rounded text-indigo-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                />
-              </label>
-
-              <label class="flex items-center justify-between p-3 rounded-lg bg-slate-950 border border-slate-800/80 cursor-pointer hover:border-slate-700 transition-colors">
-                <div>
-                  <div class="text-xs font-medium text-slate-200">Automatically Publish PRD Discovery Documents</div>
-                  <div class="text-[11px] text-slate-400">Exports product requirement specifications into Confluence requirements catalogs.</div>
-                </div>
-                <input
-                  v-model="confForm.auto_publish_prd"
-                  type="checkbox"
-                  class="w-4 h-4 rounded text-indigo-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                />
-              </label>
-            </div>
-
-            <!-- Save Action -->
-            <div class="pt-3 flex justify-end">
-              <button
-                @click="saveConfluence"
-                :disabled="isSaving"
-                type="button"
-                class="h-9 px-5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-medium text-white flex items-center gap-1.5 transition-colors shadow-md shadow-indigo-950"
-              >
-                <Save class="w-3.5 h-3.5" />
-                <span>{{ isSaving ? 'Saving...' : 'Save Confluence Settings' }}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- =================== EXPLORER & IMPORT TAB =================== -->
-        <div v-if="activeTab === 'explorer'" class="space-y-4 animate-fade-in">
-          <div class="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
-            <div class="flex items-center justify-between">
-              <div>
-                <h3 class="text-sm font-semibold text-slate-100 flex items-center gap-2">
-                  JIRA Backlog Issues
-                  <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-blue-950 text-blue-300 border border-blue-800/60">
-                    Live Feed
-                  </span>
-                </h3>
-                <p class="text-xs text-slate-400 mt-0.5">
-                  Browse and import open JIRA issues directly into your Kanban pipeline with pre-configured method routing and PRD synthesis.
-                </p>
-              </div>
-
-              <button
-                @click="showImportModal = true"
-                type="button"
-                class="h-8 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-medium text-white flex items-center gap-1.5 transition-colors shadow-md shadow-blue-950"
-              >
-                <Download class="w-3.5 h-3.5" />
-                <span>Import Modal</span>
-              </button>
-            </div>
-
-            <!-- Search Filter -->
-            <div class="flex items-center gap-2">
-              <div class="relative flex-1">
-                <Search class="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
-                <input
-                  v-model="explorerQuery"
-                  @keydown.enter="searchExplorer"
-                  type="text"
-                  placeholder="Filter by issue key (e.g. PAY-1044), label, or text..."
-                  class="w-full h-9 pl-9 pr-4 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
-                />
-              </div>
-              <button
-                @click="searchExplorer"
-                type="button"
-                class="h-9 px-3.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-xs text-slate-200 flex items-center gap-1.5 transition-colors"
-              >
-                <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isSearchingExplorer }" />
-                <span>Search</span>
-              </button>
-            </div>
-
-            <!-- Issues List -->
-            <div v-if="isSearchingExplorer" class="p-8 text-center text-xs text-slate-500 animate-pulse">
-              Querying JIRA API for open backlog issues...
-            </div>
-            <div v-else-if="explorerIssues.length === 0" class="p-8 text-center text-xs text-slate-500 bg-slate-950 rounded-lg border border-slate-800">
-              No JIRA issues found matching current query.
-            </div>
-            <div v-else class="space-y-2.5">
-              <div
-                v-for="issue in explorerIssues"
-                :key="issue.key || (issue as any).Key"
-                class="p-4 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 transition-all flex items-center justify-between gap-4"
-              >
-                <div class="space-y-1.5">
-                  <div class="flex items-center gap-2">
-                    <span class="px-2 py-0.5 rounded font-mono text-[11px] font-semibold bg-blue-950 text-blue-300 border border-blue-800/60">
-                      {{ issue.key || (issue as any).Key }}
-                    </span>
-                    <span class="text-xs font-semibold text-slate-200">
-                      {{ issue.summary || (issue as any).Summary }}
-                    </span>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <!-- Base URL -->
+                  <div class="md:col-span-2">
+                    <label class="block text-xs font-medium text-slate-300 mb-1.5">
+                      Base Endpoint / Host URL
+                    </label>
+                    <input
+                      v-model="selectedConnector.base_url"
+                      type="text"
+                      :placeholder="selectedConnector.id === 'slack' ? 'https://hooks.slack.com/services/...' : 'https://api.example.com'"
+                      class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
+                    />
                   </div>
 
-                  <p class="text-xs text-slate-400 line-clamp-1 leading-relaxed">
-                    {{ issue.description || (issue as any).Description }}
+                  <!-- Username / Email -->
+                  <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1.5">
+                      Username / Service Account Email / User ID
+                    </label>
+                    <input
+                      v-model="selectedConnector.username"
+                      type="text"
+                      placeholder="bot@company.com or service-account"
+                      class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+
+                  <!-- API Token / PAT / Secret -->
+                  <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1.5">
+                      API Token / Personal Access Token / Secret Key
+                    </label>
+                    <div class="relative">
+                      <input
+                        v-model="selectedConnector.api_token"
+                        :type="showToken ? 'text' : 'password'"
+                        placeholder="••••••••••••••••••••••••"
+                        class="w-full h-9 pl-3 pr-9 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
+                      />
+                      <button
+                        @click="showToken = !showToken"
+                        type="button"
+                        class="absolute right-2.5 top-2.5 text-slate-500 hover:text-slate-300"
+                      >
+                        <EyeOff v-if="showToken" class="w-4 h-4" />
+                        <Eye v-else class="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Target Entity -->
+                  <div class="md:col-span-2">
+                    <label class="block text-xs font-medium text-slate-300 mb-1.5">
+                      {{ selectedConnector.target_label || 'Default Target Entity (e.g. Space, Channel, Project)' }}
+                    </label>
+                    <input
+                      v-model="selectedConnector.target_entity"
+                      type="text"
+                      :placeholder="selectedConnector.id === 'slack' ? '#general or C01234567' : selectedConnector.id === 'jira' ? 'e.g. PAY or PROJ' : selectedConnector.id === 'confluence' ? 'e.g. ARCH or ENG' : 'Default target key'"
+                      class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500 uppercase"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <!-- Section 2: Automation Rules & Custom Toggles -->
+              <div class="space-y-4 pt-4 border-t border-slate-800">
+                <div class="border-b border-slate-800 pb-3">
+                  <h3 class="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                    Automation Features & Integration Hooks
+                  </h3>
+                  <p class="text-xs text-slate-400 mt-0.5">
+                    Tailored behavior and synchronization settings for {{ selectedConnector.name }}.
                   </p>
-
-                  <div class="flex items-center gap-3 text-[11px] font-mono text-slate-500">
-                    <span>Status: <strong class="text-slate-300">{{ issue.status || (issue as any).Status }}</strong></span>
-                    <span>•</span>
-                    <span>Priority: <strong class="text-amber-400">{{ issue.priority || (issue as any).Priority }}</strong></span>
-                    <span>•</span>
-                    <span>Assignee: <strong class="text-slate-300">{{ issue.assignee || (issue as any).Assignee || 'Unassigned' }}</strong></span>
-                  </div>
                 </div>
 
-                <div class="flex items-center gap-2 flex-shrink-0">
-                  <a
-                    :href="issue.url || (issue as any).URL"
-                    target="_blank"
-                    class="p-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-blue-400 hover:border-slate-700 transition-colors"
-                    title="View in JIRA"
-                  >
-                    <ExternalLink class="w-4 h-4" />
-                  </a>
+                <!-- JIRA SPECIFIC TOGGLES -->
+                <template v-if="selectedConnector.id === 'jira'">
+                  <div class="space-y-3">
+                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                      <div>
+                        <div class="text-xs font-medium text-slate-200">Automatically Detect JIRA Keys on Kanban Cards</div>
+                        <div class="text-[11px] text-slate-400">Scans task titles and descriptions for ticket keys (e.g. [PAY-1042]) and adds deep-link badges.</div>
+                      </div>
+                      <input
+                        v-model="selectedConnector.extra_settings!.auto_detect_keys"
+                        type="checkbox"
+                        class="w-4 h-4 rounded text-blue-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
+                      />
+                    </label>
 
-                  <button
-                    @click="showImportModal = true"
-                    type="button"
-                    class="h-8 px-3 rounded-lg bg-blue-950/80 hover:bg-blue-900 border border-blue-800/80 text-xs font-medium text-blue-300 hover:text-blue-100 flex items-center gap-1.5 transition-colors"
-                  >
-                    <Download class="w-3.5 h-3.5" />
-                    <span>Import</span>
-                  </button>
+                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                      <div>
+                        <div class="text-xs font-medium text-slate-200">Auto-Sync Stage Transitions to JIRA Status</div>
+                        <div class="text-[11px] text-slate-400">Advances JIRA issue workflow (e.g. In Progress → In Review → Done) as pipeline stages complete.</div>
+                      </div>
+                      <input
+                        v-model="selectedConnector.extra_settings!.auto_sync_status"
+                        type="checkbox"
+                        class="w-4 h-4 rounded text-blue-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
+                      />
+                    </label>
+
+                    <div>
+                      <label class="block text-xs font-medium text-slate-300 mb-1.5">Default JQL Query Filter</label>
+                      <input
+                        v-model="selectedConnector.extra_settings!.jql_filter"
+                        type="text"
+                        placeholder="project = PAY AND status != Done ORDER BY created DESC"
+                        class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+                </template>
+
+                <!-- CONFLUENCE SPECIFIC TOGGLES -->
+                <template v-else-if="selectedConnector.id === 'confluence'">
+                  <div class="space-y-3">
+                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                      <div>
+                        <div class="text-xs font-medium text-slate-200">Automatically Publish Tech Doc RFCs</div>
+                        <div class="text-[11px] text-slate-400">Pushes Technical Architecture Design documents (TECH_DOC_RFC.md) to Confluence upon reaching the RFC design stage.</div>
+                      </div>
+                      <input
+                        v-model="selectedConnector.extra_settings!.auto_publish_tech_docs"
+                        type="checkbox"
+                        class="w-4 h-4 rounded text-indigo-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
+                      />
+                    </label>
+
+                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                      <div>
+                        <div class="text-xs font-medium text-slate-200">Automatically Publish PRD Discovery Documents</div>
+                        <div class="text-[11px] text-slate-400">Exports synthesized product requirement specifications into Confluence team spaces.</div>
+                      </div>
+                      <input
+                        v-model="selectedConnector.extra_settings!.auto_publish_prd"
+                        type="checkbox"
+                        class="w-4 h-4 rounded text-indigo-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
+                      />
+                    </label>
+
+                    <div>
+                      <label class="block text-xs font-medium text-slate-300 mb-1.5">Parent Page ID (Optional)</label>
+                      <input
+                        v-model="selectedConnector.extra_settings!.parent_page_id"
+                        type="text"
+                        placeholder="e.g. 1048576 (Leave blank to publish under Space Root)"
+                        class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                  </div>
+                </template>
+
+                <!-- SLACK SPECIFIC TOGGLES -->
+                <template v-else-if="selectedConnector.id === 'slack'">
+                  <div class="space-y-3">
+                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                      <div>
+                        <div class="text-xs font-medium text-slate-200">Real-Time Human-In-The-Loop (HITL) Gate Alerts</div>
+                        <div class="text-[11px] text-slate-400">Sends instant notifications to the channel when a stage requires human review or gate confirmation.</div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked
+                        class="w-4 h-4 rounded text-purple-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
+                      />
+                    </label>
+
+                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                      <div>
+                        <div class="text-xs font-medium text-slate-200">Pipeline Completion & Milestone Broadcasts</div>
+                        <div class="text-[11px] text-slate-400">Broadcasts summaries upon successful task execution and artifact delivery.</div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked
+                        class="w-4 h-4 rounded text-purple-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
+                      />
+                    </label>
+                  </div>
+                </template>
+
+                <!-- GITHUB / GITLAB TOGGLES -->
+                <template v-else-if="selectedConnector.id === 'github' || selectedConnector.id === 'gitlab'">
+                  <div class="space-y-3">
+                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                      <div>
+                        <div class="text-xs font-medium text-slate-200">Auto-Create Pull/Merge Request on Code Signoff</div>
+                        <div class="text-[11px] text-slate-400">Automatically creates an upstream branch and draft Pull Request once code generation completes.</div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked
+                        class="w-4 h-4 rounded text-slate-400 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
+                      />
+                    </label>
+
+                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                      <div>
+                        <div class="text-xs font-medium text-slate-200">Validate CI Check Status Before Advancing Pipeline</div>
+                        <div class="text-[11px] text-slate-400">Waits for GitHub Actions / GitLab CI pipeline success before marking ATDD verification done.</div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked
+                        class="w-4 h-4 rounded text-slate-400 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
+                      />
+                    </label>
+                  </div>
+                </template>
+
+                <!-- GENERIC / WEBHOOK TOGGLES -->
+                <template v-else>
+                  <div class="space-y-3">
+                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                      <div>
+                        <div class="text-xs font-medium text-slate-200">Include Complete Artifact Manifest in Webhook Payload</div>
+                        <div class="text-[11px] text-slate-400">Sends PRD specifications, ATDD test logs, and git diff summaries in event dispatches.</div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked
+                        class="w-4 h-4 rounded text-emerald-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
+                      />
+                    </label>
+
+                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                      <div>
+                        <div class="text-xs font-medium text-slate-200">Sign Payloads with HMAC SHA-256 Header (X-Hub-Signature-256)</div>
+                        <div class="text-[11px] text-slate-400">Ensures message integrity and security for receiver endpoints using the configured token as the secret.</div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked
+                        class="w-4 h-4 rounded text-emerald-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
+                      />
+                    </label>
+                  </div>
+                </template>
+              </div>
+
+              <!-- Save Actions Bar -->
+              <div class="pt-4 border-t border-slate-800 flex items-center justify-between">
+                <button
+                  @click="testConnection"
+                  :disabled="isTesting"
+                  type="button"
+                  class="h-9 px-4 rounded-lg bg-slate-800 hover:bg-slate-750 text-xs font-medium text-slate-200 flex items-center gap-1.5 transition"
+                >
+                  <Wifi class="w-3.5 h-3.5 text-blue-400" />
+                  <span>{{ isTesting ? 'Testing Connectivity...' : 'Ping Test' }}</span>
+                </button>
+
+                <button
+                  @click="saveConnector"
+                  :disabled="isSaving"
+                  type="button"
+                  class="h-9 px-6 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white flex items-center gap-1.5 transition shadow-md shadow-blue-950"
+                >
+                  <Save class="w-3.5 h-3.5" />
+                  <span>{{ isSaving ? 'Saving...' : 'Save Configuration' }}</span>
+                </button>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- ================= TAB: JIRA BACKLOG EXPLORER ================= -->
+          <div v-else-if="activeEditTab === 'explorer' && selectedConnector.id === 'jira'" class="space-y-4 animate-fade-in">
+            <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                    JIRA Backlog Issues
+                    <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-blue-950 text-blue-300 border border-blue-800/60">
+                      Live Feed
+                    </span>
+                  </h3>
+                  <p class="text-xs text-slate-400 mt-0.5">
+                    Browse and import open JIRA issues directly into your Kanban pipeline with pre-configured method routing and PRD synthesis.
+                  </p>
+                </div>
+
+                <button
+                  @click="showImportModal = true"
+                  type="button"
+                  class="h-8 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white flex items-center gap-1.5 transition shadow-md shadow-blue-950"
+                >
+                  <Download class="w-3.5 h-3.5" />
+                  <span>Import Issue</span>
+                </button>
+              </div>
+
+              <!-- Search Filter -->
+              <div class="flex items-center gap-2">
+                <div class="relative flex-1">
+                  <Search class="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+                  <input
+                    v-model="explorerQuery"
+                    @keydown.enter="searchExplorer"
+                    type="text"
+                    placeholder="Filter by issue key (e.g. PAY-1044), label, or text..."
+                    class="w-full h-9 pl-9 pr-4 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <button
+                  @click="searchExplorer"
+                  type="button"
+                  class="h-9 px-3.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-xs text-slate-200 flex items-center gap-1.5 transition"
+                >
+                  <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isSearchingExplorer }" />
+                  <span>Search</span>
+                </button>
+              </div>
+
+              <!-- Issues List -->
+              <div v-if="isSearchingExplorer" class="p-8 text-center text-xs text-slate-500 animate-pulse">
+                Querying JIRA API for open backlog issues...
+              </div>
+              <div v-else-if="explorerIssues.length === 0" class="p-8 text-center text-xs text-slate-500 bg-slate-950 rounded-lg border border-slate-800">
+                No JIRA issues found matching current query.
+              </div>
+              <div v-else class="space-y-2.5">
+                <div
+                  v-for="issue in explorerIssues"
+                  :key="issue.key || (issue as any).Key"
+                  class="p-4 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 transition flex items-center justify-between gap-4"
+                >
+                  <div class="space-y-1.5 min-w-0 flex-1">
+                    <div class="flex items-center gap-2">
+                      <span class="px-2 py-0.5 rounded font-mono text-[11px] font-semibold bg-blue-950 text-blue-300 border border-blue-800/60">
+                        {{ issue.key || (issue as any).Key }}
+                      </span>
+                      <span class="text-xs font-semibold text-slate-200 truncate">
+                        {{ issue.summary || (issue as any).Summary }}
+                      </span>
+                    </div>
+
+                    <p class="text-xs text-slate-400 line-clamp-1 leading-relaxed">
+                      {{ issue.description || (issue as any).Description }}
+                    </p>
+
+                    <div class="flex items-center gap-3 text-[11px] font-mono text-slate-500">
+                      <span>Status: <strong class="text-slate-300">{{ issue.status || (issue as any).Status }}</strong></span>
+                      <span>•</span>
+                      <span>Priority: <strong class="text-amber-400">{{ issue.priority || (issue as any).Priority }}</strong></span>
+                      <span>•</span>
+                      <span>Assignee: <strong class="text-slate-300">{{ issue.assignee || (issue as any).Assignee || 'Unassigned' }}</strong></span>
+                    </div>
+                  </div>
+
+                  <div class="flex items-center gap-2 flex-shrink-0">
+                    <a
+                      :href="issue.url || (issue as any).URL"
+                      target="_blank"
+                      class="p-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-blue-400 hover:border-slate-700 transition"
+                      title="View in JIRA"
+                    >
+                      <ExternalLink class="w-4 h-4" />
+                    </a>
+
+                    <button
+                      @click="showImportModal = true"
+                      type="button"
+                      class="h-8 px-3 rounded-lg bg-blue-950/80 hover:bg-blue-900 border border-blue-800/80 text-xs font-medium text-blue-300 hover:text-blue-100 flex items-center gap-1.5 transition"
+                    >
+                      <Download class="w-3.5 h-3.5" />
+                      <span>Import</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
 
+        </div>
       </div>
-    </div>
+    </template>
 
     <!-- JIRA Import Modal Dialog -->
     <JiraImportModal

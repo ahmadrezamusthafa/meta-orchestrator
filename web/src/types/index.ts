@@ -243,9 +243,38 @@ export interface ConfluenceConfig {
   error_message?: string
 }
 
+export type ConnectorCategory = 'issue_tracker' | 'documentation' | 'chatops' | 'vcs' | 'custom'
+
+export interface ConnectorItem {
+  id: string
+  name: string
+  category: ConnectorCategory
+  category_label: string
+  description: string
+  icon: string
+  color: string
+  enabled: boolean
+  status: 'connected' | 'configured' | 'disabled' | 'unconfigured' | 'error'
+  base_url: string
+  username: string
+  api_token: string
+  target_entity: string
+  target_label: string
+  capabilities?: string[]
+  extra_settings?: Record<string, any>
+  last_tested_at?: string
+  latency_ms?: number
+  error_message?: string
+}
+
+export interface ToggleConnectorRequest {
+  enabled: boolean
+}
+
 export interface ConnectorsConfig {
   jira: JiraConfig
   confluence: ConfluenceConfig
+  items?: ConnectorItem[]
 }
 
 export interface JiraIssueDTO {

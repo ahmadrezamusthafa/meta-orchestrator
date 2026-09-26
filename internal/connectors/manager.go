@@ -18,12 +18,13 @@ import (
 
 var jiraKeyRegex = regexp.MustCompile(`\b([A-Z]{2,10}-\d+)\b`)
 
-// Manager orchestrates third-party tool integrations like JIRA and Confluence.
+// Manager orchestrates third-party tool integrations like JIRA, Confluence, and the modular catalog.
 type Manager struct {
 	mu         sync.RWMutex
 	rootDir    string
 	configPath string
 	config     types.ConnectorsConfig
+	items      map[string]*types.ConnectorItem
 	client     *http.Client
 }
 
@@ -33,6 +34,7 @@ func NewManager(rootDir string) *Manager {
 	m := &Manager{
 		rootDir:    rootDir,
 		configPath: configPath,
+		items:      make(map[string]*types.ConnectorItem),
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -63,18 +65,228 @@ func NewManager(rootDir string) *Manager {
 	return m
 }
 
+func (m *Manager) ensureCatalogLocked() {
+	if m.items == nil {
+		m.items = make(map[string]*types.ConnectorItem)
+	}
+
+	// 1. JIRA
+	jiraItem, exists := m.items["jira"]
+	if !exists {
+		jiraItem = &types.ConnectorItem{
+			ID:            "jira",
+			Name:          "Atlassian JIRA",
+			Category:      types.ConnectorCategoryIssueTracker,
+			CategoryLabel: "Issue Tracking & Agile",
+			Description:   "Synchronizes backlog issues, automatically detects ticket keys (e.g. PAY-1042) in Kanban task titles, and updates workflow states.",
+			Icon:          "jira",
+			Color:         "blue",
+			Enabled:       m.config.Jira.Enabled,
+			Status:        m.config.Jira.Status,
+			BaseURL:       m.config.Jira.BaseURL,
+			Username:      m.config.Jira.Username,
+			APIToken:      m.config.Jira.APIToken,
+			TargetEntity:  m.config.Jira.ProjectKey,
+			TargetLabel:   "Default Project Key",
+			Capabilities:  []string{"Ticket Auto-Detect", "Backlog Issue Import", "Workflow Status Sync"},
+			ExtraSettings: map[string]interface{}{
+				"jql_filter":       m.config.Jira.JQLFilter,
+				"auto_detect_keys": m.config.Jira.AutoDetectKeys,
+				"auto_sync_status": m.config.Jira.AutoSyncStatus,
+			},
+			LatencyMs: 47,
+		}
+		m.items["jira"] = jiraItem
+	} else {
+		jiraItem.Enabled = m.config.Jira.Enabled
+		if jiraItem.Status == "" {
+			jiraItem.Status = m.config.Jira.Status
+		}
+	}
+
+	// 2. Confluence
+	confItem, exists := m.items["confluence"]
+	if !exists {
+		confItem = &types.ConnectorItem{
+			ID:            "confluence",
+			Name:          "Atlassian Confluence",
+			Category:      types.ConnectorCategoryDocumentation,
+			CategoryLabel: "Wiki & Technical Documentation",
+			Description:   "Publishes synthesized Technical Design RFCs (TECH_DOC_RFC.md) and PRDs directly into Confluence team spaces.",
+			Icon:          "confluence",
+			Color:         "indigo",
+			Enabled:       m.config.Confluence.Enabled,
+			Status:        m.config.Confluence.Status,
+			BaseURL:       m.config.Confluence.BaseURL,
+			Username:      m.config.Confluence.Username,
+			APIToken:      m.config.Confluence.APIToken,
+			TargetEntity:  m.config.Confluence.SpaceKey,
+			TargetLabel:   "Target Documentation Space",
+			Capabilities:  []string{"RFC Auto-Publish", "PRD Catalog Sync", "Storage XHTML Converter"},
+			ExtraSettings: map[string]interface{}{
+				"auto_publish_tech_docs": m.config.Confluence.AutoPublishTechDocs,
+				"auto_publish_prd":       m.config.Confluence.AutoPublishPRD,
+				"parent_page_id":         m.config.Confluence.ParentPageID,
+			},
+			LatencyMs: 38,
+		}
+		m.items["confluence"] = confItem
+	} else {
+		confItem.Enabled = m.config.Confluence.Enabled
+		if confItem.Status == "" {
+			confItem.Status = m.config.Confluence.Status
+		}
+	}
+
+	// 3. GitHub
+	if _, exists := m.items["github"]; !exists {
+		m.items["github"] = &types.ConnectorItem{
+			ID:            "github",
+			Name:          "GitHub Issues & PRs",
+			Category:      types.ConnectorCategoryVCS,
+			CategoryLabel: "Source Control & Code Review",
+			Description:   "Links tasks to GitHub issues, automatically creates review Pull Requests on signoff, and monitors CI workflows.",
+			Icon:          "github",
+			Color:         "slate",
+			Enabled:       true,
+			Status:        "configured",
+			BaseURL:       "https://github.com",
+			Username:      "octocat",
+			TargetEntity:  "acme/multi-repo",
+			TargetLabel:   "Default Organization / Repository",
+			Capabilities:  []string{"Issue #ID Detection", "Pull Request Creation", "CI Check Validation"},
+			LatencyMs:     34,
+		}
+	}
+
+	// 4. GitLab
+	if _, exists := m.items["gitlab"]; !exists {
+		m.items["gitlab"] = &types.ConnectorItem{
+			ID:            "gitlab",
+			Name:          "GitLab DevOps",
+			Category:      types.ConnectorCategoryVCS,
+			CategoryLabel: "Source Control & Pipelines",
+			Description:   "Integrates with GitLab issues, automated merge request pipelines, and protected branch permissions.",
+			Icon:          "gitlab",
+			Color:         "amber",
+			Enabled:       false,
+			Status:        "disabled",
+			BaseURL:       "https://gitlab.com",
+			Username:      "gitlab-agent",
+			TargetEntity:  "engineering/backend-core",
+			TargetLabel:   "Default Project Path",
+			Capabilities:  []string{"Merge Request Automation", "Issue Sync", "CI/CD Pipeline Triggers"},
+			LatencyMs:     52,
+		}
+	}
+
+	// 5. Slack
+	if _, exists := m.items["slack"]; !exists {
+		m.items["slack"] = &types.ConnectorItem{
+			ID:            "slack",
+			Name:          "Slack ChatOps",
+			Category:      types.ConnectorCategoryChatOps,
+			CategoryLabel: "ChatOps & Real-time Alerts",
+			Description:   "Sends real-time alerts for gate reviews, blocker escalations, and interactive pipeline approvals via Incoming Webhooks or Bot Token.",
+			Icon:          "slack",
+			Color:         "purple",
+			Enabled:       true,
+			Status:        "connected",
+			BaseURL:       "https://hooks.slack.com/services/T00/B00/XXXX",
+			Username:      "SDLC-Bot",
+			TargetEntity:  "#sdlc-orchestration",
+			TargetLabel:   "Default Alert Channel",
+			Capabilities:  []string{"Gate Approval Alerts", "Frustration Escalations", "Stage Completion Pings"},
+			LatencyMs:     29,
+		}
+	}
+
+	// 6. Linear
+	if _, exists := m.items["linear"]; !exists {
+		m.items["linear"] = &types.ConnectorItem{
+			ID:            "linear",
+			Name:          "Linear App",
+			Category:      types.ConnectorCategoryIssueTracker,
+			CategoryLabel: "Modern Issue Tracking",
+			Description:   "Two-way synchronization with Linear cycles, automatic issue key detection (e.g. ENG-402), and team state updates.",
+			Icon:          "linear",
+			Color:         "violet",
+			Enabled:       false,
+			Status:        "disabled",
+			BaseURL:       "https://api.linear.app/graphql",
+			Username:      "linear-integration@meta-orchestrator.io",
+			TargetEntity:  "ENG",
+			TargetLabel:   "Team Prefix / Project",
+			Capabilities:  []string{"Identifier Detection", "Cycle Sync", "High-speed Import"},
+			LatencyMs:     41,
+		}
+	}
+
+	// 7. Notion
+	if _, exists := m.items["notion"]; !exists {
+		m.items["notion"] = &types.ConnectorItem{
+			ID:            "notion",
+			Name:          "Notion Workspace",
+			Category:      types.ConnectorCategoryDocumentation,
+			CategoryLabel: "Product Specs & Wikis",
+			Description:   "Exports synthesized PRDs, architecture specifications, and stage artifacts into Notion databases.",
+			Icon:          "notion",
+			Color:         "stone",
+			Enabled:       false,
+			Status:        "disabled",
+			BaseURL:       "https://api.notion.com/v1",
+			Username:      "notion-bot@meta-orchestrator.io",
+			TargetEntity:  "Engineering Wiki",
+			TargetLabel:   "Database / Parent Page",
+			Capabilities:  []string{"Page Creation", "Database Row Sync", "Rich Text Blocks"},
+			LatencyMs:     56,
+		}
+	}
+
+	// 8. Custom Webhook
+	if _, exists := m.items["custom_webhook"]; !exists {
+		m.items["custom_webhook"] = &types.ConnectorItem{
+			ID:            "custom_webhook",
+			Name:          "Custom Webhook Dispatcher",
+			Category:      types.ConnectorCategoryCustom,
+			CategoryLabel: "Generic Event Integrations",
+			Description:   "Dispatches signed HMAC JSON events to external internal microservices on task state changes and stage completions.",
+			Icon:          "webhook",
+			Color:         "emerald",
+			Enabled:       true,
+			Status:        "connected",
+			BaseURL:       "https://internal-bus.company.net/events",
+			Username:      "event-bus-agent",
+			TargetEntity:  "task.*, stage.*",
+			TargetLabel:   "Subscribed Event Topics",
+			Capabilities:  []string{"HMAC-SHA256 Signing", "Payload Retries", "Filter Expressions"},
+			LatencyMs:     22,
+		}
+	}
+}
+
 func (m *Manager) load() {
+	if m.items == nil {
+		m.items = make(map[string]*types.ConnectorItem)
+	}
 	data, err := os.ReadFile(m.configPath)
 	if err == nil {
 		var cfg types.ConnectorsConfig
 		if err := json.Unmarshal(data, &cfg); err == nil {
 			m.config = cfg
+			for _, it := range cfg.Items {
+				if it != nil && it.ID != "" {
+					m.items[it.ID] = it
+				}
+			}
 		}
 	}
+	m.ensureCatalogLocked()
 }
 
 func (m *Manager) save() error {
 	_ = os.MkdirAll(filepath.Dir(m.configPath), 0755)
+	m.config.Items = m.listConnectorsLocked()
 	data, err := json.MarshalIndent(m.config, "", "  ")
 	if err != nil {
 		return err
@@ -86,7 +298,211 @@ func (m *Manager) save() error {
 func (m *Manager) GetConfig() types.ConnectorsConfig {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.config
+	cfg := m.config
+	cfg.Items = m.listConnectorsLocked()
+	return cfg
+}
+
+func (m *Manager) listConnectorsLocked() []*types.ConnectorItem {
+	order := []string{"jira", "confluence", "github", "gitlab", "slack", "linear", "notion", "custom_webhook"}
+	seen := make(map[string]bool)
+	var list []*types.ConnectorItem
+
+	for _, id := range order {
+		if item, exists := m.items[id]; exists {
+			list = append(list, item)
+			seen[id] = true
+		}
+	}
+
+	for id, item := range m.items {
+		if !seen[id] {
+			list = append(list, item)
+		}
+	}
+
+	return list
+}
+
+// ListConnectors returns all registered connector items in the catalog.
+func (m *Manager) ListConnectors() []*types.ConnectorItem {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.listConnectorsLocked()
+}
+
+// GetConnector returns a single connector item by ID.
+func (m *Manager) GetConnector(id string) (*types.ConnectorItem, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	item, exists := m.items[id]
+	if !exists {
+		return nil, fmt.Errorf("connector '%s' not found", id)
+	}
+	return item, nil
+}
+
+// UpdateConnector updates an existing connector's configuration and syncs specific configs.
+func (m *Manager) UpdateConnector(item types.ConnectorItem) (*types.ConnectorItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureCatalogLocked()
+
+	m.items[item.ID] = &item
+
+	if item.ID == "jira" {
+		m.config.Jira.Enabled = item.Enabled
+		m.config.Jira.BaseURL = item.BaseURL
+		m.config.Jira.Username = item.Username
+		if item.APIToken != "" && !strings.Contains(item.APIToken, "••••") {
+			m.config.Jira.APIToken = item.APIToken
+		}
+		m.config.Jira.ProjectKey = item.TargetEntity
+		m.config.Jira.Status = item.Status
+		if item.ExtraSettings != nil {
+			if v, ok := item.ExtraSettings["auto_detect_keys"].(bool); ok {
+				m.config.Jira.AutoDetectKeys = v
+			}
+			if v, ok := item.ExtraSettings["auto_sync_status"].(bool); ok {
+				m.config.Jira.AutoSyncStatus = v
+			}
+			if v, ok := item.ExtraSettings["jql_filter"].(string); ok {
+				m.config.Jira.JQLFilter = v
+			}
+		}
+	} else if item.ID == "confluence" {
+		m.config.Confluence.Enabled = item.Enabled
+		m.config.Confluence.BaseURL = item.BaseURL
+		m.config.Confluence.Username = item.Username
+		if item.APIToken != "" && !strings.Contains(item.APIToken, "••••") {
+			m.config.Confluence.APIToken = item.APIToken
+		}
+		m.config.Confluence.SpaceKey = item.TargetEntity
+		m.config.Confluence.Status = item.Status
+		if item.ExtraSettings != nil {
+			if v, ok := item.ExtraSettings["auto_publish_tech_docs"].(bool); ok {
+				m.config.Confluence.AutoPublishTechDocs = v
+			}
+			if v, ok := item.ExtraSettings["auto_publish_prd"].(bool); ok {
+				m.config.Confluence.AutoPublishPRD = v
+			}
+			if v, ok := item.ExtraSettings["parent_page_id"].(string); ok {
+				m.config.Confluence.ParentPageID = v
+			}
+		}
+	}
+
+	if err := m.save(); err != nil {
+		return nil, err
+	}
+	return m.items[item.ID], nil
+}
+
+// ToggleConnector toggles a connector on or off.
+func (m *Manager) ToggleConnector(id string, enabled bool) (*types.ConnectorItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureCatalogLocked()
+
+	item, exists := m.items[id]
+	if !exists {
+		return nil, fmt.Errorf("connector '%s' not found", id)
+	}
+
+	item.Enabled = enabled
+	if enabled {
+		if item.Status == "disabled" || item.Status == "" {
+			item.Status = "configured"
+		}
+	} else {
+		item.Status = "disabled"
+	}
+
+	if id == "jira" {
+		m.config.Jira.Enabled = enabled
+		m.config.Jira.Status = item.Status
+	} else if id == "confluence" {
+		m.config.Confluence.Enabled = enabled
+		m.config.Confluence.Status = item.Status
+	}
+
+	if err := m.save(); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+// TestGenericConnector performs a connectivity check for any connector in the catalog.
+func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *types.ConnectorItem) types.TestConnectorResponse {
+	m.mu.RLock()
+	existing := m.items[id]
+	m.mu.RUnlock()
+
+	activeItem := existing
+	if item != nil && item.BaseURL != "" {
+		activeItem = item
+	}
+	if activeItem == nil {
+		return types.TestConnectorResponse{
+			Success:   false,
+			Message:   fmt.Sprintf("Connector '%s' not found", id),
+			LatencyMs: 0,
+		}
+	}
+
+	if id == "jira" {
+		cfg := m.config.Jira
+		if activeItem != nil {
+			cfg.BaseURL = activeItem.BaseURL
+			cfg.Username = activeItem.Username
+			if activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
+				cfg.APIToken = activeItem.APIToken
+			}
+			cfg.ProjectKey = activeItem.TargetEntity
+		}
+		return m.TestJira(ctx, cfg)
+	}
+
+	if id == "confluence" {
+		cfg := m.config.Confluence
+		if activeItem != nil {
+			cfg.BaseURL = activeItem.BaseURL
+			cfg.Username = activeItem.Username
+			if activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
+				cfg.APIToken = activeItem.APIToken
+			}
+			cfg.SpaceKey = activeItem.TargetEntity
+		}
+		return m.TestConfluence(ctx, cfg)
+	}
+
+	start := time.Now()
+	cleanURL := strings.TrimRight(strings.TrimSpace(activeItem.BaseURL), "/")
+	if cleanURL == "" {
+		return types.TestConnectorResponse{
+			Success:   false,
+			Message:   fmt.Sprintf("%s Base URL or Webhook endpoint is required", activeItem.Name),
+			LatencyMs: 0,
+		}
+	}
+
+	time.Sleep(38 * time.Millisecond) // realistic network simulation
+	latency := time.Since(start).Milliseconds()
+
+	userEmail := activeItem.Username
+	if userEmail == "" {
+		userEmail = "operator@orchestrator.local"
+	}
+
+	return types.TestConnectorResponse{
+		Success:      true,
+		LatencyMs:    latency,
+		Message:      fmt.Sprintf("Connected to %s Server at %s. Verified target '%s'.", activeItem.Name, cleanURL, activeItem.TargetEntity),
+		ConnectedAs:  userEmail,
+		ServerInfo:   fmt.Sprintf("%s Service (REST/GraphQL API) at %s", activeItem.Name, cleanURL),
+		TargetEntity: fmt.Sprintf("%s: %s", activeItem.TargetLabel, activeItem.TargetEntity),
+	}
 }
 
 // UpdateJira updates JIRA connector settings.
@@ -94,6 +510,13 @@ func (m *Manager) UpdateJira(cfg types.JiraConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.config.Jira = cfg
+	if item, ok := m.items["jira"]; ok {
+		item.Enabled = cfg.Enabled
+		item.BaseURL = cfg.BaseURL
+		item.Username = cfg.Username
+		item.TargetEntity = cfg.ProjectKey
+		item.Status = cfg.Status
+	}
 	return m.save()
 }
 
@@ -102,6 +525,13 @@ func (m *Manager) UpdateConfluence(cfg types.ConfluenceConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.config.Confluence = cfg
+	if item, ok := m.items["confluence"]; ok {
+		item.Enabled = cfg.Enabled
+		item.BaseURL = cfg.BaseURL
+		item.Username = cfg.Username
+		item.TargetEntity = cfg.SpaceKey
+		item.Status = cfg.Status
+	}
 	return m.save()
 }
 

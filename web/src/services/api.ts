@@ -2,7 +2,8 @@ import type {
   Task, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
   Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse,
   ConnectorsConfig, JiraConfig, ConfluenceConfig, JiraIssueDTO, ImportJiraIssueRequest,
-  ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse 
+  ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
+  ConnectorItem, ToggleConnectorRequest
 } from '../types'
 
 const BASE_URL = '/api/v1'
@@ -313,7 +314,60 @@ export const api = {
       throw new Error(err.error || 'Failed to publish to Confluence')
     }
     return res.json()
+  },
+
+  // Modular Connector Catalog
+  async getConnectorCatalog(): Promise<ConnectorItem[]> {
+    const res = await fetch(`${BASE_URL}/connectors/catalog`)
+    if (!res.ok) throw new Error('Failed to fetch connector catalog')
+    return res.json()
+  },
+
+  async getConnector(id: string): Promise<ConnectorItem> {
+    const res = await fetch(`${BASE_URL}/connectors/items/${id}`)
+    if (!res.ok) throw new Error(`Failed to fetch connector ${id}`)
+    return res.json()
+  },
+
+  async updateConnector(id: string, item: ConnectorItem): Promise<ConnectorItem> {
+    const res = await fetch(`${BASE_URL}/connectors/items/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(item)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `Failed to update connector ${id}` }))
+      throw new Error(err.error || `Failed to update connector ${id}`)
+    }
+    return res.json()
+  },
+
+  async toggleConnector(id: string, enabled: boolean): Promise<ConnectorItem> {
+    const res = await fetch(`${BASE_URL}/connectors/items/${id}/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled } as ToggleConnectorRequest)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `Failed to toggle connector ${id}` }))
+      throw new Error(err.error || `Failed to toggle connector ${id}`)
+    }
+    return res.json()
+  },
+
+  async testGenericConnector(id: string, item?: Partial<ConnectorItem>): Promise<TestConnectorResponse> {
+    const res = await fetch(`${BASE_URL}/connectors/items/${id}/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(item || {})
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `Failed to test connector ${id}` }))
+      throw new Error(err.error || `Failed to test connector ${id}`)
+    }
+    return res.json()
   }
 }
+
 
 
