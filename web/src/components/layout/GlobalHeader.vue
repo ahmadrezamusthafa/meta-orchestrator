@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import DaemonStatusPill from '../common/DaemonStatusPill.vue'
 import { useTaskStore } from '../../stores/tasks'
 import { useLayoutStore } from '../../stores/layout'
@@ -14,6 +14,7 @@ const workspaces = [
   'E-Commerce Multi-Repo Stack',
   'Fintech Payment Gateway Suite',
 ]
+const firstBlockedTask = computed(() => taskStore.tasks.find(t => t.state === 'BLOCKED_FRUSTRATION'))
 </script>
 
 <template>
@@ -37,8 +38,9 @@ const workspaces = [
     <div class="flex items-center gap-4">
       <router-link
         v-if="taskStore.frustratedTaskCount > 0"
-        to="/"
+        :to="firstBlockedTask ? `/tasks/${firstBlockedTask.id}` : '/'"
         class="flex items-center gap-1.5 px-2.5 py-1 bg-rose-950 border border-rose-800/80 text-rose-300 rounded-full text-xs font-mono font-medium animate-pulse-subtle hover:bg-rose-900 transition-colors"
+        :title="firstBlockedTask ? `Inspect blocked task ${firstBlockedTask.id}` : 'Inspect blocked tasks'"
       >
         <AlertOctagon class="w-3.5 h-3.5 text-rose-400" />
         <span>{{ taskStore.frustratedTaskCount }} Task Blocked</span>

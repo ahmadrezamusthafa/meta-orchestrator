@@ -29,6 +29,18 @@ const sourceBranch = ref('')
 const routerStrategy = ref('BEST_PRACTICE')
 const selectedMethod = ref('Auto')
 const isSubmitting = ref(false)
+const externalPlanContent = ref('')
+const externalPlanName = ref('')
+
+function handleFileSelected(file: File) {
+  externalPlanName.value = file.name
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    externalPlanContent.value = (e.target?.result as string) || ''
+    toastStore.info('Prerequisite Ingested', `Loaded ${file.name} into slice pipeline`)
+  }
+  reader.readAsText(file)
+}
 
 const allRepos = ['frontend-portal', 'backend-core', 'api-contracts']
 
@@ -124,6 +136,13 @@ async function handleSubmit() {
         produce_video: produceVideo.value,
       }
       payload.source_branch = sourceBranch.value
+      if (externalPlanContent.value) {
+        if (externalPlanName.value.toLowerCase().includes('prd')) {
+          payload.external_prd = externalPlanContent.value
+        } else {
+          payload.external_task_plan = externalPlanContent.value
+        }
+      }
     }
 
     const created = await taskStore.createTask(payload)
@@ -270,7 +289,7 @@ async function handleSubmit() {
 
           <ArtifactUploadDropzone
             v-model:branch-name="sourceBranch"
-            @file-selected="() => {}"
+            @file-selected="handleFileSelected"
           />
         </template>
 

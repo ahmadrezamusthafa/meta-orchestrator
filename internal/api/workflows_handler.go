@@ -38,6 +38,19 @@ var defaultWorkflows = []types.WorkflowDefinition{
 			{ID: "hotfix_validation", Name: "Regression Suite & Fast Merge", Type: types.StageTypeReview, AssignedRole: "release_manager", AllowedMethods: []string{"Supervisor"}, WriteLockWorkspace: false, RequiresGate: true},
 		},
 	},
+	{
+		ID:          "microservice_api",
+		Name:        "Microservice API & Contract Pipeline (4-Stage)",
+		Description: "Contract-first pipeline for distributed microservices with automated schema validation and consumer testing.",
+		Version:     "1.0.0",
+		DefaultRole: "architect",
+		Stages: []types.WorkflowStage{
+			{ID: "contract_spec", Name: "OpenAPI & Protobuf Schema Spec", Type: types.StageTypeAutomated, AssignedRole: "architect", AllowedMethods: []string{"BMAD"}, WriteLockWorkspace: true},
+			{ID: "contract_tests", Name: "Consumer-Driven Contract Tests", Type: types.StageTypeAutomated, AssignedRole: "qa_engineer", AllowedMethods: []string{"Supervisor"}, WriteLockWorkspace: true},
+			{ID: "mock_implementation", Name: "Service Mock Implementation", Type: types.StageTypeAutomated, AssignedRole: "developer", AllowedMethods: []string{"ReAct", "BMAD"}, WriteLockWorkspace: false},
+			{ID: "consumer_verification", Name: "Cross-Repo Consumer Verification", Type: types.StageTypeReview, AssignedRole: "release_manager", AllowedMethods: []string{"Supervisor"}, WriteLockWorkspace: false, RequiresGate: true},
+		},
+	},
 }
 
 func (r *Router) handleWorkflows(w http.ResponseWriter, req *http.Request) {

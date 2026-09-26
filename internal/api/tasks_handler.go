@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,16 +13,18 @@ import (
 )
 
 type CreateTaskRequest struct {
-	Title           string            `json:"title"`
-	Description     string            `json:"description"`
-	WorkflowID      string            `json:"workflow_id"`
-	AssignedRepos   []string          `json:"assigned_repos"`
-	SelectedMethod  string            `json:"selected_method"`
-	RouterStrategy  string            `json:"router_strategy"`
-	ActiveSlice     *types.StageSlice `json:"active_slice,omitempty"`
-	SourceBranch    string            `json:"source_branch,omitempty"`
-	MaxTokenBudget  int64             `json:"max_token_budget,omitempty"`
-	Complexity      string            `json:"complexity,omitempty"`
+	Title            string            `json:"title"`
+	Description      string            `json:"description"`
+	WorkflowID       string            `json:"workflow_id"`
+	AssignedRepos    []string          `json:"assigned_repos"`
+	SelectedMethod   string            `json:"selected_method"`
+	RouterStrategy   string            `json:"router_strategy"`
+	ActiveSlice      *types.StageSlice `json:"active_slice,omitempty"`
+	SourceBranch     string            `json:"source_branch,omitempty"`
+	ExternalTaskPlan string            `json:"external_task_plan,omitempty"`
+	ExternalPRD      string            `json:"external_prd,omitempty"`
+	MaxTokenBudget   int64             `json:"max_token_budget,omitempty"`
+	Complexity       string            `json:"complexity,omitempty"`
 }
 
 type InjectContextRequest struct {
@@ -152,6 +156,20 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 			},
 			CreatedAt: now,
 			UpdatedAt: now,
+		}
+
+		if body.ActiveSlice != nil && body.ActiveSlice.ProduceVideo {
+			newTask.Metadata["video_url"] = fmt.Sprintf("/api/v1/artifacts/%s/videos/run_final.mp4", taskID)
+		}
+
+		taskArtifactDir := filepath.Join(r.cfg.RootDir, ".sdlc", "artifacts", taskID)
+		_ = os.MkdirAll(taskArtifactDir, 0755)
+
+		if body.ExternalTaskPlan != "" {
+			_ = os.WriteFile(filepath.Join(taskArtifactDir, "TASK_PLAN.md"), []byte(body.ExternalTaskPlan), 0644)
+		}
+		if body.ExternalPRD != "" {
+			_ = os.WriteFile(filepath.Join(taskArtifactDir, "PRD.md"), []byte(body.ExternalPRD), 0644)
 		}
 
 		r.tasks[taskID] = newTask

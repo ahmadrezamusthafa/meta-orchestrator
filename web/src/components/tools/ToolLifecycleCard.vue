@@ -79,11 +79,16 @@ defineEmits<{
         @click="$emit('install', tool)"
         type="button"
         class="h-8 px-3 rounded text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5 transition-colors"
-        :class="tool.status === 'UPDATE_AVAILABLE' ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'"
+        :class="{
+          'bg-amber-600 hover:bg-amber-500 text-white': tool.status === 'UPDATE_AVAILABLE',
+          'bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700': tool.status === 'HEALTHY',
+          'bg-emerald-600 hover:bg-emerald-500 text-white': tool.status !== 'UPDATE_AVAILABLE' && tool.status !== 'HEALTHY',
+        }"
       >
         <ArrowUpCircle v-if="tool.status === 'UPDATE_AVAILABLE'" class="w-3.5 h-3.5" />
+        <CheckCircle2 v-else-if="tool.status === 'HEALTHY'" class="w-3.5 h-3.5 text-emerald-400" />
         <CheckCircle2 v-else class="w-3.5 h-3.5" />
-        <span>{{ tool.status === 'UPDATE_AVAILABLE' ? `Update to ${tool.latest_version}` : 'Guided Install' }}</span>
+        <span>{{ tool.status === 'UPDATE_AVAILABLE' ? `Update to ${tool.latest_version}` : tool.status === 'HEALTHY' ? 'Healthy (Re-test)' : 'Guided Install' }}</span>
       </button>
     </div>
   </div>

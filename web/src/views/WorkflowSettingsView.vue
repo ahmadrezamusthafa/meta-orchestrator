@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useWorkflowStore } from '../stores/workflows'
+import { useToastStore } from '../stores/toast'
 import WorkflowCatalog from '../components/workflows/WorkflowCatalog.vue'
 import WorkflowStageBuilder from '../components/workflows/WorkflowStageBuilder.vue'
 import KanbanProjectionPreview from '../components/workflows/KanbanProjectionPreview.vue'
 import BtnPrimary from '../components/common/BtnPrimary.vue'
-import { GitFork, Plus, Trash2, Download, Check } from 'lucide-vue-next'
+import { GitFork, Plus, Trash2, Download, Save, Check } from 'lucide-vue-next'
 
 const workflowStore = useWorkflowStore()
+const toastStore = useToastStore()
 
 const currentStages = ref<any[]>([])
 
@@ -36,18 +38,85 @@ function addStage() {
     write_lock_workspace: false,
     requires_gate: false,
   })
+  toastStore.info(`Added Stage: Custom Stage ${num}`)
 }
 
 function removeStage(index: number) {
-  currentStages.value.splice(index, 1)
+  const removed = currentStages.value.splice(index, 1)
+  toastStore.warning(`Removed Stage: ${removed[0]?.name || 'Stage'}`)
+}
+
+const isSaving = ref(false)
+async function saveWorkflowChanges() {
+  if (!workflowStore.activeWorkflow) return
+  isSaving.value = true
+  try {
+    const updated = {
+      ...workflowStore.activeWorkflow,
+      stages: currentStages.value,
+    }
+    await workflowStore.createWorkflow(updated)
+    toastStore.success('Workflow Saved', `${updated.name} updated with ${currentStages.value.length} stages`)
+  } catch (err: any) {
+    toastStore.error('Save Failed', err?.message || 'Server error')
+  } finally {
+    isSaving.value = false
+  }
 }
 
 const isExporting = ref(false)
 function exportYaml() {
   isExporting.value = true
-  setTimeout(() => {
-    isExporting.value = false
-  }, 500)
+  try {
+    const wf = workflowStore.activeWorkflow || {
+      id: 'custom-sdlc',
+      name: 'Custom SDLC Pipeline',
+      description: 'Zero-trust software factory pipeline',
+      version: '1.0.0',
+    }
+
+    let yaml = `# Declarative Meta-Orchestrator SDLC Pipeline Schema\n# Generated: ${new Date().toISOString()}\n\n`
+    yaml += `workflow:\n`
+    yaml += `  id: "${wf.id}"\n`
+    yaml += `  name: "${wf.name}"\n`
+    yaml += `  description: "${wf.description}"\n`
+    yaml += `  version: "${wf.version || '1.0.0'}"\n`
+    yaml += `  stages:\n`
+
+    currentStages.value.forEach((stage) => {
+      yaml += `    - id: "${stage.id}"\n`
+      yaml += `      name: "${stage.name}"\n`
+      yaml += `      method: "${stage.allowed_methods?.[0] || 'BMAD'}"\n`
+      yaml += `      roles: ["${stage.assigned_role}"]\n`
+      if (stage.write_lock_workspace) {
+        yaml += `      write_locked: true\n`
+      }
+      yaml += `      gates:\n`
+      if (stage.requires_gate) {
+        yaml += `        human_approval: true\n`
+      } else {
+        yaml += `        auto_verify: true\n`
+      }
+    })
+
+    const blob = new Blob([yaml], { type: 'text/yaml;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'workflow.yaml'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+
+    toastStore.success('Workflow Exported', 'Saved to .sdlc/workflow.yaml')
+  } catch (err) {
+    toastStore.error('Export Failed')
+  } finally {
+    setTimeout(() => {
+      isExporting.value = false
+    }, 400)
+  }
 }
 </script>
 
@@ -62,10 +131,22 @@ function exportYaml() {
         </h2>
       </div>
 
-      <BtnPrimary :loading="isExporting" @click="exportYaml">
-        <Download class="w-3.5 h-3.5" />
-        <span>Export to .sdlc/workflow.yaml</span>
-      </BtnPrimary>
+      <div class="flex items-center gap-2.5">
+        <button
+          @click="saveWorkflowChanges"
+          :disabled="isSaving"
+          type="button"
+          class="h-8 px-3 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-1.5 transition-colors"
+        >
+          <Save class="w-3.5 h-3.5 text-emerald-400" />
+          <span>{{ isSaving ? 'Saving...' : 'Save Workflow' }}</span>
+        </button>
+
+        <BtnPrimary :loading="isExporting" @click="exportYaml">
+          <Download class="w-3.5 h-3.5" />
+          <span>Export .sdlc/workflow.yaml</span>
+        </BtnPrimary>
+      </div>
     </div>
 
     <!-- Content -->

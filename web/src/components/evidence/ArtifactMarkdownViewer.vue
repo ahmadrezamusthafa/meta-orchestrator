@@ -22,6 +22,7 @@ const tabs = [
   'PRD.md',
   'ATDD_SUITE.md',
   'TECH_DOC_RFC.md',
+  'ARCHITECTURE.md',
   'TASK_PLAN.md',
   'UAT_PREPARATION.md',
   'EVIDENCE.md',

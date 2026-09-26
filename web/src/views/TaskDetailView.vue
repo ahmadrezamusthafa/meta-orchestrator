@@ -265,10 +265,12 @@ async function handleGateReject() {
               />
               <VideoPlayerVault
                 v-else-if="rightTab === 'video'"
-                :video-url="currentTask?.metadata?.video_url || `/api/v1/artifacts/${taskId}/run_final.mp4`"
+                :video-url="currentTask?.metadata?.video_url || `/api/v1/artifacts/${taskId}/videos/run_final.mp4`"
+                :task-title="currentTask?.title"
               />
               <ScreenshotDiff
                 v-else-if="rightTab === 'screenshots'"
+                :task-id="taskId"
               />
             </div>
 
