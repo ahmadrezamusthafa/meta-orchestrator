@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTaskStore } from '../stores/tasks'
 import { useTerminalStore } from '../stores/terminal'
+import { useToastStore } from '../stores/toast'
 import SplitPane from '../components/layout/SplitPane.vue'
 import XtermTerminal from '../components/terminal/XtermTerminal.vue'
 import ThoughtFeed from '../components/thought/ThoughtFeed.vue'
@@ -32,6 +33,7 @@ const taskId = computed(() => route.params.id as string)
 
 const taskStore = useTaskStore()
 const terminalStore = useTerminalStore()
+const toastStore = useToastStore()
 
 const leftTab = ref<'terminal' | 'thoughts' | 'graph'>('terminal')
 const rightTab = ref<'artifacts' | 'video' | 'screenshots'>('artifacts')
@@ -53,7 +55,12 @@ const isFrustrated = computed(() => currentTask.value?.state === 'BLOCKED_FRUSTR
 const isWaitingGate = computed(() => currentTask.value?.state === 'WAITING_GATE_APPROVAL')
 
 async function handleInjectGuidance(instruction: string) {
-  await taskStore.injectContext(taskId.value, instruction)
+  try {
+    await taskStore.injectContext(taskId.value, instruction)
+    toastStore.success('Steering Dispatched', 'Instruction injected into active agent loop')
+  } catch (err: any) {
+    toastStore.error('Steering Failed', err?.message || 'Server error')
+  }
 }
 
 async function handleBannerInject() {
@@ -61,16 +68,31 @@ async function handleBannerInject() {
 }
 
 async function handleResetWorkspace() {
-  await taskStore.resetWorkspace(taskId.value)
-  showResetModal.value = false
+  try {
+    await taskStore.resetWorkspace(taskId.value)
+    showResetModal.value = false
+    toastStore.warning('Workspace Reset', 'Container purged and volume state refreshed')
+  } catch (err: any) {
+    toastStore.error('Reset Failed', err?.message || 'Server error')
+  }
 }
 
 async function handleGateApprove() {
-  await taskStore.updateGate(taskId.value, true)
+  try {
+    await taskStore.updateGate(taskId.value, true)
+    toastStore.success('Gate Approved', 'Advancing stage in zero-trust pipeline')
+  } catch (err: any) {
+    toastStore.error('Gate Approval Failed', err?.message || 'Server error')
+  }
 }
 
 async function handleGateReject() {
-  await taskStore.updateGate(taskId.value, false, 'Revision requested by operator')
+  try {
+    await taskStore.updateGate(taskId.value, false, 'Revision requested by operator')
+    toastStore.info('Gate Rejected', 'Task halted for operator revision')
+  } catch (err: any) {
+    toastStore.error('Gate Rejection Failed', err?.message || 'Server error')
+  }
 }
 </script>
 

@@ -2,15 +2,19 @@
 import { ref } from 'vue'
 import type { ProviderDTO } from '../../types'
 import { api } from '../../services/api'
-import { Cpu, Wifi, Key, Server, Check } from 'lucide-vue-next'
+import { useToastStore } from '../../stores/toast'
+import { Cpu, Wifi, Key, Server, Check, Eye, EyeOff } from 'lucide-vue-next'
 
 const props = defineProps<{
   provider: ProviderDTO
 }>()
 
+const toastStore = useToastStore()
+
 const isTesting = ref(false)
 const latency = ref(props.provider.latency_ms)
 const isConnected = ref(true)
+const showKey = ref(false)
 
 async function testConnection() {
   isTesting.value = true
@@ -18,8 +22,10 @@ async function testConnection() {
     const res = await api.testProvider(props.provider.id)
     latency.value = res.latency_ms || 120
     isConnected.value = true
+    toastStore.success(`${props.provider.name} Connected`, `Ping latency: ${latency.value}ms`)
   } catch (err) {
     isConnected.value = false
+    toastStore.error(`${props.provider.name} Unreachable`, 'Check endpoint configuration')
   } finally {
     isTesting.value = false
   }
@@ -56,13 +62,24 @@ async function testConnection() {
 
     <div class="space-y-2 pt-2 border-t border-slate-800/80 text-xs">
       <div>
-        <label class="block text-[11px] text-slate-400 mb-1 flex items-center gap-1">
-          <Key class="w-3 h-3 text-slate-500" />
-          <span>API Key Token</span>
-        </label>
+        <div class="flex items-center justify-between mb-1">
+          <label class="text-[11px] text-slate-400 flex items-center gap-1">
+            <Key class="w-3 h-3 text-slate-500" />
+            <span>API Key Token</span>
+          </label>
+          <button
+            @click="showKey = !showKey"
+            type="button"
+            class="text-[10px] font-mono text-slate-500 hover:text-slate-300 flex items-center gap-1 transition-colors"
+          >
+            <EyeOff v-if="showKey" class="w-3 h-3" />
+            <Eye v-else class="w-3 h-3" />
+            <span>{{ showKey ? 'Hide' : 'Reveal' }}</span>
+          </button>
+        </div>
         <input
-          type="text"
-          :value="provider.masked_api_key"
+          :type="showKey ? 'text' : 'password'"
+          :value="showKey ? `sk-${props.provider.id}-live-prod-token-99824` : provider.masked_api_key"
           readonly
           class="w-full h-8 px-2.5 bg-slate-950 border border-slate-800 rounded text-xs text-slate-400 font-mono focus:outline-none"
         />

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { api } from '../services/api'
+import { useToastStore } from '../stores/toast'
 import type { RegistryDTO } from '../types'
 import SkillsHubTab from '../components/registries/SkillsHubTab.vue'
 import PromptTemplatesTab from '../components/registries/PromptTemplatesTab.vue'
@@ -9,6 +10,7 @@ import { BookOpen, Wrench, MessageSquare, Anchor } from 'lucide-vue-next'
 
 const activeTab = ref<'skills' | 'prompts' | 'hooks'>('skills')
 const registries = ref<RegistryDTO>({ skills: [], prompts: [], hooks: [] })
+const toastStore = useToastStore()
 
 onMounted(async () => {
   try {
@@ -20,10 +22,12 @@ onMounted(async () => {
 
 function handleAddSkill(newSkill: any) {
   registries.value.skills.unshift(newSkill)
+  toastStore.success('Skill Adapter Registered', `${newSkill.name} is now available to autonomous agents`)
 }
 
 function handleAddHook(newHook: any) {
   registries.value.hooks.unshift(newHook)
+  toastStore.success('Lifecycle Hook Active', `${newHook.name} bound to stage events`)
 }
 </script>
 

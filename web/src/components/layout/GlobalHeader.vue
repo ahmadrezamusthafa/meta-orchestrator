@@ -2,9 +2,12 @@
 import { ref } from 'vue'
 import DaemonStatusPill from '../common/DaemonStatusPill.vue'
 import { useTaskStore } from '../../stores/tasks'
+import { useLayoutStore } from '../../stores/layout'
 import { AlertOctagon, Flame, FolderGit2 } from 'lucide-vue-next'
 
 const taskStore = useTaskStore()
+const layoutStore = useLayoutStore()
+
 const selectedWorkspace = ref('Default Monorepo (meta-orchestrator)')
 const workspaces = [
   'Default Monorepo (meta-orchestrator)',
@@ -15,7 +18,8 @@ const workspaces = [
 
 <template>
   <header
-    class="fixed top-0 right-0 left-16 h-12 bg-slate-900/90 backdrop-blur border-b border-slate-800 px-4 flex items-center justify-between z-30 transition-all duration-200"
+    class="fixed top-0 right-0 h-12 bg-slate-900/90 backdrop-blur border-b border-slate-800 px-4 flex items-center justify-between z-30 transition-all duration-200"
+    :class="layoutStore.isNavExpanded ? 'left-60' : 'left-16'"
   >
     <div class="flex items-center gap-3">
       <div class="flex items-center gap-2 text-xs text-slate-400">

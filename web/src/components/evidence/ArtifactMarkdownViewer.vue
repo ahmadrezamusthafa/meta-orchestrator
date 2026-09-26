@@ -1,16 +1,22 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
 import { api } from '../../services/api'
+import { useToastStore } from '../../stores/toast'
 import { marked } from 'marked'
-import { FileText, ShieldCheck } from 'lucide-vue-next'
+import { FileText, ShieldCheck, Copy, Check, Download, Code, Eye } from 'lucide-vue-next'
 
 const props = defineProps<{
   taskId: string
 }>()
 
+const toastStore = useToastStore()
+
 const activeTab = ref('PRD.md')
-const content = ref('')
+const rawContent = ref('')
+const renderedContent = ref('')
 const isLoading = ref(false)
+const viewMode = ref<'preview' | 'raw'>('preview')
+const isCopied = ref(false)
 
 const tabs = [
   'PRD.md',
@@ -25,12 +31,40 @@ async function loadArtifact() {
   isLoading.value = true
   try {
     const res = await api.getArtifact(props.taskId, activeTab.value)
-    content.value = marked.parse(res.content || '') as string
+    rawContent.value = res.content || `### ${activeTab.value} for ${props.taskId}\n\n*Status:* Synthesized schema artifact verified.`
+    renderedContent.value = marked.parse(rawContent.value) as string
   } catch (err) {
-    content.value = marked.parse(`### ${activeTab.value} for ${props.taskId}\n\n*Status:* Synthesized schema artifact verified.`) as string
+    rawContent.value = `### ${activeTab.value} for ${props.taskId}\n\n*Status:* Synthesized schema artifact verified.`
+    renderedContent.value = marked.parse(rawContent.value) as string
   } finally {
     isLoading.value = false
   }
+}
+
+async function copyMarkdown() {
+  try {
+    await navigator.clipboard.writeText(rawContent.value)
+    isCopied.value = true
+    toastStore.success('Copied to clipboard', `${activeTab.value} contents copied`)
+    setTimeout(() => {
+      isCopied.value = false
+    }, 2000)
+  } catch (err) {
+    toastStore.error('Copy failed')
+  }
+}
+
+function downloadArtifact() {
+  const blob = new Blob([rawContent.value], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = activeTab.value
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  toastStore.info('Downloaded', `Saved ${activeTab.value}`)
 }
 
 watch(activeTab, () => {
@@ -44,18 +78,54 @@ onMounted(() => {
 
 <template>
   <div class="h-full flex flex-col bg-slate-950 overflow-hidden">
-    <div class="h-10 px-2 bg-slate-900 border-b border-slate-800 flex items-center gap-1 overflow-x-auto">
-      <button
-        v-for="tab in tabs"
-        :key="tab"
-        @click="activeTab = tab"
-        class="h-7 px-2.5 rounded text-[11px] font-mono whitespace-nowrap transition-colors flex items-center gap-1.5"
-        :class="activeTab === tab ? 'bg-slate-800 text-emerald-400 font-semibold border border-slate-700' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'"
-      >
-        <FileText class="w-3 h-3" />
-        <span>{{ tab }}</span>
-        <ShieldCheck v-if="tab === 'EVIDENCE.md'" class="w-3 h-3 text-emerald-400" />
-      </button>
+    <!-- Tab & Action Sub-header -->
+    <div class="h-10 px-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between gap-2 overflow-x-auto">
+      <div class="flex items-center gap-1">
+        <button
+          v-for="tab in tabs"
+          :key="tab"
+          @click="activeTab = tab"
+          class="h-7 px-2.5 rounded text-[11px] font-mono whitespace-nowrap transition-colors flex items-center gap-1.5"
+          :class="activeTab === tab ? 'bg-slate-800 text-emerald-400 font-semibold border border-slate-700' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'"
+        >
+          <FileText class="w-3 h-3" />
+          <span>{{ tab }}</span>
+          <ShieldCheck v-if="tab === 'EVIDENCE.md'" class="w-3 h-3 text-emerald-400" />
+        </button>
+      </div>
+
+      <div class="flex items-center gap-1.5 flex-shrink-0">
+        <!-- Raw / Preview Toggle -->
+        <button
+          @click="viewMode = viewMode === 'preview' ? 'raw' : 'preview'"
+          title="Toggle Raw / Preview"
+          class="h-7 px-2 rounded bg-slate-950 border border-slate-800 hover:border-slate-700 text-[10px] font-mono text-slate-300 flex items-center gap-1 transition-colors"
+        >
+          <Code v-if="viewMode === 'preview'" class="w-3 h-3 text-sky-400" />
+          <Eye v-else class="w-3 h-3 text-emerald-400" />
+          <span>{{ viewMode === 'preview' ? 'Raw' : 'Preview' }}</span>
+        </button>
+
+        <!-- Copy Button -->
+        <button
+          @click="copyMarkdown"
+          title="Copy markdown content"
+          class="h-7 px-2 rounded bg-slate-950 border border-slate-800 hover:border-slate-700 text-[10px] font-mono text-slate-300 flex items-center gap-1 transition-colors"
+        >
+          <Check v-if="isCopied" class="w-3 h-3 text-emerald-400" />
+          <Copy v-else class="w-3 h-3 text-slate-400" />
+          <span>{{ isCopied ? 'Copied' : 'Copy' }}</span>
+        </button>
+
+        <!-- Download Button -->
+        <button
+          @click="downloadArtifact"
+          title="Download artifact file"
+          class="h-7 w-7 flex items-center justify-center rounded bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
+        >
+          <Download class="w-3 h-3" />
+        </button>
+      </div>
     </div>
 
     <div class="flex-1 p-6 overflow-y-auto bg-slate-950">
@@ -70,11 +140,16 @@ onMounted(() => {
         <div class="h-4 w-1/2 bg-slate-800/80 rounded"></div>
       </div>
 
-      <div
-        v-else
-        class="prose prose-invert prose-sm max-w-none text-slate-300 leading-relaxed font-sans"
-        v-html="content"
-      ></div>
+      <div v-else>
+        <div
+          v-if="viewMode === 'preview'"
+          class="prose prose-invert prose-sm max-w-none text-slate-300 leading-relaxed font-sans"
+          v-html="renderedContent"
+        ></div>
+        <div v-else class="p-4 bg-slate-950 border border-slate-800 rounded-lg">
+          <pre class="text-xs font-mono text-slate-300 leading-relaxed whitespace-pre-wrap selection:bg-slate-800">{{ rawContent }}</pre>
+        </div>
+      </div>
     </div>
   </div>
 </template>

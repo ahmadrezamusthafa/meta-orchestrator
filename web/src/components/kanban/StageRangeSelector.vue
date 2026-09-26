@@ -6,7 +6,6 @@ const props = defineProps<{
   startStage: string
   haltStage: string
   produceVideo: boolean
-  stages?: Array<{ id: string; name: string }>
 }>()
 
 const emit = defineEmits<{
@@ -15,7 +14,7 @@ const emit = defineEmits<{
   (e: 'update:produceVideo', val: boolean): void
 }>()
 
-const fallbackStages = [
+const availableStages = [
   { id: 'prd_discovery', name: 'Stage 1: PRD & Discovery' },
   { id: 'atdd_creation', name: 'Stage 2: ATDD Creation (Red Phase)' },
   { id: 'techdoc_rfc', name: 'Stage 3: Tech Doc / RFC Review' },
@@ -25,13 +24,6 @@ const fallbackStages = [
   { id: 'uat_verification', name: 'Stage 7: Manual & UAT Verification' },
   { id: 'signoff_merge', name: 'Stage 8: Sign-Off & Merge' },
 ]
-
-const availableStages = computed(() => {
-  if (props.stages && props.stages.length > 0) {
-    return props.stages
-  }
-  return fallbackStages
-})
 
 const startModel = computed({
   get: () => props.startStage,

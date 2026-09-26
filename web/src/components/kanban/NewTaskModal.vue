@@ -2,10 +2,11 @@
 import { ref, computed, watch } from 'vue'
 import { useTaskStore } from '../../stores/tasks'
 import { useWorkflowStore } from '../../stores/workflows'
+import { useToastStore } from '../../stores/toast'
 import BtnPrimary from '../common/BtnPrimary.vue'
 import StageRangeSelector from './StageRangeSelector.vue'
 import ArtifactUploadDropzone from './ArtifactUploadDropzone.vue'
-import { X, Sparkles, Layers, GitFork } from 'lucide-vue-next'
+import { X, Sparkles, Layers, GitFork, Zap } from 'lucide-vue-next'
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -14,6 +15,7 @@ const emit = defineEmits<{
 
 const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
+const toastStore = useToastStore()
 
 const title = ref('')
 const description = ref('')
@@ -29,6 +31,50 @@ const selectedMethod = ref('Auto')
 const isSubmitting = ref(false)
 
 const allRepos = ['frontend-portal', 'backend-core', 'api-contracts']
+
+const presets = [
+  {
+    name: '⚡ Stripe Payment Gateway',
+    title: 'Implement Stripe Checkout & Webhook Idempotency',
+    desc: 'Integrate Stripe SDK in frontend-portal and webhook idempotency table in backend-core with Redis distributed locking.',
+    repos: ['frontend-portal', 'backend-core'],
+    scope: 'full' as const,
+    strategy: 'BEST_PRACTICE',
+    method: 'Auto',
+  },
+  {
+    name: '🐛 Hotfix JWT Expiry Race',
+    title: 'Hotfix: Refresh Token Expiry Race Condition',
+    desc: 'Address token refresh race condition on concurrent HTTP requests causing premature 401 unauthorized errors.',
+    repos: ['frontend-portal'],
+    scope: 'slice' as const,
+    startStage: 'task_implementation',
+    haltStage: 'e2e_validation',
+    strategy: 'BEST_PRACTICE',
+    method: 'ReAct',
+  },
+  {
+    name: '📦 Inventory Schema Contracts',
+    title: 'Design & Implement Inventory Reservation Schema',
+    desc: 'Contract-first OpenAPI & protobuf schemas for warehouse inventory sync across frontend and backend services.',
+    repos: ['frontend-portal', 'backend-core', 'api-contracts'],
+    scope: 'full' as const,
+    strategy: 'RULE_BASED',
+    method: 'Supervisor',
+  },
+]
+
+function applyPreset(p: typeof presets[0]) {
+  title.value = p.title
+  description.value = p.desc
+  selectedRepos.value = [...p.repos]
+  executionScope.value = p.scope
+  if (p.startStage) startStage.value = p.startStage
+  if (p.haltStage) haltStage.value = p.haltStage
+  routerStrategy.value = p.strategy
+  selectedMethod.value = p.method
+  toastStore.info(`Loaded preset: ${p.name}`)
+}
 
 const selectedWorkflow = computed(() => {
   return workflowStore.workflows.find(w => w.id === selectedWorkflowId.value) || workflowStore.activeWorkflow
@@ -81,9 +127,11 @@ async function handleSubmit() {
     }
 
     const created = await taskStore.createTask(payload)
+    toastStore.success(`Task Launched`, `${created.id} initialized into factory pipeline`)
     emit('created', created)
     emit('close')
-  } catch (err) {
+  } catch (err: any) {
+    toastStore.error(`Failed to launch task`, err?.message || 'Server error')
     console.error('Failed to create task:', err)
   } finally {
     isSubmitting.value = false
@@ -111,6 +159,24 @@ async function handleSubmit() {
       </div>
 
       <div class="p-6 overflow-y-auto space-y-4">
+        <!-- Quick Presets -->
+        <div>
+          <div class="flex items-center gap-1.5 text-xs font-medium text-slate-400 mb-2">
+            <Zap class="w-3.5 h-3.5 text-amber-400" />
+            <span>Quick Start Demo Presets:</span>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="p in presets"
+              :key="p.name"
+              @click="applyPreset(p)"
+              type="button"
+              class="px-2.5 py-1 rounded-md bg-slate-950 border border-slate-800 hover:border-emerald-700 hover:text-emerald-300 text-xs font-mono text-slate-300 transition-colors text-left"
+            >
+              {{ p.name }}
+            </button>
+          </div>
+        </div>
         <div>
           <label class="block text-xs font-medium text-slate-300 mb-1.5">Task Title / Feature Objective *</label>
           <input
