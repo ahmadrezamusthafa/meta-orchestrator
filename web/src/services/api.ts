@@ -1,4 +1,4 @@
-import type { Task, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, Project, ScanDirResult, BrowseFSResponse } from '../types'
+import type { Task, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse } from '../types'
 
 const BASE_URL = '/api/v1'
 
@@ -215,6 +215,20 @@ export const api = {
       throw new Error(err.error || 'Failed to browse directory')
     }
     return res.json()
+  },
+
+  async createFolder(parentPath: string, folderName: string): Promise<CreateFolderResponse> {
+    const res = await fetch(`${BASE_URL}/fs/mkdir`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parent_path: parentPath, folder_name: folderName })
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to create folder' }))
+      throw new Error(err.error || 'Failed to create folder')
+    }
+    return res.json()
   }
 }
+
 

@@ -202,3 +202,17 @@ export interface BrowseFSResponse {
   quick_bookmarks: QuickBookmark[]
 }
 
+export interface CreateFolderRequest {
+  parent_path?: string
+  folder_name?: string
+  path?: string
+}
+
+export interface CreateFolderResponse {
+  success: boolean
+  path: string
+  name: string
+  parent_path: string
+}
+
+

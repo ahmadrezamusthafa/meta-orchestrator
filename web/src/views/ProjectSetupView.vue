@@ -152,6 +152,7 @@ const pickerTarget = ref<
   | null
 >(null)
 const pickerRepoIndex = ref<number | null>(null)
+const pickerInitialCreateFolder = ref(false)
 
 function openDirectoryPicker(
   target:
@@ -167,13 +168,15 @@ function openDirectoryPicker(
   repoIndex: number | null = null,
   initialPath: string = '',
   title: string = 'Select Directory',
-  helper: string = 'Choose a folder from your host filesystem'
+  helper: string = 'Choose a folder from your host filesystem',
+  initialCreateFolder: boolean = false
 ) {
   pickerTarget.value = target
   pickerRepoIndex.value = repoIndex
   pickerInitialPath.value = initialPath
   pickerTitle.value = title
   pickerHelperText.value = helper
+  pickerInitialCreateFolder.value = initialCreateFolder
   isDirectoryPickerOpen.value = true
 }
 
@@ -1479,7 +1482,17 @@ function launchTaskForProject() {
             </div>
 
             <div class="space-y-1.5 md:col-span-2">
-              <label class="font-semibold text-slate-200">Unified Workspace Directory (Root Target)</label>
+              <div class="flex items-center justify-between">
+                <label class="font-semibold text-slate-200">Unified Workspace Directory (Root Target)</label>
+                <button
+                  type="button"
+                  @click="openDirectoryPicker('edit_root', null, editFormRootDir, 'Create & Select Root Directory', 'Create a new workspace folder or choose an existing root directory', true)"
+                  class="text-[11px] text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1 hover:underline"
+                >
+                  <FolderPlus class="w-3.5 h-3.5" />
+                  <span>+ Create New Folder</span>
+                </button>
+              </div>
               <div class="flex gap-2">
                 <input
                   v-model="editFormRootDir"
@@ -1752,7 +1765,17 @@ function launchTaskForProject() {
             </div>
 
             <div class="space-y-1.5 md:col-span-2">
-              <label class="font-semibold text-slate-200">Unified Workspace Directory (Root Target)</label>
+              <div class="flex items-center justify-between">
+                <label class="font-semibold text-slate-200">Unified Workspace Directory (Root Target)</label>
+                <button
+                  type="button"
+                  @click="openDirectoryPicker('create_root', null, createFormRootDir, 'Create & Select Root Directory', 'Create a new workspace folder or choose an existing root directory', true)"
+                  class="text-[11px] text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1 hover:underline"
+                >
+                  <FolderPlus class="w-3.5 h-3.5" />
+                  <span>+ Create New Folder</span>
+                </button>
+              </div>
               <div class="flex gap-2">
                 <input
                   v-model="createFormRootDir"
@@ -1973,6 +1996,7 @@ function launchTaskForProject() {
       :initial-path="pickerInitialPath"
       :title="pickerTitle"
       :helper-text="pickerHelperText"
+      :initial-create-folder="pickerInitialCreateFolder"
       @select="handleDirectorySelected"
       @close="isDirectoryPickerOpen = false"
     />

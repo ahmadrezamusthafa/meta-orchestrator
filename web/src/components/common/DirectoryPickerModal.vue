@@ -4,6 +4,7 @@ import { api } from '../../services/api'
 import type { BrowseFSResponse, DirectoryItem } from '../../types'
 import {
   Folder,
+  FolderPlus,
   FolderGit2,
   FolderOpen,
   ArrowUp,
@@ -30,12 +31,16 @@ const props = withDefaults(
     initialPath?: string
     title?: string
     helperText?: string
+    canCreateFolder?: boolean
+    initialCreateFolder?: boolean
   }>(),
   {
     isOpen: false,
     initialPath: '',
     title: 'Select Directory',
-    helperText: 'Navigate your host filesystem and choose a directory'
+    helperText: 'Navigate your host filesystem and choose a directory',
+    canCreateFolder: true,
+    initialCreateFolder: false
   }
 )
 
@@ -52,6 +57,14 @@ const selectedPath = ref('')
 const selectedItem = ref<DirectoryItem | null>(null)
 const isManualEditing = ref(false)
 const manualInputPath = ref('')
+
+// New folder creation state
+const isCreatingFolder = ref(false)
+const newFolderName = ref('')
+const isSubmittingFolder = ref(false)
+const createFolderError = ref('')
+const createFolderSuccess = ref('')
+const newFolderInputRef = ref<HTMLInputElement | null>(null)
 
 async function loadDirectory(path?: string) {
   isLoading.value = true
@@ -75,11 +88,80 @@ watch(
     if (open) {
       filterQuery.value = ''
       isManualEditing.value = false
+      isCreatingFolder.value = false
+      newFolderName.value = ''
+      createFolderError.value = ''
+      createFolderSuccess.value = ''
       loadDirectory(props.initialPath || undefined)
+      if (props.initialCreateFolder) {
+        openCreateFolder()
+      }
     }
   },
   { immediate: true }
 )
+
+function openCreateFolder() {
+  isCreatingFolder.value = true
+  newFolderName.value = ''
+  createFolderError.value = ''
+  createFolderSuccess.value = ''
+  setTimeout(() => {
+    newFolderInputRef.value?.focus()
+  }, 50)
+}
+
+function cancelCreateFolder() {
+  isCreatingFolder.value = false
+  newFolderName.value = ''
+  createFolderError.value = ''
+}
+
+async function handleCreateFolder() {
+  const name = newFolderName.value.trim()
+  if (!name) {
+    createFolderError.value = 'Please enter a folder name'
+    return
+  }
+  if (name.includes('/') || name.includes('\\') || name === '..' || name === '.') {
+    createFolderError.value = 'Folder name cannot contain slashes or relative path segments'
+    return
+  }
+
+  const parent = fsData.value?.current_path
+  if (!parent) {
+    createFolderError.value = 'No directory currently active'
+    return
+  }
+
+  isSubmittingFolder.value = true
+  createFolderError.value = ''
+  createFolderSuccess.value = ''
+
+  try {
+    const res = await api.createFolder(parent, name)
+    createFolderSuccess.value = `Created folder "${res.name}"`
+    isCreatingFolder.value = false
+    newFolderName.value = ''
+
+    // Reload directory to show the newly created folder
+    await loadDirectory(parent)
+
+    // Automatically select the new folder
+    selectedPath.value = res.path
+    const createdItem = fsData.value?.directories.find(
+      (d) => d.name === res.name || d.path === res.path
+    )
+    if (createdItem) {
+      selectedItem.value = createdItem
+    }
+  } catch (err: any) {
+    createFolderError.value = err.message || 'Failed to create folder'
+  } finally {
+    isSubmittingFolder.value = false
+  }
+}
+
 
 const filteredDirectories = computed(() => {
   if (!fsData.value?.directories) return []
@@ -307,6 +389,99 @@ function getRoleBadgeClass(role: string) {
         >
           <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isLoading }" />
         </button>
+
+        <!-- New Folder Action Button -->
+        <button
+          v-if="canCreateFolder"
+          type="button"
+          @click="isCreatingFolder ? cancelCreateFolder() : openCreateFolder()"
+          class="px-2.5 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 hover:text-emerald-300 border border-emerald-500/30 text-xs font-semibold flex items-center gap-1.5 transition flex-shrink-0 shadow-sm"
+          :class="{ 'bg-emerald-500/30 text-emerald-200 border-emerald-400': isCreatingFolder }"
+          title="Create a new folder in this directory"
+        >
+          <FolderPlus class="w-3.5 h-3.5" />
+          <span>New Folder</span>
+        </button>
+      </div>
+
+      <!-- Inline Folder Creation Drawer -->
+      <div
+        v-if="isCreatingFolder"
+        class="p-3 bg-emerald-950/40 border-b border-emerald-500/30 space-y-2 animate-in fade-in slide-in-from-top-2 duration-150"
+      >
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <FolderPlus class="w-4 h-4 text-emerald-400" />
+            <span class="text-xs font-semibold text-emerald-200">
+              Create New Folder in
+              <span class="font-mono text-emerald-400 bg-slate-950/80 px-1.5 py-0.5 rounded border border-slate-800 text-[11px]">
+                {{ fsData?.current_path }}
+              </span>
+            </span>
+          </div>
+          <button
+            type="button"
+            @click="cancelCreateFolder"
+            class="text-slate-400 hover:text-slate-200 p-1 rounded hover:bg-slate-800/60 transition"
+            title="Cancel"
+          >
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <form @submit.prevent="handleCreateFolder" class="flex items-center gap-2">
+          <div class="relative flex-1">
+            <input
+              ref="newFolderInputRef"
+              v-model="newFolderName"
+              type="text"
+              placeholder="Enter folder name (e.g. workspace-core, my-services)..."
+              class="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-emerald-500/60 text-slate-100 placeholder-slate-500 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-emerald-400"
+              :disabled="isSubmittingFolder"
+              @keydown.esc="cancelCreateFolder"
+            />
+          </div>
+          <button
+            type="submit"
+            :disabled="isSubmittingFolder || !newFolderName.trim()"
+            class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0 shadow-sm"
+          >
+            <RefreshCw v-if="isSubmittingFolder" class="w-3.5 h-3.5 animate-spin" />
+            <Check v-else class="w-3.5 h-3.5" />
+            <span>{{ isSubmittingFolder ? 'Creating...' : 'Create' }}</span>
+          </button>
+          <button
+            type="button"
+            @click="cancelCreateFolder"
+            :disabled="isSubmittingFolder"
+            class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition"
+          >
+            Cancel
+          </button>
+        </form>
+
+        <div v-if="createFolderError" class="flex items-center gap-1.5 text-xs text-rose-400 font-mono">
+          <AlertCircle class="w-3.5 h-3.5 flex-shrink-0" />
+          <span>{{ createFolderError }}</span>
+        </div>
+      </div>
+
+      <!-- Creation Success Notification Banner -->
+      <div
+        v-if="createFolderSuccess"
+        class="px-4 py-2 bg-emerald-950/60 border-b border-emerald-500/40 flex items-center justify-between text-xs text-emerald-300"
+      >
+        <div class="flex items-center gap-2">
+          <Check class="w-4 h-4 text-emerald-400" />
+          <span>{{ createFolderSuccess }} — <strong>Selected automatically</strong></span>
+        </div>
+        <button
+          type="button"
+          @click="createFolderSuccess = ''"
+          class="text-slate-400 hover:text-slate-200"
+        >
+          <X class="w-3.5 h-3.5" />
+        </button>
       </div>
 
       <!-- Filter Bar -->
@@ -363,7 +538,16 @@ function getRoleBadgeClass(role: string) {
         >
           <Folder class="w-8 h-8 text-slate-400 opacity-60" />
           <p class="text-xs text-slate-400">No subdirectories found in this location.</p>
-          <p class="text-[11px] text-slate-400">You can still select this current folder as your target destination.</p>
+          <p class="text-[11px] text-slate-400">You can select this folder as your target destination, or create a new subfolder.</p>
+          <button
+            v-if="canCreateFolder && !isCreatingFolder"
+            type="button"
+            @click="openCreateFolder"
+            class="mt-2 px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 text-xs font-semibold flex items-center gap-1.5 transition"
+          >
+            <FolderPlus class="w-3.5 h-3.5" />
+            <span>Create New Folder Here</span>
+          </button>
         </div>
 
         <!-- Directory Item Rows -->

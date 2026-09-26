@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -256,4 +257,80 @@ func classifyRole(name, manifest, path string) types.ProjectRole {
 	}
 
 	return types.RoleOtherService
+}
+
+// CreateFolderRequest holds parameters to create a new folder.
+type CreateFolderRequest struct {
+	ParentPath string `json:"parent_path"`
+	FolderName string `json:"folder_name"`
+	Path       string `json:"path"`
+}
+
+// CreateFolderResponse represents response after folder creation.
+type CreateFolderResponse struct {
+	Success    bool   `json:"success"`
+	Path       string `json:"path"`
+	Name       string `json:"name"`
+	ParentPath string `json:"parent_path"`
+}
+
+func (r *Router) handleFSMkdir(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	var payload CreateFolderRequest
+	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+		r.writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	var targetPath string
+	var folderName string
+	var parentDir string
+
+	if strings.TrimSpace(payload.Path) != "" {
+		targetPath = filepath.Clean(strings.TrimSpace(payload.Path))
+		folderName = filepath.Base(targetPath)
+		parentDir = filepath.Dir(targetPath)
+	} else {
+		folderName = strings.TrimSpace(payload.FolderName)
+		parentDir = strings.TrimSpace(payload.ParentPath)
+		if parentDir == "" {
+			parentDir = r.cfg.RootDir
+		}
+		parentDir = filepath.Clean(parentDir)
+
+		if folderName == "" {
+			r.writeError(w, http.StatusBadRequest, "Folder name is required")
+			return
+		}
+
+		if strings.Contains(folderName, "/") || strings.Contains(folderName, "\\") || folderName == ".." || folderName == "." {
+			r.writeError(w, http.StatusBadRequest, "Invalid folder name")
+			return
+		}
+
+		targetPath = filepath.Join(parentDir, folderName)
+	}
+
+	// Check if already exists
+	if _, err := os.Stat(targetPath); err == nil {
+		r.writeError(w, http.StatusConflict, "Directory already exists")
+		return
+	}
+
+	// Create directory
+	if err := os.MkdirAll(targetPath, 0755); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "Failed to create directory: "+err.Error())
+		return
+	}
+
+	r.writeJSON(w, http.StatusCreated, CreateFolderResponse{
+		Success:    true,
+		Path:       targetPath,
+		Name:       folderName,
+		ParentPath: parentDir,
+	})
 }
