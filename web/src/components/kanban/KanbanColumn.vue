@@ -1,19 +1,42 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import type { Task, WorkflowStage } from '../../types'
+import { useTaskStore } from '../../stores/tasks'
+import { useToastStore } from '../../stores/toast'
 import KanbanCard from './KanbanCard.vue'
 import KanbanColumnEmpty from './KanbanColumnEmpty.vue'
 import KanbanCardSkeleton from './KanbanCardSkeleton.vue'
 import { Lock, ShieldAlert, CheckCircle2 } from 'lucide-vue-next'
 
-defineProps<{
+const props = defineProps<{
   stage: WorkflowStage
   tasks: Task[]
   isLoading?: boolean
 }>()
+
+const taskStore = useTaskStore()
+const toastStore = useToastStore()
+const isDragOver = ref(false)
+
+function handleDrop(e: DragEvent) {
+  isDragOver.value = false
+  const taskId = e.dataTransfer?.getData('text/plain')
+  if (taskId) {
+    taskStore.moveTaskToStage(taskId, props.stage.id)
+    toastStore.info('Stage Updated', `Moved ${taskId} to ${props.stage.name}`)
+  }
+}
 </script>
 
 <template>
-  <div class="w-[320px] min-w-[320px] h-full bg-slate-900/60 rounded-xl border border-slate-800 flex flex-col overflow-hidden shadow-sm">
+  <div
+    @dragover.prevent="isDragOver = true"
+    @dragenter.prevent="isDragOver = true"
+    @dragleave="isDragOver = false"
+    @drop="handleDrop"
+    class="w-[320px] min-w-[320px] h-full bg-slate-900/60 rounded-xl border flex flex-col overflow-hidden shadow-sm transition-all duration-150"
+    :class="isDragOver ? 'border-emerald-500 bg-emerald-950/20 ring-2 ring-emerald-500/50' : 'border-slate-800'"
+  >
     <div class="p-3.5 border-b border-slate-800 bg-slate-900 flex items-center justify-between">
       <div class="flex items-center gap-2 truncate">
         <span

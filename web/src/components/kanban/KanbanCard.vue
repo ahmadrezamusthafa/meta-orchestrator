@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Task } from '../../types'
 import RoutingExplainerPill from '../common/RoutingExplainerPill.vue'
@@ -10,6 +10,7 @@ const props = defineProps<{
 }>()
 
 const router = useRouter()
+const isDragging = ref(false)
 
 const isBlocked = computed(() => props.task.state === 'BLOCKED_FRUSTRATION')
 const isWriteLocked = computed(() => {
@@ -28,13 +29,29 @@ const timeElapsed = computed(() => {
 function navigateToTask() {
   router.push(`/tasks/${props.task.id}`)
 }
+
+function handleDragStart(e: DragEvent) {
+  isDragging.value = true
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', props.task.id)
+  }
+}
+
+function handleDragEnd() {
+  isDragging.value = false
+}
 </script>
 
 <template>
   <div
+    draggable="true"
+    @dragstart="handleDragStart"
+    @dragend="handleDragEnd"
     @click="navigateToTask"
-    class="p-3.5 rounded-lg bg-slate-900/90 border border-slate-800 hover:border-slate-700 hover:-translate-y-0.5 transition-all duration-150 cursor-pointer shadow-sm relative group flex flex-col justify-between"
+    class="p-3.5 rounded-lg bg-slate-900/90 border border-slate-800 hover:border-slate-700 hover:-translate-y-0.5 transition-all duration-150 cursor-grab active:cursor-grabbing shadow-sm relative group flex flex-col justify-between select-none"
     :class="{
+      'opacity-40 scale-95 border-emerald-500/80': isDragging,
       'border-l-4 !border-l-rose-500 shadow-rose-950/20 animate-pulse-subtle': isBlocked,
       'border-l-4 !border-l-amber-500': isWriteLocked && !isBlocked,
       'border-l-4 !border-l-emerald-500': !isWriteLocked && !isBlocked,

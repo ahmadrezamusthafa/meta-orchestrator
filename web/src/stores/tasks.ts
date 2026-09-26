@@ -132,6 +132,20 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
+  function moveTaskToStage(taskId: string, targetStageId: string) {
+    const task = tasks.value.find((t) => t.id === taskId)
+    if (!task) return
+    task.current_stage_id = targetStageId
+
+    // Automatically synchronize gate status based on target stage
+    const gateStages = ['techdoc_rfc', 'signoff_merge', 'hotfix_validation']
+    if (gateStages.includes(targetStageId)) {
+      task.state = 'WAITING_GATE_APPROVAL'
+    } else if (task.state === 'WAITING_GATE_APPROVAL') {
+      task.state = 'RUNNING'
+    }
+  }
+
   // Subscribe to live WebSocket events
   function initWebSocketSync() {
     wsService.subscribe((event) => {
@@ -174,6 +188,7 @@ export const useTaskStore = defineStore('tasks', () => {
     injectContext,
     resetWorkspace,
     updateGate,
+    moveTaskToStage,
     initWebSocketSync,
   }
 })
