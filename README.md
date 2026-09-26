@@ -96,6 +96,13 @@ http://localhost:5173
 * Connects Anthropic Model Context Protocol (**MCP** stdio/SSE) servers, Claude Code `SKILL.md` git repos, BMAD multi-agent skill packs, and Superpower tools.
 * 4-tier cascading discovery: Project Local (`.sdlc/skills/`) $\succ$ User System (`~/.config/meta-orchestrator/skills/`) $\succ$ Remote Git $\succ$ Built-in.
 
+### 6. UI Project Setup & Multi-Repo Symlink Engine (`/projects`)
+* **Project Registration Wizard:** Register multi-repo ecosystems via UI and classify components into roles: `Frontend UI`, `Backend Service`, `Automation Test`, `API Contracts`, and `Artifacts / Docs`.
+* **Local Directory Auto-Scanner:** Point to any directory; automatically detects manifests (`package.json`, `go.mod`, `playwright.config.ts`, `openapi.yaml`) and suggests functional roles.
+* **Unified Project Root & Atomic Symlinks:** Provisions dedicated workspace roots (e.g. `workspaces/{project-id}/`) with atomic filesystem symlinks pointing to target repositories and writes `.sdlc/project.json`.
+* **Dynamic Kanban Ingestion:** Selecting a registered project dynamically populates the New Task modal with mapped repositories and role tags.
+
+
 ---
 
 ## 🛠️ Make Commands Reference

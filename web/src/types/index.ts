@@ -132,3 +132,42 @@ export interface RegistryDTO {
     policy: string
   }>
 }
+
+export type ProjectRole = 'frontend' | 'backend' | 'automation-test' | 'contracts' | 'artifact' | 'other'
+
+export interface ProjectRepo {
+  id: string
+  name: string
+  path: string
+  role: ProjectRole
+  manifest_type: string
+  symlink_path?: string
+  status: 'linked' | 'missing_source' | 'error' | string
+  error?: string
+  created_at?: string
+}
+
+export interface Project {
+  id: string
+  name: string
+  description: string
+  root_dir: string
+  active_sdlc: string
+  repos: ProjectRepo[]
+  status: 'provisioned' | 'pending' | 'degraded' | string
+  created_at: string
+  updated_at: string
+}
+
+export interface DetectedRepo {
+  name: string
+  path: string
+  suggested_role: ProjectRole
+  manifest_type: string
+  files_count: number
+}
+
+export interface ScanDirResult {
+  scanned_path: string
+  detected_repos: DetectedRepo[]
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/hooks"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
@@ -49,6 +50,8 @@ func main() {
 	artifactMgr := artifacts.NewArtifactManager(".sdlc/artifacts")
 	hookEngine := hooks.NewHookEngine(cwd)
 	taskStore := fsm.NewMemoryTaskStateStore()
+	projectMgr := projects.NewProjectManager(cwd)
+	fmt.Printf("[Projects] Loaded %d registered multi-repo workspaces\n", len(projectMgr.List()))
 
 	// 3. Tool Lifecycle Manager
 	toolMgr := tools.NewToolManager("", func(toolID string, stage string, pct int, msg string) {
@@ -109,6 +112,7 @@ func main() {
 		ToolManager:     toolMgr,
 		ArtifactManager: artifactMgr,
 		ConfigResolver:  configResolver,
+		ProjectManager:  projectMgr,
 		WSHub:           wsHub,
 		RootDir:         cwd,
 	})

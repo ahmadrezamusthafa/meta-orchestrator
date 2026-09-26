@@ -190,6 +190,17 @@ Submit human operator approval or rejection at a gated SDLC boundary (e.g. `tech
 
 ---
 
+### 2.7 Projects & Multi-Repo Workspaces
+
+* `GET /api/v1/projects`: List all registered multi-repo projects.
+* `POST /api/v1/projects`: Register a new project, provision its unified project root on disk, and synthesize atomic filesystem symlinks to all tagged repositories.
+* `GET /api/v1/projects/{id}`: Retrieve project topology, mapped repositories, manifest types, and symlink statuses.
+* `POST /api/v1/projects/{id}/resync`: Re-evaluate repository source paths and re-create symlinks.
+* `DELETE /api/v1/projects/{id}`: Delete a project and remove its ephemeral workspace root.
+* `POST /api/v1/projects/scan`: Auto-scan a directory path, discover child repositories, identify language manifests (`package.json`, `go.mod`, `playwright.config.ts`, `openapi.yaml`), and suggest roles (`frontend`, `backend`, `automation-test`, `contracts`, `artifact`).
+
+---
+
 ## 3. WebSocket Streaming Protocol
 
 * **URL:** `ws://localhost:8080/ws`

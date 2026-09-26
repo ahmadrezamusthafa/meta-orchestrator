@@ -2,11 +2,12 @@
 import { ref, computed, watch } from 'vue'
 import { useTaskStore } from '../../stores/tasks'
 import { useWorkflowStore } from '../../stores/workflows'
+import { useProjectStore } from '../../stores/projects'
 import { useToastStore } from '../../stores/toast'
 import BtnPrimary from '../common/BtnPrimary.vue'
 import StageRangeSelector from './StageRangeSelector.vue'
 import ArtifactUploadDropzone from './ArtifactUploadDropzone.vue'
-import { X, Sparkles, Layers, GitFork, Zap } from 'lucide-vue-next'
+import { X, Sparkles, Layers, GitFork, Zap, FolderGit2 } from 'lucide-vue-next'
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -15,12 +16,14 @@ const emit = defineEmits<{
 
 const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
+const projectStore = useProjectStore()
 const toastStore = useToastStore()
 
 const title = ref('')
 const description = ref('')
+const selectedProjectId = ref(projectStore.activeProjectId || 'proj-core-platform')
 const selectedWorkflowId = ref(workflowStore.activeWorkflowId || 'general_ai_sdlc')
-const selectedRepos = ref<string[]>(['frontend-portal', 'backend-core'])
+const selectedRepos = ref<string[]>([])
 const executionScope = ref<'full' | 'slice'>('full')
 const startStage = ref('task_implementation')
 const haltStage = ref('e2e_validation')
@@ -31,6 +34,33 @@ const selectedMethod = ref('Auto')
 const isSubmitting = ref(false)
 const externalPlanContent = ref('')
 const externalPlanName = ref('')
+
+const activeProject = computed(() => {
+  return projectStore.projects.find(p => p.id === selectedProjectId.value) || projectStore.activeProject
+})
+
+const availableRepos = computed(() => {
+  if (activeProject.value?.repos && activeProject.value.repos.length > 0) {
+    return activeProject.value.repos
+  }
+  return [
+    { name: 'frontend-portal', role: 'frontend' },
+    { name: 'backend-core', role: 'backend' },
+    { name: 'api-contracts', role: 'contracts' }
+  ]
+})
+
+watch(availableRepos, (repos) => {
+  if (repos.length > 0 && selectedRepos.value.length === 0) {
+    selectedRepos.value = repos.map(r => r.name)
+  }
+}, { immediate: true })
+
+watch(selectedProjectId, () => {
+  if (availableRepos.value.length > 0) {
+    selectedRepos.value = availableRepos.value.map(r => r.name)
+  }
+})
 
 function handleFileSelected(file: File) {
   externalPlanName.value = file.name
@@ -217,22 +247,46 @@ async function handleSubmit() {
         </div>
 
         <div>
-          <label class="block text-xs font-medium text-slate-300 mb-1.5">Target Repositories</label>
+          <label class="block text-xs font-medium text-slate-300 mb-1.5 flex items-center justify-between">
+            <span class="flex items-center gap-1.5">
+              <FolderGit2 class="w-3.5 h-3.5 text-emerald-400" />
+              Target Project Workspace
+            </span>
+            <router-link to="/projects" class="text-[11px] text-emerald-400 hover:underline">
+              Manage Multi-Repos →
+            </router-link>
+          </label>
+          <select
+            v-model="selectedProjectId"
+            class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-emerald-500 font-mono"
+          >
+            <option v-for="p in projectStore.projects" :key="p.id" :value="p.id">
+              {{ p.name }} ({{ p.repos?.length || 0 }} repos symlinked)
+            </option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1.5 flex items-center justify-between">
+            <span>Target Repositories (Symlinked in Project Root)</span>
+            <span class="text-[11px] text-slate-500 font-mono">{{ selectedRepos.length }} selected</span>
+          </label>
           <div class="flex flex-wrap gap-2">
             <label
-              v-for="repo in allRepos"
-              :key="repo"
+              v-for="repo in availableRepos"
+              :key="repo.name"
               class="flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs cursor-pointer select-none transition-colors"
-              :class="selectedRepos.includes(repo) ? 'bg-emerald-950/60 border-emerald-800 text-emerald-300' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'"
+              :class="selectedRepos.includes(repo.name) ? 'bg-emerald-950/60 border-emerald-800 text-emerald-300' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'"
             >
               <input
                 type="checkbox"
-                :value="repo"
+                :value="repo.name"
                 v-model="selectedRepos"
                 class="hidden"
               />
-              <Layers class="w-3.5 h-3.5" />
-              <span>{{ repo }}</span>
+              <Layers class="w-3.5 h-3.5 text-emerald-400" />
+              <span class="font-mono font-medium">{{ repo.name }}</span>
+              <span class="text-[9px] uppercase px-1 rounded bg-slate-900 border border-slate-800 text-slate-400">{{ repo.role }}</span>
             </label>
           </div>
         </div>

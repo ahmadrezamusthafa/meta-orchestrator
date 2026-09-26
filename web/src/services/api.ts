@@ -1,4 +1,4 @@
-import type { Task, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO } from '../types'
+import type { Task, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, Project, ScanDirResult } from '../types'
 
 const BASE_URL = '/api/v1'
 
@@ -137,5 +137,73 @@ export const api = {
   async getArtifact(taskId: string, filename: string): Promise<{ task_id: string; filename: string; content: string }> {
     const res = await fetch(`${BASE_URL}/artifacts/${taskId}/${filename}`)
     return res.json()
+  },
+
+  // Projects & Multi-Repo Management
+  async getProjects(): Promise<Project[]> {
+    const res = await fetch(`${BASE_URL}/projects`)
+    if (!res.ok) throw new Error('Failed to fetch projects')
+    return res.json()
+  },
+
+  async getProject(id: string): Promise<Project> {
+    const res = await fetch(`${BASE_URL}/projects/${id}`)
+    if (!res.ok) throw new Error(`Failed to fetch project ${id}`)
+    return res.json()
+  },
+
+  async createProject(project: Partial<Project>): Promise<Project> {
+    const res = await fetch(`${BASE_URL}/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(project)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to create project' }))
+      throw new Error(err.error || 'Failed to create project')
+    }
+    return res.json()
+  },
+
+  async updateProject(id: string, project: Partial<Project>): Promise<Project> {
+    const res = await fetch(`${BASE_URL}/projects/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(project)
+    })
+    if (!res.ok) throw new Error(`Failed to update project ${id}`)
+    return res.json()
+  },
+
+  async deleteProject(id: string): Promise<void> {
+    const res = await fetch(`${BASE_URL}/projects/${id}`, {
+      method: 'DELETE'
+    })
+    if (!res.ok) throw new Error(`Failed to delete project ${id}`)
+  },
+
+  async resyncProject(id: string): Promise<Project> {
+    const res = await fetch(`${BASE_URL}/projects/${id}/resync`, {
+      method: 'POST'
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to resync symlinks' }))
+      throw new Error(err.error || 'Failed to resync symlinks')
+    }
+    return res.json()
+  },
+
+  async scanDirectory(path?: string): Promise<ScanDirResult> {
+    const res = await fetch(`${BASE_URL}/projects/scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: path || '' })
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to scan directory' }))
+      throw new Error(err.error || 'Failed to scan directory')
+    }
+    return res.json()
   }
 }
+

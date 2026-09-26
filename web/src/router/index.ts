@@ -5,6 +5,7 @@ import ToolHubView from '../views/ToolHubView.vue'
 import ProviderSettingsView from '../views/ProviderSettingsView.vue'
 import WorkflowSettingsView from '../views/WorkflowSettingsView.vue'
 import RegistriesSettingsView from '../views/RegistriesSettingsView.vue'
+import ProjectSetupView from '../views/ProjectSetupView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -13,6 +14,11 @@ const router = createRouter({
       path: '/',
       name: 'mission-control',
       component: MissionControlView,
+    },
+    {
+      path: '/projects',
+      name: 'projects-setup',
+      component: ProjectSetupView,
     },
     {
       path: '/tasks/:id',

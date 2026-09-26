@@ -3,6 +3,7 @@ import { useLayoutStore } from '../../stores/layout'
 import NavRailItem from './NavRailItem.vue'
 import {
   Kanban,
+  FolderGit2,
   Wrench,
   Cpu,
   GitFork,
@@ -34,6 +35,10 @@ const layoutStore = useLayoutStore()
       <nav class="p-2 space-y-1.5 mt-2">
         <NavRailItem to="/" label="Mission Control" :is-expanded="layoutStore.isNavExpanded">
           <Kanban class="w-5 h-5" />
+        </NavRailItem>
+
+        <NavRailItem to="/projects" label="Projects & Multi-Repo" :is-expanded="layoutStore.isNavExpanded">
+          <FolderGit2 class="w-5 h-5" />
         </NavRailItem>
 
         <NavRailItem to="/tools" label="Tool Lifecycle Hub" :is-expanded="layoutStore.isNavExpanded">

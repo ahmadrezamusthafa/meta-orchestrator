@@ -9,6 +9,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/artifacts"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -21,6 +22,7 @@ type RouterConfig struct {
 	ToolManager     *tools.ToolManager
 	ArtifactManager *artifacts.ArtifactManager
 	ConfigResolver  *config.CascadingConfigResolver
+	ProjectManager  *projects.ProjectManager
 	WSHub           *ws.Hub
 	RootDir         string
 }
@@ -176,6 +178,9 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/registries", r.handleRegistries)
 	r.mux.HandleFunc("/api/v1/benchmarks", r.handleBenchmarks)
 	r.mux.HandleFunc("/api/v1/artifacts/", r.handleArtifacts)
+	r.mux.HandleFunc("/api/v1/projects", r.handleProjects)
+	r.mux.HandleFunc("/api/v1/projects/scan", r.handleProjectScan)
+	r.mux.HandleFunc("/api/v1/projects/", r.handleProjectItem)
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {

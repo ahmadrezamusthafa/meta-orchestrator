@@ -1,6 +1,7 @@
 # Binaries
-daemon
+/daemon
 *.exe
+
 *.test
 
 # Node & Frontend
@@ -14,3 +15,8 @@ yarn-error.log*
 # OS Files
 .DS_Store
 Thumbs.db
+
+# Dynamic Workspaces & Binaries
+bin/
+workspaces/
+.sdlc/*.json
