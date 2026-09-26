@@ -41,6 +41,7 @@ import {
 } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import DirectoryPickerModal from '../components/common/DirectoryPickerModal.vue'
+import ConfirmDeleteModal from '../components/common/ConfirmDeleteModal.vue'
 import type { DirectoryItem } from '../types'
 
 const router = useRouter()
@@ -53,6 +54,46 @@ const isEditModalOpen = ref(false)
 const isQuickAddModalOpen = ref(false)
 const isDetailDrawerOpen = ref(false)
 const selectedRepoDetail = ref<ProjectRepo | null>(null)
+
+// Confirmation Dialog State
+const isConfirmDeleteOpen = ref(false)
+const confirmDeleteTitle = ref('Confirm Deletion')
+const confirmDeleteMessage = ref('')
+const confirmDeleteItemName = ref('')
+const confirmDeleteNote = ref('Your physical host source code remains completely safe on disk.')
+const confirmDeleteBtnText = ref('Delete')
+const isConfirmDeleteLoading = ref(false)
+let onConfirmDeleteCallback: (() => Promise<void>) | null = null
+
+function triggerConfirmDelete(options: {
+  title: string
+  message: string
+  itemName: string
+  note?: string
+  confirmText?: string
+  onConfirm: () => Promise<void>
+}) {
+  confirmDeleteTitle.value = options.title
+  confirmDeleteMessage.value = options.message
+  confirmDeleteItemName.value = options.itemName
+  confirmDeleteNote.value = options.note || 'Your physical host source code remains completely safe on disk.'
+  confirmDeleteBtnText.value = options.confirmText || 'Delete'
+  onConfirmDeleteCallback = options.onConfirm
+  isConfirmDeleteOpen.value = true
+}
+
+async function handleExecuteConfirmDelete() {
+  if (!onConfirmDeleteCallback) return
+  isConfirmDeleteLoading.value = true
+  try {
+    await onConfirmDeleteCallback()
+    isConfirmDeleteOpen.value = false
+  } catch (err: any) {
+    // Handled by store
+  } finally {
+    isConfirmDeleteLoading.value = false
+  }
+}
 
 // View Toggle: "grid" vs "topology"
 const viewMode = ref<'grid' | 'topology'>('grid')
@@ -445,7 +486,21 @@ function addEditRepoRow() {
 }
 
 function removeEditRepoRow(idx: number) {
-  editFormRepos.value.splice(idx, 1)
+  const repo = editFormRepos.value[idx]
+  if (!repo) return
+  if (!repo.name && !repo.path) {
+    editFormRepos.value.splice(idx, 1)
+    return
+  }
+  triggerConfirmDelete({
+    title: 'Remove Repository from Project',
+    message: `Are you sure you want to remove "${repo.name || 'this service'}" from the project setup? Upon saving, its workspace symlink will be pruned.`,
+    itemName: repo.name || 'Unnamed Service',
+    confirmText: 'Remove Row',
+    onConfirm: async () => {
+      editFormRepos.value.splice(idx, 1)
+    }
+  })
 }
 
 async function handleSaveProjectEdit() {
@@ -543,23 +598,29 @@ async function handleSaveRepoRoleChange(newRole: ProjectRole) {
   }
 }
 
-async function handleRemoveRepoFromDrawer() {
+function handleRemoveRepoFromDrawer() {
   if (!activeProject.value || !selectedRepoDetail.value) return
   const repoName = selectedRepoDetail.value.name
-  if (!confirm(`Are you sure you want to unregister ${repoName} from this project?`)) return
+  const projectId = activeProject.value.id
+  const projectName = activeProject.value.name
 
-  const updatedRepos = activeProject.value.repos.filter((r) => r.name !== repoName)
-  try {
-    await projectStore.updateProject(activeProject.value.id, {
-      ...activeProject.value,
-      repos: updatedRepos,
-    })
-    isDetailDrawerOpen.value = false
-    selectedRepoDetail.value = null
-    toast.info('Repository Removed', `Unlinked ${repoName} from project workspace`)
-  } catch (err: any) {
-    // Handled by store
-  }
+  triggerConfirmDelete({
+    title: 'Unregister Service Repository',
+    message: `Are you sure you want to unregister "${repoName}" from project "${projectName}"? Its workspace symlink will be removed.`,
+    itemName: repoName,
+    note: 'Your source code on host disk remains completely safe and untouched.',
+    confirmText: 'Unregister Service',
+    onConfirm: async () => {
+      const updatedRepos = activeProject.value!.repos.filter((r) => r.name !== repoName)
+      await projectStore.updateProject(projectId, {
+        ...activeProject.value!,
+        repos: updatedRepos,
+      })
+      isDetailDrawerOpen.value = false
+      selectedRepoDetail.value = null
+      toast.info('Repository Removed', `Unlinked ${repoName} from project workspace`)
+    }
+  })
 }
 
 async function handleResync() {
@@ -567,10 +628,20 @@ async function handleResync() {
   await projectStore.resyncProject(activeProject.value.id)
 }
 
-async function handleDeleteProject(id: string) {
-  if (confirm(`Are you sure you want to delete project ${id}? Ephemeral symlinks will be purged.`)) {
-    await projectStore.deleteProject(id)
-  }
+function handleDeleteProject(id: string) {
+  const proj = projectStore.projects.find((p) => p.id === id) || activeProject.value
+  const name = proj?.name || id
+
+  triggerConfirmDelete({
+    title: 'Delete Project & Workspace',
+    message: `Are you sure you want to delete project "${name}" (${id})? All ephemeral symlinks and workspace configurations will be purged.`,
+    itemName: name,
+    note: 'Your original repositories on host disk are NOT modified or deleted.',
+    confirmText: 'Yes, Delete Project',
+    onConfirm: async () => {
+      await projectStore.deleteProject(id)
+    }
+  })
 }
 
 function copyRootDir() {
@@ -1310,17 +1381,7 @@ function launchTaskForProject() {
           </div>
 
           <div class="space-y-1.5">
-            <div class="flex items-center justify-between">
-              <label class="font-semibold text-slate-300">Host Source Directory *</label>
-              <button
-                type="button"
-                @click="openDirectoryPicker('quick_add', null, quickAddPath, 'Select Service Source Directory', 'Choose the repository folder on your machine')"
-                class="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 font-mono transition"
-              >
-                <FolderOpen class="w-3.5 h-3.5" />
-                Browse...
-              </button>
-            </div>
+            <label class="font-semibold text-slate-300">Host Source Directory *</label>
             <div class="flex gap-2">
               <input
                 v-model="quickAddPath"
@@ -1418,17 +1479,7 @@ function launchTaskForProject() {
             </div>
 
             <div class="space-y-1.5 md:col-span-2">
-              <div class="flex items-center justify-between">
-                <label class="font-semibold text-slate-200">Unified Workspace Directory (Root Target)</label>
-                <button
-                  type="button"
-                  @click="openDirectoryPicker('edit_root', null, editFormRootDir, 'Select Workspace Directory', 'Choose where the unified project workspace and symlinks will reside')"
-                  class="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 font-mono transition"
-                >
-                  <FolderOpen class="w-3.5 h-3.5" />
-                  Browse...
-                </button>
-              </div>
+              <label class="font-semibold text-slate-200">Unified Workspace Directory (Root Target)</label>
               <div class="flex gap-2">
                 <input
                   v-model="editFormRootDir"
@@ -1579,16 +1630,7 @@ function launchTaskForProject() {
                   </div>
 
                   <div class="md:col-span-5">
-                    <div class="flex items-center justify-between">
-                      <label class="text-[10px] text-slate-400 font-mono">Host Source Path</label>
-                      <button
-                        type="button"
-                        @click="openDirectoryPicker('edit_repo', idx, repo.path, `Select Source Folder for ${repo.name}`, 'Pick the source code repository folder on your machine')"
-                        class="text-[10px] text-emerald-400 hover:text-emerald-300 font-mono flex items-center gap-0.5"
-                      >
-                        <FolderOpen class="w-3 h-3" /> Browse
-                      </button>
-                    </div>
+                    <label class="text-[10px] text-slate-400 font-mono">Host Source Path</label>
                     <div class="flex gap-1.5 mt-0.5">
                       <input
                         v-model="repo.path"
@@ -1599,10 +1641,11 @@ function launchTaskForProject() {
                       <button
                         type="button"
                         @click="openDirectoryPicker('edit_repo', idx, repo.path, `Select Source Folder for ${repo.name}`, 'Pick the source code repository folder on your machine')"
-                        class="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 transition"
+                        class="px-2.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0"
                         title="Browse filesystem for this repository"
                       >
                         <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
+                        Browse
                       </button>
                     </div>
                   </div>
@@ -1709,17 +1752,7 @@ function launchTaskForProject() {
             </div>
 
             <div class="space-y-1.5 md:col-span-2">
-              <div class="flex items-center justify-between">
-                <label class="font-semibold text-slate-200">Unified Workspace Directory (Root Target)</label>
-                <button
-                  type="button"
-                  @click="openDirectoryPicker('create_root', null, createFormRootDir, 'Select Workspace Directory', 'Choose where the unified project workspace and symlinks will reside')"
-                  class="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 font-mono transition"
-                >
-                  <FolderOpen class="w-3.5 h-3.5" />
-                  Browse...
-                </button>
-              </div>
+              <label class="font-semibold text-slate-200">Unified Workspace Directory (Root Target)</label>
               <div class="flex gap-2">
                 <input
                   v-model="createFormRootDir"
@@ -1869,16 +1902,7 @@ function launchTaskForProject() {
                   </div>
 
                   <div class="md:col-span-5">
-                    <div class="flex items-center justify-between">
-                      <label class="text-[10px] text-slate-400 font-mono">Host Source Path</label>
-                      <button
-                        type="button"
-                        @click="openDirectoryPicker('create_repo', idx, repo.path, `Select Source Folder for ${repo.name}`, 'Pick the source code repository folder on your machine')"
-                        class="text-[10px] text-emerald-400 hover:text-emerald-300 font-mono flex items-center gap-0.5"
-                      >
-                        <FolderOpen class="w-3 h-3" /> Browse
-                      </button>
-                    </div>
+                    <label class="text-[10px] text-slate-400 font-mono">Host Source Path</label>
                     <div class="flex gap-1.5 mt-0.5">
                       <input
                         v-model="repo.path"
@@ -1889,10 +1913,11 @@ function launchTaskForProject() {
                       <button
                         type="button"
                         @click="openDirectoryPicker('create_repo', idx, repo.path, `Select Source Folder for ${repo.name}`, 'Pick the source code repository folder on your machine')"
-                        class="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 transition"
+                        class="px-2.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center gap-1.5 transition flex-shrink-0"
                         title="Browse filesystem for this repository"
                       >
                         <FolderOpen class="w-3.5 h-3.5 text-emerald-400" />
+                        Browse
                       </button>
                     </div>
                   </div>
@@ -1950,6 +1975,19 @@ function launchTaskForProject() {
       :helper-text="pickerHelperText"
       @select="handleDirectorySelected"
       @close="isDirectoryPickerOpen = false"
+    />
+
+    <!-- Confirmation Dialog Modal for Project and Service Deletions -->
+    <ConfirmDeleteModal
+      :is-open="isConfirmDeleteOpen"
+      :title="confirmDeleteTitle"
+      :message="confirmDeleteMessage"
+      :item-name="confirmDeleteItemName"
+      :note="confirmDeleteNote"
+      :confirm-text="confirmDeleteBtnText"
+      :loading="isConfirmDeleteLoading"
+      @confirm="handleExecuteConfirmDelete"
+      @close="isConfirmDeleteOpen = false"
     />
   </div>
 </template>
