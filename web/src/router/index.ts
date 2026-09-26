@@ -6,6 +6,7 @@ import ProviderSettingsView from '../views/ProviderSettingsView.vue'
 import WorkflowSettingsView from '../views/WorkflowSettingsView.vue'
 import RegistriesSettingsView from '../views/RegistriesSettingsView.vue'
 import ProjectSetupView from '../views/ProjectSetupView.vue'
+import ConnectorsView from '../views/ConnectorsView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -19,6 +20,11 @@ const router = createRouter({
       path: '/projects',
       name: 'projects-setup',
       component: ProjectSetupView,
+    },
+    {
+      path: '/connectors',
+      name: 'connectors',
+      component: ConnectorsView,
     },
     {
       path: '/tasks/:id',

@@ -8,6 +8,7 @@ import (
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/artifacts"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/connectors"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
@@ -17,14 +18,15 @@ import (
 
 // RouterConfig holds dependencies required by the REST API router.
 type RouterConfig struct {
-	TaskStore       fsm.TaskStateStore
-	WorkflowReg     *fsm.WorkflowRegistry
-	ToolManager     *tools.ToolManager
-	ArtifactManager *artifacts.ArtifactManager
-	ConfigResolver  *config.CascadingConfigResolver
-	ProjectManager  *projects.ProjectManager
-	WSHub           *ws.Hub
-	RootDir         string
+	TaskStore         fsm.TaskStateStore
+	WorkflowReg       *fsm.WorkflowRegistry
+	ToolManager       *tools.ToolManager
+	ArtifactManager   *artifacts.ArtifactManager
+	ConfigResolver    *config.CascadingConfigResolver
+	ProjectManager    *projects.ProjectManager
+	ConnectorsManager *connectors.Manager
+	WSHub             *ws.Hub
+	RootDir           string
 }
 
 // Router provides the HTTP REST API handler for the Mission Control frontend.
@@ -37,6 +39,9 @@ type Router struct {
 
 // NewRouter constructs a new REST API router.
 func NewRouter(cfg RouterConfig) *Router {
+	if cfg.ConnectorsManager == nil {
+		cfg.ConnectorsManager = connectors.NewManager(cfg.RootDir)
+	}
 	r := &Router{
 		cfg:   cfg,
 		mux:   http.NewServeMux(),
@@ -49,11 +54,11 @@ func NewRouter(cfg RouterConfig) *Router {
 
 func (r *Router) seedDefaultTasks() {
 	now := time.Now()
-	// Seed demo tasks for Mission Control visualization
+	// Seed demo tasks for Mission Control visualization with JIRA and Confluence links
 	r.tasks["TASK-8942"] = &types.Task{
 		ID:                "TASK-8942",
 		WorkflowID:        "general_ai_sdlc",
-		Title:             "Implement Stripe payment gateway & webhook idempotency",
+		Title:             "[PAY-1042] Implement Stripe payment gateway & webhook idempotency",
 		Description:       "Add Stripe billing integration across frontend-portal and backend-core with replay protection.",
 		CurrentStageID:    "task_implementation",
 		CurrentStageIndex: 4,
@@ -70,10 +75,17 @@ func (r *Router) seedDefaultTasks() {
 		MaxTokenBudget: 50000,
 		ArtifactDir:    ".sdlc/artifacts/TASK-8942",
 		Metadata: map[string]string{
-			"complexity":      "HIGH",
-			"router_strategy": "BEST_PRACTICE",
-			"router_source":   "BP",
-			"router_rationale": "High complexity fullstack task routed to BMAD methodology using Claude 3.5 Sonnet",
+			"complexity":          "HIGH",
+			"router_strategy":     "BEST_PRACTICE",
+			"router_source":       "BP",
+			"router_rationale":    "High complexity fullstack task routed to BMAD methodology using Claude 3.5 Sonnet",
+			"jira_key":            "PAY-1042",
+			"jira_url":            "https://jira.atlassian.net/browse/PAY-1042",
+			"jira_status":         "In Progress",
+			"jira_priority":       "High",
+			"confluence_page_url": "https://wiki.atlassian.net/wiki/spaces/ARCH/pages/8942001/RFC-PAY-1042+Stripe+Payment+Gateway",
+			"confluence_page_id":  "8942001",
+			"confluence_space":    "ARCH",
 		},
 		CreatedAt: now.Add(-45 * time.Minute),
 		UpdatedAt: now,
@@ -82,7 +94,7 @@ func (r *Router) seedDefaultTasks() {
 	r.tasks["TASK-8943"] = &types.Task{
 		ID:                "TASK-8943",
 		WorkflowID:        "general_ai_sdlc",
-		Title:             "OAuth2 Refresh Token Expiry Handling & UI Redirection",
+		Title:             "[AUTH-409] OAuth2 Refresh Token Expiry Handling & UI Redirection",
 		Description:       "Handle silent token refresh and route users to /login when refresh token expires.",
 		CurrentStageID:    "atdd_creation",
 		CurrentStageIndex: 1,
@@ -104,6 +116,10 @@ func (r *Router) seedDefaultTasks() {
 			"router_strategy":  "RULE_BASED",
 			"router_source":    "RULE",
 			"router_rationale": "Rule #2 matched: Stage=ATDD & Complexity=Medium -> Assigned Supervisor method",
+			"jira_key":         "AUTH-409",
+			"jira_url":         "https://jira.atlassian.net/browse/AUTH-409",
+			"jira_status":      "To Do",
+			"jira_priority":    "Medium",
 		},
 		CreatedAt: now.Add(-20 * time.Minute),
 		UpdatedAt: now,
@@ -112,7 +128,7 @@ func (r *Router) seedDefaultTasks() {
 	r.tasks["TASK-8940"] = &types.Task{
 		ID:                "TASK-8940",
 		WorkflowID:        "general_ai_sdlc",
-		Title:             "GraphQL Schema Validation Bug in Subscription Resolver",
+		Title:             "[GQL-330] GraphQL Schema Validation Bug in Subscription Resolver",
 		Description:       "Repeated websocket timeout when querying active subscription state.",
 		CurrentStageID:    "task_implementation",
 		CurrentStageIndex: 4,
@@ -133,6 +149,10 @@ func (r *Router) seedDefaultTasks() {
 			"frustration_count": "3",
 			"failing_trace":     "Playwright timeout: expected status 200 within 5000ms, received 504 Gateway Timeout",
 			"router_source":     "BP",
+			"jira_key":          "GQL-330",
+			"jira_url":          "https://jira.atlassian.net/browse/GQL-330",
+			"jira_status":       "Blocked",
+			"jira_priority":     "Highest",
 		},
 		CreatedAt: now.Add(-120 * time.Minute),
 		UpdatedAt: now,
@@ -183,6 +203,15 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/projects/", r.handleProjectItem)
 	r.mux.HandleFunc("/api/v1/fs/browse", r.handleFSBrowse)
 	r.mux.HandleFunc("/api/v1/fs/mkdir", r.handleFSMkdir)
+
+	// Connector endpoints (JIRA & Confluence)
+	r.mux.HandleFunc("/api/v1/connectors", r.handleConnectors)
+	r.mux.HandleFunc("/api/v1/connectors/jira", r.handleConnectorJira)
+	r.mux.HandleFunc("/api/v1/connectors/confluence", r.handleConnectorConfluence)
+	r.mux.HandleFunc("/api/v1/connectors/test", r.handleConnectorTest)
+	r.mux.HandleFunc("/api/v1/connectors/jira/issues", r.handleJiraIssues)
+	r.mux.HandleFunc("/api/v1/connectors/jira/import", r.handleJiraImport)
+	r.mux.HandleFunc("/api/v1/connectors/confluence/publish", r.handleConfluencePublish)
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {

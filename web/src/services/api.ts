@@ -1,4 +1,9 @@
-import type { Task, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse } from '../types'
+import type { 
+  Task, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
+  Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse,
+  ConnectorsConfig, JiraConfig, ConfluenceConfig, JiraIssueDTO, ImportJiraIssueRequest,
+  ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse 
+} from '../types'
 
 const BASE_URL = '/api/v1'
 
@@ -226,6 +231,86 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Failed to create folder' }))
       throw new Error(err.error || 'Failed to create folder')
+    }
+    return res.json()
+  },
+
+  // Connectors (JIRA & Confluence)
+  async getConnectors(): Promise<ConnectorsConfig> {
+    const res = await fetch(`${BASE_URL}/connectors`)
+    if (!res.ok) throw new Error('Failed to fetch connectors configuration')
+    return res.json()
+  },
+
+  async updateJira(cfg: JiraConfig): Promise<JiraConfig> {
+    const res = await fetch(`${BASE_URL}/connectors/jira`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to update JIRA configuration' }))
+      throw new Error(err.error || 'Failed to update JIRA configuration')
+    }
+    return res.json()
+  },
+
+  async updateConfluence(cfg: ConfluenceConfig): Promise<ConfluenceConfig> {
+    const res = await fetch(`${BASE_URL}/connectors/confluence`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to update Confluence configuration' }))
+      throw new Error(err.error || 'Failed to update Confluence configuration')
+    }
+    return res.json()
+  },
+
+  async testConnector(req: TestConnectorRequest): Promise<TestConnectorResponse> {
+    const res = await fetch(`${BASE_URL}/connectors/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to test connector' }))
+      throw new Error(err.error || 'Failed to test connector')
+    }
+    return res.json()
+  },
+
+  async getJiraIssues(query?: string): Promise<JiraIssueDTO[]> {
+    const q = new URLSearchParams()
+    if (query) q.set('q', query)
+    const res = await fetch(`${BASE_URL}/connectors/jira/issues?${q.toString()}`)
+    if (!res.ok) throw new Error('Failed to fetch JIRA issues')
+    return res.json()
+  },
+
+  async importJiraIssue(req: ImportJiraIssueRequest): Promise<Task> {
+    const res = await fetch(`${BASE_URL}/connectors/jira/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to import JIRA issue' }))
+      throw new Error(err.error || 'Failed to import JIRA issue')
+    }
+    return res.json()
+  },
+
+  async publishToConfluence(req: ConfluencePublishRequest): Promise<ConfluencePublishResponse> {
+    const res = await fetch(`${BASE_URL}/connectors/confluence/publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to publish to Confluence' }))
+      throw new Error(err.error || 'Failed to publish to Confluence')
     }
     return res.json()
   }

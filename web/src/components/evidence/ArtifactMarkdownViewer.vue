@@ -3,7 +3,7 @@ import { ref, watch, onMounted } from 'vue'
 import { api } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import { marked } from 'marked'
-import { FileText, ShieldCheck, Copy, Check, Download, Code, Eye } from 'lucide-vue-next'
+import { FileText, ShieldCheck, Copy, Check, Download, Code, Eye, ExternalLink, UploadCloud } from 'lucide-vue-next'
 
 const props = defineProps<{
   taskId: string
@@ -15,6 +15,8 @@ const activeTab = ref('PRD.md')
 const rawContent = ref('')
 const renderedContent = ref('')
 const isLoading = ref(false)
+const isPublishing = ref(false)
+const confluenceUrl = ref<string | null>(null)
 const viewMode = ref<'preview' | 'raw'>('preview')
 const isCopied = ref(false)
 
@@ -68,12 +70,41 @@ function downloadArtifact() {
   toastStore.info('Downloaded', `Saved ${activeTab.value}`)
 }
 
+async function checkTaskConfluence() {
+  try {
+    const t = await api.getTask(props.taskId)
+    if (t?.metadata?.confluence_page_url) {
+      confluenceUrl.value = t.metadata.confluence_page_url
+    }
+  } catch (e) {}
+}
+
+async function publishToConfluence() {
+  isPublishing.value = true
+  try {
+    const res = await api.publishToConfluence({
+      task_id: props.taskId,
+      doc_type: activeTab.value.replace('.md', ''),
+      title: `${activeTab.value.replace('.md', '')}: ${props.taskId}`,
+      content_markdown: rawContent.value,
+      space_key: 'ARCH'
+    })
+    confluenceUrl.value = res.page_url
+    toastStore.success('Published to Confluence', `Document published: ${res.page_title}`)
+  } catch (err: any) {
+    toastStore.error('Confluence Publish Error', err.message || 'Failed to publish to Confluence')
+  } finally {
+    isPublishing.value = false
+  }
+}
+
 watch(activeTab, () => {
   loadArtifact()
 })
 
 onMounted(() => {
   loadArtifact()
+  checkTaskConfluence()
 })
 </script>
 
@@ -96,6 +127,30 @@ onMounted(() => {
       </div>
 
       <div class="flex items-center gap-1.5 flex-shrink-0">
+        <!-- Confluence Live Page Link -->
+        <a
+          v-if="confluenceUrl"
+          :href="confluenceUrl"
+          target="_blank"
+          title="Open published Technical RFC page on Confluence"
+          class="h-7 px-2 rounded bg-indigo-950/90 border border-indigo-700/80 hover:bg-indigo-900 text-[10px] font-mono text-indigo-300 hover:text-indigo-100 flex items-center gap-1 transition-colors shadow-sm"
+        >
+          <FileText class="w-3 h-3 text-indigo-400" />
+          <span>Confluence RFC</span>
+          <ExternalLink class="w-3 h-3 opacity-70" />
+        </a>
+
+        <!-- Confluence Publish Button -->
+        <button
+          @click="publishToConfluence"
+          :disabled="isPublishing"
+          title="Publish current document directly to Confluence space"
+          class="h-7 px-2 rounded bg-slate-950 border border-slate-800 hover:border-indigo-700 hover:bg-indigo-950/60 text-[10px] font-mono text-slate-300 hover:text-indigo-200 flex items-center gap-1 transition-colors"
+        >
+          <UploadCloud class="w-3 h-3 text-indigo-400" :class="{ 'animate-bounce': isPublishing }" />
+          <span>{{ isPublishing ? 'Publishing...' : 'Publish to Confluence' }}</span>
+        </button>
+
         <!-- Raw / Preview Toggle -->
         <button
           @click="viewMode = viewMode === 'preview' ? 'raw' : 'preview'"

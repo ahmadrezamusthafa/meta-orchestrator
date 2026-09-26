@@ -4,6 +4,7 @@ import NavRailItem from './NavRailItem.vue'
 import {
   Kanban,
   FolderGit2,
+  Plug,
   Wrench,
   Cpu,
   GitFork,
@@ -39,6 +40,10 @@ const layoutStore = useLayoutStore()
 
         <NavRailItem to="/projects" label="Projects & Multi-Repo" :is-expanded="layoutStore.isNavExpanded">
           <FolderGit2 class="w-5 h-5" />
+        </NavRailItem>
+
+        <NavRailItem to="/connectors" label="Connectors (JIRA/Wiki)" :is-expanded="layoutStore.isNavExpanded">
+          <Plug class="w-5 h-5" />
         </NavRailItem>
 
         <NavRailItem to="/tools" label="Tool Lifecycle Hub" :is-expanded="layoutStore.isNavExpanded">

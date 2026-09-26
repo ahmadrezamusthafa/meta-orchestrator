@@ -1,0 +1,286 @@
+<script setup lang="ts">
+import { ref, onMounted, computed } from 'vue'
+import { api } from '../../services/api'
+import { useTaskStore } from '../../stores/tasks'
+import { useWorkflowStore } from '../../stores/workflows'
+import { useToastStore } from '../../stores/toast'
+import type { JiraIssueDTO } from '../../types'
+import { X, Search, Check, Download, AlertCircle, ExternalLink, RefreshCw, Layers } from 'lucide-vue-next'
+
+const emit = defineEmits<{
+  (e: 'close'): void
+  (e: 'imported', taskId: string): void
+}>()
+
+const taskStore = useTaskStore()
+const workflowStore = useWorkflowStore()
+const toastStore = useToastStore()
+
+const searchQuery = ref('')
+const issues = ref<JiraIssueDTO[]>([])
+const selectedIssue = ref<JiraIssueDTO | null>(null)
+const isLoading = ref(false)
+const isSubmitting = ref(false)
+
+const selectedWorkflowId = ref('general_ai_sdlc')
+const selectedMethod = ref('BMAD')
+const startStageId = ref('prd_discovery')
+const selectedRepos = ref<string[]>(['frontend-portal', 'backend-core'])
+
+const availableRepos = ['frontend-portal', 'backend-core', 'api-contracts', 'automation-tests']
+
+async function fetchIssues() {
+  isLoading.value = true
+  try {
+    const list = await api.getJiraIssues(searchQuery.value)
+    issues.value = list
+    if (list.length > 0 && !selectedIssue.value) {
+      selectedIssue.value = list[0]
+    }
+  } catch (err: any) {
+    toastStore.error('JIRA Error', err.message || 'Failed to fetch issues')
+  } finally {
+    isLoading.value = false
+  }
+}
+
+function selectIssue(issue: JiraIssueDTO) {
+  selectedIssue.value = issue
+}
+
+function toggleRepo(repo: string) {
+  if (selectedRepos.value.includes(repo)) {
+    if (selectedRepos.value.length > 1) {
+      selectedRepos.value = selectedRepos.value.filter(r => r !== repo)
+    }
+  } else {
+    selectedRepos.value.push(repo)
+  }
+}
+
+async function handleImport() {
+  if (!selectedIssue.value) return
+  isSubmitting.value = true
+  try {
+    const task = await api.importJiraIssue({
+      issue_key: selectedIssue.value.key,
+      workflow_id: selectedWorkflowId.value,
+      selected_method: selectedMethod.value,
+      assigned_repos: selectedRepos.value,
+      start_stage_id: startStageId.value
+    })
+    toastStore.success('Imported from JIRA', `Task ${task.id} (${selectedIssue.value.key}) created on Kanban`)
+    await taskStore.fetchTasks()
+    emit('imported', task.id)
+    emit('close')
+  } catch (err: any) {
+    toastStore.error('Import Failed', err.message || 'Could not import ticket')
+  } finally {
+    isSubmitting.value = false
+  }
+}
+
+onMounted(() => {
+  fetchIssues()
+})
+</script>
+
+<template>
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+    <div class="w-full max-w-3xl bg-slate-900 border border-slate-800 rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+      <!-- Header -->
+      <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/60">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-lg bg-blue-950/80 border border-blue-800/80 flex items-center justify-center text-blue-400">
+            <Download class="w-4 h-4" />
+          </div>
+          <div>
+            <h3 class="text-sm font-semibold text-slate-100 flex items-center gap-2">
+              Import from JIRA
+              <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-950 text-blue-400 border border-blue-800/50">Auto-Detect</span>
+            </h3>
+            <p class="text-xs text-slate-400">Select active JIRA issues to automatically spin up zero-trust SDLC tasks</p>
+          </div>
+        </div>
+        <button
+          @click="$emit('close')"
+          type="button"
+          class="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+        >
+          <X class="w-5 h-5" />
+        </button>
+      </div>
+
+      <!-- Main Body -->
+      <div class="flex-1 overflow-y-auto p-6 space-y-5">
+        <!-- Search & Filter Bar -->
+        <div class="flex items-center gap-2">
+          <div class="relative flex-1">
+            <Search class="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+            <input
+              v-model="searchQuery"
+              @keydown.enter="fetchIssues"
+              type="text"
+              placeholder="Search JIRA issues by key (e.g. PAY-1044), summary or label..."
+              class="w-full h-9 pl-9 pr-4 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
+            />
+          </div>
+          <button
+            @click="fetchIssues"
+            type="button"
+            class="h-9 px-3.5 rounded-lg bg-slate-800 hover:bg-slate-750 border border-slate-700 text-xs text-slate-200 flex items-center gap-1.5 transition-colors"
+          >
+            <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isLoading }" />
+            <span>Search</span>
+          </button>
+        </div>
+
+        <!-- Issue Picker -->
+        <div class="space-y-2">
+          <label class="text-xs font-medium text-slate-300">Select JIRA Ticket</label>
+          <div v-if="isLoading" class="p-8 text-center text-xs text-slate-500 animate-pulse">
+            Querying JIRA API for open backlog issues...
+          </div>
+          <div v-else-if="issues.length === 0" class="p-8 text-center text-xs text-slate-500 bg-slate-950/60 rounded-lg border border-slate-800">
+            No JIRA issues found matching query.
+          </div>
+          <div v-else class="grid grid-cols-1 gap-2 max-h-52 overflow-y-auto pr-1">
+            <div
+              v-for="issue in issues"
+              :key="issue.key"
+              @click="selectIssue(issue)"
+              class="p-3 rounded-lg border transition-all cursor-pointer flex items-center justify-between"
+              :class="selectedIssue?.key === issue.key
+                ? 'bg-blue-950/40 border-blue-700/80 shadow-sm'
+                : 'bg-slate-950 border-slate-800/80 hover:border-slate-700'"
+            >
+              <div class="flex items-center gap-3 overflow-hidden">
+                <span class="px-2 py-0.5 rounded font-mono text-[11px] font-semibold bg-blue-950 text-blue-300 border border-blue-800/60 flex-shrink-0">
+                  {{ issue.key }}
+                </span>
+                <div class="truncate">
+                  <div class="text-xs font-medium text-slate-200 truncate">{{ issue.summary }}</div>
+                  <div class="text-[11px] text-slate-400 font-mono flex items-center gap-2 mt-0.5">
+                    <span>Status: <strong class="text-slate-300">{{ issue.status }}</strong></span>
+                    <span>•</span>
+                    <span>Priority: <strong class="text-amber-400">{{ issue.priority }}</strong></span>
+                    <span>•</span>
+                    <span>Assignee: <strong class="text-slate-300">{{ issue.assignee || 'Unassigned' }}</strong></span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-2 flex-shrink-0">
+                <a
+                  :href="issue.url"
+                  target="_blank"
+                  @click.stop
+                  title="Open ticket in JIRA"
+                  class="p-1 rounded text-slate-400 hover:text-blue-400 transition-colors"
+                >
+                  <ExternalLink class="w-3.5 h-3.5" />
+                </a>
+                <div
+                  v-if="selectedIssue?.key === issue.key"
+                  class="w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center"
+                >
+                  <Check class="w-3 h-3" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Task Routing Configuration Grid -->
+        <div class="grid grid-cols-2 gap-4 pt-2 border-t border-slate-800">
+          <div>
+            <label class="block text-xs font-medium text-slate-300 mb-1.5">SDLC Workflow</label>
+            <select
+              v-model="selectedWorkflowId"
+              class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+            >
+              <option value="general_ai_sdlc">General AI SDLC (8 Stages)</option>
+              <option v-for="w in workflowStore.workflows" :key="w.id" :value="w.id">{{ w.name }}</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-300 mb-1.5">Execution Methodology</label>
+            <select
+              v-model="selectedMethod"
+              class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+            >
+              <option value="Auto">Auto (Smart AI Router)</option>
+              <option value="BMAD">BMAD (Architecture First)</option>
+              <option value="Supervisor">Supervisor (Strict TDD / ATDD)</option>
+              <option value="ReAct">ReAct (Autonomous Discovery)</option>
+              <option value="Superpower">Superpower (High Context Parallel)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Start Stage & Repos -->
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-medium text-slate-300 mb-1.5">Starting Stage</label>
+            <select
+              v-model="startStageId"
+              class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+            >
+              <option value="prd_discovery">1. PRD Discovery & Requirements</option>
+              <option value="atdd_creation">2. Shift-Left ATDD Creation</option>
+              <option value="techdoc_rfc">3. Technical RFC Design</option>
+              <option value="task_breakdown">4. Atomic Task Breakdown</option>
+              <option value="task_implementation">5. Code Implementation</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-300 mb-1.5">Assigned Repositories</label>
+            <div class="flex flex-wrap gap-1.5">
+              <button
+                v-for="repo in availableRepos"
+                :key="repo"
+                type="button"
+                @click="toggleRepo(repo)"
+                class="px-2.5 py-1 rounded text-[11px] font-mono border transition-all"
+                :class="selectedRepos.includes(repo)
+                  ? 'bg-blue-950/80 border-blue-700 text-blue-300 font-medium'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'"
+              >
+                {{ repo }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="px-6 py-3.5 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between">
+        <div class="text-[11px] text-slate-400 flex items-center gap-1.5">
+          <AlertCircle class="w-3.5 h-3.5 text-blue-400" />
+          <span>Will automatically inject ticket acceptance criteria into PRD.md</span>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button
+            @click="$emit('close')"
+            type="button"
+            class="h-9 px-4 rounded-lg bg-slate-800 hover:bg-slate-750 text-xs font-medium text-slate-300 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            @click="handleImport"
+            :disabled="!selectedIssue || isSubmitting"
+            type="button"
+            class="h-9 px-4 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-xs font-medium text-white flex items-center gap-1.5 transition-colors shadow-md shadow-blue-900/30"
+          >
+            <Download class="w-3.5 h-3.5" />
+            <span>{{ isSubmitting ? 'Importing...' : 'Import to Board' }}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>

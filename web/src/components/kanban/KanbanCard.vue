@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import type { Task } from '../../types'
 import { getStageGuidance } from '../../composables/useStageGuidance'
 import RoutingExplainerPill from '../common/RoutingExplainerPill.vue'
-import { Layers, Flame, Clock, Lock, AlertTriangle, ArrowRight } from 'lucide-vue-next'
+import { Layers, Flame, Clock, Lock, AlertTriangle, ArrowRight, ExternalLink, FileText } from 'lucide-vue-next'
 
 const props = defineProps<{
   task: Task
@@ -17,6 +17,22 @@ const guidance = computed(() => getStageGuidance(props.task))
 const isBlocked = computed(() => props.task.state === 'BLOCKED_FRUSTRATION')
 const isWriteLocked = computed(() => {
   return props.task.current_stage_id === 'atdd_creation' || props.task.metadata?.write_lock === 'ACTIVE'
+})
+
+const jiraKey = computed(() => {
+  if (props.task.metadata?.jira_key) return props.task.metadata.jira_key
+  const match = props.task.title.match(/\b([A-Z]{2,10}-\d+)\b/)
+  return match ? match[1] : null
+})
+
+const jiraUrl = computed(() => {
+  if (props.task.metadata?.jira_url) return props.task.metadata.jira_url
+  if (jiraKey.value) return `https://jira.atlassian.net/browse/${jiraKey.value}`
+  return '#'
+})
+
+const confluenceUrl = computed(() => {
+  return props.task.metadata?.confluence_page_url || null
 })
 
 const timeElapsed = computed(() => {
@@ -89,9 +105,38 @@ function handleDragEnd() {
         </div>
       </div>
 
-      <h4 class="text-xs font-medium text-slate-200 line-clamp-2 leading-relaxed mb-2.5">
+      <h4 class="text-xs font-medium text-slate-200 line-clamp-2 leading-relaxed mb-2">
         {{ task.title }}
       </h4>
+
+      <!-- External Third-Party Connector Links (JIRA & Confluence) -->
+      <div v-if="jiraKey || confluenceUrl" class="flex flex-wrap items-center gap-1.5 mb-2.5">
+        <a
+          v-if="jiraKey"
+          :href="jiraUrl"
+          target="_blank"
+          @click.stop
+          title="Open linked JIRA ticket in new tab"
+          class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-950/80 text-blue-300 border border-blue-800/80 hover:bg-blue-900 hover:text-blue-100 hover:border-blue-600 transition-colors text-[10px] font-mono font-medium shadow-sm group/jira"
+        >
+          <span class="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+          <span>{{ jiraKey }}</span>
+          <ExternalLink class="w-2.5 h-2.5 opacity-70 group-hover/jira:opacity-100" />
+        </a>
+
+        <a
+          v-if="confluenceUrl"
+          :href="confluenceUrl"
+          target="_blank"
+          @click.stop
+          title="Open published Technical RFC on Confluence"
+          class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-950/80 text-indigo-300 border border-indigo-800/80 hover:bg-indigo-900 hover:text-indigo-100 hover:border-indigo-600 transition-colors text-[10px] font-mono font-medium shadow-sm group/conf"
+        >
+          <FileText class="w-2.5 h-2.5 text-indigo-400" />
+          <span>Confluence RFC</span>
+          <ExternalLink class="w-2.5 h-2.5 opacity-70 group-hover/conf:opacity-100" />
+        </a>
+      </div>
 
       <!-- Real Status & Step Information Pill -->
       <div class="mb-3 p-2 rounded bg-slate-950/90 border border-slate-800/80 space-y-1 text-[10px] font-mono">

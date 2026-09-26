@@ -5,11 +5,13 @@ import { useWorkflowStore } from '../stores/workflows'
 import KanbanToolbar from '../components/kanban/KanbanToolbar.vue'
 import KanbanColumn from '../components/kanban/KanbanColumn.vue'
 import NewTaskModal from '../components/kanban/NewTaskModal.vue'
+import JiraImportModal from '../components/kanban/JiraImportModal.vue'
 
 const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
 
 const showNewTaskModal = ref(false)
+const showJiraImportModal = ref(false)
 
 onMounted(async () => {
   taskStore.initWebSocketSync()
@@ -23,7 +25,10 @@ onMounted(async () => {
 <template>
   <div class="h-full flex flex-col overflow-hidden bg-slate-950">
     <!-- Filter Sub-header Toolbar -->
-    <KanbanToolbar @open-new-task="showNewTaskModal = true" />
+    <KanbanToolbar 
+      @open-new-task="showNewTaskModal = true" 
+      @open-jira-import="showJiraImportModal = true"
+    />
 
     <!-- Horizontal Scrolling Kanban Board Layout -->
     <main class="flex-1 p-6 overflow-x-auto overflow-y-hidden">
@@ -43,6 +48,12 @@ onMounted(async () => {
       v-if="showNewTaskModal"
       @close="showNewTaskModal = false"
       @created="() => {}"
+    />
+
+    <!-- JIRA Import Modal Dialog -->
+    <JiraImportModal
+      v-if="showJiraImportModal"
+      @close="showJiraImportModal = false"
     />
   </div>
 </template>

@@ -3,10 +3,11 @@ import { computed, ref } from 'vue'
 import { useTaskStore } from '../../stores/tasks'
 import { useWorkflowStore } from '../../stores/workflows'
 import BtnPrimary from '../common/BtnPrimary.vue'
-import { Search, Plus, RotateCcw, RefreshCw, X, Filter } from 'lucide-vue-next'
+import { Search, Plus, RotateCcw, RefreshCw, X, Filter, Download } from 'lucide-vue-next'
 
 defineEmits<{
   (e: 'open-new-task'): void
+  (e: 'open-jira-import'): void
 }>()
 
 const taskStore = useTaskStore()
@@ -130,6 +131,16 @@ async function handleRefresh() {
         class="h-9 w-9 flex items-center justify-center rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
       >
         <RefreshCw class="w-4 h-4" :class="{ 'animate-spin text-emerald-400': isRefreshing }" />
+      </button>
+
+      <button
+        @click="$emit('open-jira-import')"
+        type="button"
+        title="Import open issue directly from JIRA"
+        class="h-9 px-3 rounded-lg bg-blue-950/60 hover:bg-blue-900/80 border border-blue-800/80 text-blue-300 hover:text-blue-100 flex items-center gap-1.5 text-xs font-medium transition-all shadow-sm"
+      >
+        <Download class="w-3.5 h-3.5 text-blue-400" />
+        <span>Import JIRA</span>
       </button>
 
       <BtnPrimary @click="$emit('open-new-task')">

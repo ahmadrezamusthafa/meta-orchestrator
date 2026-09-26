@@ -215,4 +215,94 @@ export interface CreateFolderResponse {
   parent_path: string
 }
 
+export interface JiraConfig {
+  enabled: boolean
+  base_url: string
+  username: string
+  api_token: string
+  project_key: string
+  jql_filter: string
+  auto_detect_keys: boolean
+  auto_sync_status: boolean
+  last_tested_at?: string
+  status: 'connected' | 'configured' | 'error' | 'unconfigured'
+  error_message?: string
+}
+
+export interface ConfluenceConfig {
+  enabled: boolean
+  base_url: string
+  username: string
+  api_token: string
+  space_key: string
+  parent_page_id?: string
+  auto_publish_tech_docs: boolean
+  auto_publish_prd: boolean
+  last_tested_at?: string
+  status: 'connected' | 'configured' | 'error' | 'unconfigured'
+  error_message?: string
+}
+
+export interface ConnectorsConfig {
+  jira: JiraConfig
+  confluence: ConfluenceConfig
+}
+
+export interface JiraIssueDTO {
+  key: string
+  summary: string
+  description: string
+  status: string
+  priority: string
+  issue_type: string
+  url: string
+  reporter?: string
+  assignee?: string
+  created?: string
+}
+
+export interface ImportJiraIssueRequest {
+  issue_key: string
+  workflow_id?: string
+  selected_method?: string
+  assigned_repos?: string[]
+  start_stage_id?: string
+  active_slice?: StageSlice
+  metadata?: Record<string, string>
+}
+
+export interface ConfluencePublishRequest {
+  task_id?: string
+  doc_type?: string
+  title?: string
+  content_markdown?: string
+  space_key?: string
+  parent_page_id?: string
+}
+
+export interface ConfluencePublishResponse {
+  success: boolean
+  page_id: string
+  page_title: string
+  page_url: string
+  space_key: string
+  published_at: string
+  version: number
+}
+
+export interface TestConnectorRequest {
+  type: 'jira' | 'confluence'
+  jira?: JiraConfig
+  confluence?: ConfluenceConfig
+}
+
+export interface TestConnectorResponse {
+  success: boolean
+  latency_ms: number
+  message: string
+  connected_as?: string
+  server_info?: string
+  target_entity?: string
+}
+
 

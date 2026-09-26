@@ -19,4 +19,4 @@ Thumbs.db
 # Dynamic Workspaces & Binaries
 bin/
 workspaces/
-.sdlc/*.json
+.sdlc/
