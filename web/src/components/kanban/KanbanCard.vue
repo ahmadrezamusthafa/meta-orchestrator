@@ -2,8 +2,9 @@
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Task } from '../../types'
+import { getStageGuidance } from '../../composables/useStageGuidance'
 import RoutingExplainerPill from '../common/RoutingExplainerPill.vue'
-import { Layers, Flame, Clock, Lock, AlertTriangle } from 'lucide-vue-next'
+import { Layers, Flame, Clock, Lock, AlertTriangle, ArrowRight } from 'lucide-vue-next'
 
 const props = defineProps<{
   task: Task
@@ -12,6 +13,7 @@ const props = defineProps<{
 const router = useRouter()
 const isDragging = ref(false)
 
+const guidance = computed(() => getStageGuidance(props.task))
 const isBlocked = computed(() => props.task.state === 'BLOCKED_FRUSTRATION')
 const isWriteLocked = computed(() => {
   return props.task.current_stage_id === 'atdd_creation' || props.task.metadata?.write_lock === 'ACTIVE'
@@ -87,9 +89,38 @@ function handleDragEnd() {
         </div>
       </div>
 
-      <h4 class="text-xs font-medium text-slate-200 line-clamp-2 leading-relaxed mb-3">
+      <h4 class="text-xs font-medium text-slate-200 line-clamp-2 leading-relaxed mb-2.5">
         {{ task.title }}
       </h4>
+
+      <!-- Real Status & Step Information Pill -->
+      <div class="mb-3 p-2 rounded bg-slate-950/90 border border-slate-800/80 space-y-1 text-[10px] font-mono">
+        <div class="flex items-center justify-between">
+          <span class="text-slate-400 font-medium">Step {{ guidance.stageNumber }}/{{ guidance.totalStages }}</span>
+          <span
+            v-if="guidance.actionType === 'blocked_steer'"
+            class="text-rose-400 font-semibold"
+          >
+            ● Steer Needed
+          </span>
+          <span
+            v-else-if="guidance.actionType === 'gate_approval'"
+            class="text-amber-400 font-semibold"
+          >
+            ● Gate Review
+          </span>
+          <span
+            v-else
+            class="text-emerald-400"
+          >
+            ● {{ guidance.isWriteLocked ? 'Locked (Red)' : 'Active' }}
+          </span>
+        </div>
+        <div class="text-slate-400 truncate flex items-center gap-1">
+          <span class="text-slate-500">Next:</span>
+          <span class="text-slate-300 truncate">{{ guidance.nextStageName }}</span>
+        </div>
+      </div>
     </div>
 
     <div class="pt-2.5 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">

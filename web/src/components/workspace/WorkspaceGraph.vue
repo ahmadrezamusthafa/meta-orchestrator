@@ -1,15 +1,44 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import WorkspaceGraphNode from './WorkspaceGraphNode.vue'
 import { Network, Server } from 'lucide-vue-next'
 
-const selectedNode = ref<string | null>('backend-core')
+const props = defineProps<{
+  taskId?: string
+  assignedRepos?: string[]
+  currentStageId?: string
+  isWriteLocked?: boolean
+}>()
 
-const nodes = [
-  { id: 'frontend-portal', name: 'frontend-portal', branch: 'feat/TASK-8942', x: 40, y: 40, isLinked: true },
-  { id: 'backend-core', name: 'backend-core', branch: 'feat/TASK-8942', x: 280, y: 40, isLinked: true },
-  { id: 'api-contracts', name: 'api-contracts', branch: 'main', x: 160, y: 160, isLinked: true },
-]
+const effectiveRepos = computed(() => {
+  if (props.assignedRepos && props.assignedRepos.length > 0) {
+    return props.assignedRepos
+  }
+  return ['frontend-portal', 'backend-core']
+})
+
+const selectedNode = ref<string>('frontend-portal')
+
+const nodes = computed(() => {
+  const branchName = `feat/${props.taskId || 'TASK-LIVE'}`
+  const coords: Record<string, { x: number; y: number }> = {
+    'frontend-portal': { x: 40, y: 40 },
+    'backend-core': { x: 280, y: 40 },
+    'api-contracts': { x: 160, y: 160 },
+  }
+
+  return effectiveRepos.value.map((repo, idx) => {
+    const defaultCoord = coords[repo] || { x: 40 + idx * 120, y: 40 + (idx % 2) * 80 }
+    return {
+      id: repo,
+      name: repo,
+      branch: repo === 'api-contracts' ? 'main' : branchName,
+      x: defaultCoord.x,
+      y: defaultCoord.y,
+      isLinked: true,
+    }
+  })
+})
 </script>
 
 <template>
@@ -70,15 +99,18 @@ const nodes = [
 
       <!-- Selected Node Inspection Panel -->
       <div class="p-3 bg-slate-900 border border-slate-800 rounded-lg text-xs space-y-1.5 font-mono">
-        <div class="flex items-center gap-2 text-slate-200 font-semibold font-sans">
-          <Server class="w-4 h-4 text-emerald-400" />
-          <span>Container Inspection: {{ selectedNode }}</span>
+        <div class="flex items-center justify-between text-slate-200 font-semibold font-sans">
+          <div class="flex items-center gap-2">
+            <Server class="w-4 h-4 text-emerald-400" />
+            <span>Container Inspection: {{ selectedNode }}</span>
+          </div>
+          <span class="text-[10px] text-slate-400 font-mono">Task ID: {{ taskId || 'LIVE' }}</span>
         </div>
         <div class="grid grid-cols-2 gap-2 text-[11px] text-slate-400">
-          <div>Mount: <span class="text-slate-200">/workspaces/TASK-8942/{{ selectedNode }}</span></div>
-          <div>Network: <span class="text-emerald-400">bridge (172.28.0.4)</span></div>
+          <div>Mount: <span class="text-slate-200">/workspaces/{{ taskId || 'TASK-LIVE' }}/{{ selectedNode }}</span></div>
+          <div>Network: <span class="text-emerald-400">isolated bridge (172.28.0.4)</span></div>
           <div>Symlinks: <span class="text-emerald-400">node_modules/api-contracts -> ../api-contracts</span></div>
-          <div>Write-Lock: <span class="text-emerald-400">DISENGAGED (RW)</span></div>
+          <div>Write-Lock: <span :class="isWriteLocked ? 'text-amber-400 font-bold' : 'text-emerald-400 font-bold'">{{ isWriteLocked ? 'ENGAGED (RO Red Phase)' : 'DISENGAGED (RW)' }}</span></div>
         </div>
       </div>
     </div>

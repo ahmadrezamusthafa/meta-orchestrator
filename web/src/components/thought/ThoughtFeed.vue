@@ -1,43 +1,56 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import type { Task } from '../../types'
 import ThoughtBubble from './ThoughtBubble.vue'
 import { BrainCircuit } from 'lucide-vue-next'
 
 const props = defineProps<{
   thoughts: any[]
+  task?: Task
 }>()
 
 const displayThoughts = computed(() => {
   if (props.thoughts && props.thoughts.length > 0) {
     return props.thoughts
   }
+
+  const taskId = props.task?.id || 'ACTIVE_TASK'
+  const taskTitle = props.task?.title || 'Execution Pipeline'
+  const repos = props.task?.assigned_repos?.length ? props.task.assigned_repos : ['primary-repo']
+  const primaryRepo = repos[0]
+  const method = props.task?.selected_method || 'Autonomous Agent'
+  const isLocked = props.task?.current_stage_id === 'atdd_creation' || props.task?.metadata?.write_lock === 'ACTIVE'
+  const stage = props.task?.current_stage_id || 'development'
+
   return [
     {
       profile: 'Lead Architect',
       model: 'claude-3-5-sonnet',
-      thought: 'Inspecting cross-repository dependency graph. AST Sharder confirmed schema contracts between frontend-portal and backend-core.',
+      thought: `Analyzing AST and cross-repo dependencies for [${taskId}]: "${taskTitle}". Verified integration boundaries for ${repos.join(', ')}.`,
       tool_call: {
-        name: 'read_ast_node',
-        arguments: { repository: 'frontend-portal', file: 'src/api/client.ts', symbol: 'StripeClient' },
-        output: { status: 'RESOLVED', lines: '42-89' }
+        name: 'inspect_ast_boundary',
+        arguments: { task_id: taskId, repositories: repos, method },
+        output: { status: 'RESOLVED', ast_radius: repos.length > 1 ? 'MULTI_REPO' : 'SINGLE_REPO' }
       },
       timestamp: new Date(Date.now() - 15 * 60000).toISOString(),
     },
     {
       profile: 'QA ATDD Engineer',
       model: 'claude-3-5-sonnet',
-      thought: 'Authoring Playwright end-to-end specifications grounded in PRD acceptance criteria. Application source tree is write-locked.',
+      thought: isLocked
+        ? `Authoring end-to-end specifications for ${primaryRepo}. Application source tree is write-locked until test failure is proven in Red Phase.`
+        : `Verified test harness compliance for ${primaryRepo}. Automated verification suites confirmed executable.`,
       tool_call: {
-        name: 'generate_playwright_specs',
-        arguments: { spec_path: 'tests/e2e/payment_checkout_spec.ts', assertions_count: 8 },
-        output: { status: 'GENERATED', exit_code: 1, signature: 'AWAITING_CODE_GEN' }
+        name: 'validate_atdd_suite',
+        arguments: { repository: primaryRepo, stage, write_locked: isLocked },
+        output: { status: isLocked ? 'RED_SUITE_LOCKED' : 'GREEN_PASSED', exit_code: isLocked ? 1 : 0 }
       },
       timestamp: new Date(Date.now() - 8 * 60000).toISOString(),
     },
     {
       profile: 'Fullstack Developer',
       model: 'claude-3-5-sonnet',
-      thought: 'Red phase failure verified. Write-locks disengaged. Implementing Stripe webhook idempotency handler with Redis distributed locking.',
+      thought: `Executing stage [${stage}] using ${method}. Synchronizing state with orchestrator FSM.`,
       timestamp: new Date(Date.now() - 2 * 60000).toISOString(),
     }
   ]

@@ -17,6 +17,7 @@ import ResetWorkspaceModal from '../components/hitl/ResetWorkspaceModal.vue'
 import GateApprovalBar from '../components/hitl/GateApprovalBar.vue'
 import PhaseStatusBadge from '../components/common/PhaseStatusBadge.vue'
 import RoutingExplainerPill from '../components/common/RoutingExplainerPill.vue'
+import OperatorGuidanceCard from '../components/common/OperatorGuidanceCard.vue'
 import {
   ChevronLeft,
   Terminal,
@@ -149,6 +150,16 @@ async function handleGateReject() {
       @reject="handleGateReject"
     />
 
+    <!-- Step-by-Step Operator Guidance Card -->
+    <div v-if="currentTask" class="px-4 py-2 bg-slate-950/80 border-b border-slate-800/80">
+      <OperatorGuidanceCard
+        :task="currentTask"
+        @approve-gate="handleGateApprove"
+        @reject-gate="handleGateReject"
+        @steer-click="leftTab = 'terminal'"
+      />
+    </div>
+
     <!-- Main Resizable Execution Workspace (60/40 Split) -->
     <main class="flex-1 overflow-hidden">
       <SplitPane>
@@ -200,9 +211,14 @@ async function handleGateReject() {
               <ThoughtFeed
                 v-else-if="leftTab === 'thoughts'"
                 :thoughts="terminalStore.thoughts"
+                :task="currentTask || undefined"
               />
               <WorkspaceGraph
                 v-else-if="leftTab === 'graph'"
+                :task-id="taskId"
+                :assigned-repos="currentTask?.assigned_repos"
+                :current-stage-id="currentTask?.current_stage_id"
+                :is-write-locked="currentTask?.current_stage_id === 'atdd_creation' || currentTask?.metadata?.write_lock === 'ACTIVE'"
               />
             </div>
           </div>
