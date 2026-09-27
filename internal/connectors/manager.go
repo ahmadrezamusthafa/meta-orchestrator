@@ -56,7 +56,7 @@ func NewManager(rootDir string) *Manager {
 				JQLFilter:      "project = PAY AND status != Done ORDER BY created DESC",
 				AutoDetectKeys: true,
 				AutoSyncStatus: true,
-				Status:         "connected",
+				Status:         "unconfigured",
 			},
 			Confluence: types.ConfluenceConfig{
 				Enabled:             true,
@@ -65,7 +65,7 @@ func NewManager(rootDir string) *Manager {
 				SpaceKey:            "ARCH",
 				AutoPublishTechDocs: true,
 				AutoPublishPRD:      true,
-				Status:              "connected",
+				Status:              "unconfigured",
 			},
 		},
 	}
@@ -495,6 +495,17 @@ func (m *Manager) ensureCatalogLocked() {
 			Env:       map[string]string{},
 		}
 	}
+
+	// Sanitize runtime statuses: disabled connectors must be "disabled", unauthenticated must be "unconfigured"
+	for _, it := range m.items {
+		if !it.Enabled {
+			it.Status = "disabled"
+		} else if it.Status == "connected" && it.ConfigMode != "mcp" {
+			if strings.TrimSpace(it.APIToken) == "" && (it.ID == "jira" || it.ID == "confluence" || it.ID == "github" || it.ID == "gitlab" || it.ID == "bitbucket" || it.ID == "linear" || it.ID == "notion") {
+				it.Status = "unconfigured"
+			}
+		}
+	}
 }
 
 func (m *Manager) load() {
@@ -510,8 +521,25 @@ func (m *Manager) load() {
 				m.config.Ping.IntervalSeconds = 30
 				m.config.Ping.Enabled = true
 			}
+			if !m.config.Jira.Enabled {
+				m.config.Jira.Status = "disabled"
+			} else if strings.TrimSpace(m.config.Jira.APIToken) == "" && m.config.Jira.Status == "connected" {
+				m.config.Jira.Status = "unconfigured"
+			}
+			if !m.config.Confluence.Enabled {
+				m.config.Confluence.Status = "disabled"
+			} else if strings.TrimSpace(m.config.Confluence.APIToken) == "" && m.config.Confluence.Status == "connected" {
+				m.config.Confluence.Status = "unconfigured"
+			}
 			for _, it := range cfg.Items {
 				if it != nil && it.ID != "" {
+					if !it.Enabled {
+						it.Status = "disabled"
+					} else if it.Status == "connected" && it.ConfigMode != "mcp" {
+						if strings.TrimSpace(it.APIToken) == "" && (it.ID == "jira" || it.ID == "confluence" || it.ID == "github" || it.ID == "gitlab" || it.ID == "bitbucket" || it.ID == "linear" || it.ID == "notion") {
+							it.Status = "unconfigured"
+						}
+					}
 					m.items[it.ID] = it
 				}
 			}
@@ -584,6 +612,14 @@ func (m *Manager) UpdateConnector(item types.ConnectorItem) (*types.ConnectorIte
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ensureCatalogLocked()
+
+	if !item.Enabled {
+		item.Status = "disabled"
+	} else if item.Status == "connected" && item.ConfigMode != "mcp" {
+		if strings.TrimSpace(item.APIToken) == "" && (item.ID == "jira" || item.ID == "confluence" || item.ID == "github" || item.ID == "gitlab" || item.ID == "bitbucket" || item.ID == "linear" || item.ID == "notion") {
+			item.Status = "unconfigured"
+		}
+	}
 
 	m.items[item.ID] = &item
 
@@ -744,35 +780,57 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 
 	switch id {
 	case "github":
+		if strings.TrimSpace(activeItem.APIToken) == "" {
+			res := types.TestConnectorResponse{
+				Success:   false,
+				LatencyMs: 0,
+				Message:   "GitHub Personal Access Token is required to authenticate",
+			}
+			m.updateItemStatus(id, false, 0, res.Message)
+			return res
+		}
 		reqURL := "https://api.github.com/user"
 		if activeItem.TargetEntity != "" && strings.Contains(activeItem.TargetEntity, "/") {
 			reqURL = fmt.Sprintf("https://api.github.com/repos/%s", activeItem.TargetEntity)
-		} else if activeItem.APIToken == "" {
-			reqURL = "https://api.github.com/zen"
 		}
 		req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, reqURL, nil)
 		if err == nil {
 			req.Header.Set("User-Agent", "Meta-Orchestrator")
 			req.Header.Set("Accept", "application/vnd.github.v3+json")
-			if activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
+			if !strings.Contains(activeItem.APIToken, "••••") {
 				req.Header.Set("Authorization", "Bearer "+activeItem.APIToken)
 			}
 		}
 
 	case "gitlab":
-		reqURL := cleanURL + "/api/v4/user"
-		if activeItem.APIToken == "" {
-			reqURL = cleanURL + "/api/v4/version"
+		if strings.TrimSpace(activeItem.APIToken) == "" {
+			res := types.TestConnectorResponse{
+				Success:   false,
+				LatencyMs: 0,
+				Message:   "GitLab Personal Access Token is required to authenticate",
+			}
+			m.updateItemStatus(id, false, 0, res.Message)
+			return res
 		}
+		reqURL := cleanURL + "/api/v4/user"
 		req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, reqURL, nil)
 		if err == nil {
 			req.Header.Set("User-Agent", "Meta-Orchestrator")
-			if activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
+			if !strings.Contains(activeItem.APIToken, "••••") {
 				req.Header.Set("PRIVATE-TOKEN", activeItem.APIToken)
 			}
 		}
 
 	case "bitbucket":
+		if strings.TrimSpace(activeItem.APIToken) == "" && strings.TrimSpace(activeItem.Username) == "" {
+			res := types.TestConnectorResponse{
+				Success:   false,
+				LatencyMs: 0,
+				Message:   "Bitbucket Username and App Password are required to authenticate",
+			}
+			m.updateItemStatus(id, false, 0, res.Message)
+			return res
+		}
 		reqURL := "https://api.bitbucket.org/2.0/user"
 		if activeItem.TargetEntity != "" && strings.Contains(activeItem.TargetEntity, "/") {
 			reqURL = fmt.Sprintf("https://api.bitbucket.org/2.0/repositories/%s", activeItem.TargetEntity)
@@ -787,9 +845,22 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 		}
 
 	case "slack":
-		token := activeItem.APIToken
+		token := strings.TrimSpace(activeItem.APIToken)
+		if token == "" && !strings.HasPrefix(cleanURL, "https://hooks.slack.com") && !strings.HasPrefix(cleanURL, "http://127.0.0.1") && !strings.HasPrefix(cleanURL, "http://localhost") {
+			res := types.TestConnectorResponse{
+				Success:   false,
+				LatencyMs: 0,
+				Message:   "Slack Bot Token (xoxb-...) or Webhook URL is required to authenticate",
+			}
+			m.updateItemStatus(id, false, 0, res.Message)
+			return res
+		}
 		if strings.HasPrefix(token, "xoxb-") || strings.HasPrefix(token, "xoxp-") {
-			req, err = http.NewRequestWithContext(probeCtx, http.MethodPost, "https://slack.com/api/auth.test", nil)
+			reqURL := "https://slack.com/api/auth.test"
+			if strings.HasPrefix(cleanURL, "http://127.0.0.1") || strings.HasPrefix(cleanURL, "http://localhost") {
+				reqURL = cleanURL + "/api/auth.test"
+			}
+			req, err = http.NewRequestWithContext(probeCtx, http.MethodPost, reqURL, nil)
 			if err == nil {
 				req.Header.Set("Authorization", "Bearer "+token)
 			}
@@ -798,20 +869,38 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 		}
 
 	case "linear":
+		if strings.TrimSpace(activeItem.APIToken) == "" {
+			res := types.TestConnectorResponse{
+				Success:   false,
+				LatencyMs: 0,
+				Message:   "Linear API Key is required to authenticate",
+			}
+			m.updateItemStatus(id, false, 0, res.Message)
+			return res
+		}
 		graphQLBody := bytes.NewBufferString(`{"query": "{ viewer { id name email } }"}`)
 		req, err = http.NewRequestWithContext(probeCtx, http.MethodPost, "https://api.linear.app/graphql", graphQLBody)
 		if err == nil {
 			req.Header.Set("Content-Type", "application/json")
-			if activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
+			if !strings.Contains(activeItem.APIToken, "••••") {
 				req.Header.Set("Authorization", activeItem.APIToken)
 			}
 		}
 
 	case "notion":
+		if strings.TrimSpace(activeItem.APIToken) == "" {
+			res := types.TestConnectorResponse{
+				Success:   false,
+				LatencyMs: 0,
+				Message:   "Notion Integration Token is required to authenticate",
+			}
+			m.updateItemStatus(id, false, 0, res.Message)
+			return res
+		}
 		req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, "https://api.notion.com/v1/users/me", nil)
 		if err == nil {
 			req.Header.Set("Notion-Version", "2022-06-28")
-			if activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
+			if !strings.Contains(activeItem.APIToken, "••••") {
 				req.Header.Set("Authorization", "Bearer "+activeItem.APIToken)
 			}
 		}
@@ -1046,6 +1135,33 @@ func (m *Manager) TestMCPConnector(ctx context.Context, id string, mcp *types.MC
 	argsStr := strings.Join(mcp.Args, " ")
 	envCount := len(mcp.Env)
 
+	// 3. Verify required authentication credentials in mcp.Env
+	hasEmptyRequiredEnv := false
+	missingKey := ""
+	for k, v := range mcp.Env {
+		upper := strings.ToUpper(k)
+		if strings.Contains(upper, "TOKEN") || strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "KEY") || strings.Contains(upper, "SECRET") {
+			if strings.TrimSpace(v) == "" {
+				hasEmptyRequiredEnv = true
+				missingKey = k
+				break
+			}
+		}
+	}
+	if hasEmptyRequiredEnv {
+		msg := fmt.Sprintf("MCP host runtime '%s' is installed, but required credential '%s' is not configured", mcp.Command, missingKey)
+		res := types.TestConnectorResponse{
+			Success:      false,
+			LatencyMs:    latency,
+			Message:      msg,
+			ConnectedAs:  execPath,
+			ServerInfo:   fmt.Sprintf("Command: %s (v: %s)", mcp.Command, versionStr),
+			TargetEntity: fmt.Sprintf("Missing Environment Variable: %s", missingKey),
+		}
+		m.updateItemStatus(id, false, latency, msg)
+		return res
+	}
+
 	res := types.TestConnectorResponse{
 		Success:      true,
 		LatencyMs:    latency,
@@ -1207,8 +1323,8 @@ func (m *Manager) PingAll(ctx context.Context) *types.PingAllSummary {
 	m.mu.RLock()
 	var targets []*types.ConnectorItem
 	for _, it := range m.items {
-		// Ping if connector is enabled, configured, or has non-empty credentials/endpoints
-		if it.Enabled || it.Status != "unconfigured" || it.BaseURL != "" || (it.MCP != nil && it.MCP.Enabled) {
+		// Only ping enabled connectors
+		if it.Enabled {
 			targets = append(targets, it)
 		}
 	}
@@ -1224,7 +1340,7 @@ func (m *Manager) PingAll(ctx context.Context) *types.PingAllSummary {
 
 	for _, item := range targets {
 		var res types.TestConnectorResponse
-		if item.ConfigMode == "mcp" || (item.MCP != nil && item.MCP.Enabled && item.APIToken == "") {
+		if item.ConfigMode == "mcp" {
 			res = m.TestMCPConnector(ctx, item.ID, item.MCP)
 		} else if item.ID == "jira" {
 			res = m.TestJira(ctx, jiraCfg)
@@ -1249,6 +1365,16 @@ func (m *Manager) TestJira(ctx context.Context, cfg types.JiraConfig) types.Test
 			Success:   false,
 			LatencyMs: 0,
 			Message:   "JIRA Base URL is required",
+		}
+		m.updateItemStatus("jira", false, 0, res.Message)
+		return res
+	}
+
+	if strings.TrimSpace(cfg.APIToken) == "" {
+		res := types.TestConnectorResponse{
+			Success:   false,
+			LatencyMs: 0,
+			Message:   "JIRA API Token is required to authenticate",
 		}
 		m.updateItemStatus("jira", false, 0, res.Message)
 		return res
@@ -1334,6 +1460,16 @@ func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig
 			Success:   false,
 			LatencyMs: 0,
 			Message:   "Confluence Base URL is required",
+		}
+		m.updateItemStatus("confluence", false, 0, res.Message)
+		return res
+	}
+
+	if strings.TrimSpace(cfg.APIToken) == "" {
+		res := types.TestConnectorResponse{
+			Success:   false,
+			LatencyMs: 0,
+			Message:   "Confluence API Token is required to authenticate",
 		}
 		m.updateItemStatus("confluence", false, 0, res.Message)
 		return res

@@ -238,6 +238,18 @@ function openConnectorSetup(c: ConnectorItem) {
   if (!selectedConnector.value?.extra_settings) {
     selectedConnector.value!.extra_settings = {}
   }
+  // Initialize default toggle values if undefined
+  const es = selectedConnector.value!.extra_settings
+  if (es.auto_detect_keys === undefined) es.auto_detect_keys = true
+  if (es.auto_sync_status === undefined) es.auto_sync_status = true
+  if (es.auto_publish_tech_docs === undefined) es.auto_publish_tech_docs = true
+  if (es.auto_publish_prd === undefined) es.auto_publish_prd = true
+  if (es.auto_sync_prs === undefined) es.auto_sync_prs = true
+  if (es.sync_pipelines === undefined) es.sync_pipelines = true
+  if (es.post_channel_notifications === undefined) es.post_channel_notifications = true
+  if (es.sync_pull_requests === undefined) es.sync_pull_requests = true
+  if (es.sign_payloads === undefined) es.sign_payloads = true
+
   if (!selectedConnector.value?.mcp) {
     selectedConnector.value!.mcp = {
       enabled: false,
@@ -304,9 +316,14 @@ async function testConnection() {
     if (res.success) {
       selectedConnector.value.status = 'connected'
       selectedConnector.value.latency_ms = res.latency_ms
+      selectedConnector.value.last_tested_at = new Date().toISOString()
+      selectedConnector.value.error_message = ''
       toastStore.success('Connection Successful', `${res.message} (${res.latency_ms}ms)`)
     } else {
       selectedConnector.value.status = 'error'
+      selectedConnector.value.latency_ms = res.latency_ms
+      selectedConnector.value.last_tested_at = new Date().toISOString()
+      selectedConnector.value.error_message = res.message
       toastStore.error('Connection Test Failed', res.message)
     }
   } catch (err: any) {
@@ -315,8 +332,19 @@ async function testConnection() {
       latency_ms: 0,
       message: err.message || 'Connection failed'
     }
+    selectedConnector.value.status = 'error'
+    selectedConnector.value.error_message = err.message || 'Connection failed'
+    selectedConnector.value.last_tested_at = new Date().toISOString()
     toastStore.error('Test Failed', err.message)
   } finally {
+    // In-place catalog sync
+    const idx = catalog.value.findIndex(item => item.id === selectedConnector.value?.id)
+    if (idx !== -1 && selectedConnector.value) {
+      catalog.value[idx].status = selectedConnector.value.status
+      catalog.value[idx].latency_ms = selectedConnector.value.latency_ms
+      catalog.value[idx].last_tested_at = selectedConnector.value.last_tested_at
+      catalog.value[idx].error_message = selectedConnector.value.error_message
+    }
     isTesting.value = false
   }
 }
@@ -330,8 +358,20 @@ async function testMCP() {
     const res = await api.testMCPConnector(selectedConnector.value.id, selectedConnector.value.mcp)
     mcpTestResult.value = res
     if (res.success) {
+      if (selectedConnector.value.config_mode === 'mcp') {
+        selectedConnector.value.status = 'connected'
+        selectedConnector.value.latency_ms = res.latency_ms
+        selectedConnector.value.last_tested_at = new Date().toISOString()
+        selectedConnector.value.error_message = ''
+      }
       toastStore.success('MCP Verified', `${res.message} (${res.latency_ms}ms)`)
     } else {
+      if (selectedConnector.value.config_mode === 'mcp') {
+        selectedConnector.value.status = 'error'
+        selectedConnector.value.latency_ms = res.latency_ms
+        selectedConnector.value.last_tested_at = new Date().toISOString()
+        selectedConnector.value.error_message = res.message
+      }
       toastStore.error('MCP Validation Failed', res.message)
     }
   } catch (err: any) {
@@ -340,8 +380,20 @@ async function testMCP() {
       latency_ms: 0,
       message: err.message || 'MCP test failed'
     }
+    if (selectedConnector.value.config_mode === 'mcp') {
+      selectedConnector.value.status = 'error'
+      selectedConnector.value.error_message = err.message || 'MCP test failed'
+      selectedConnector.value.last_tested_at = new Date().toISOString()
+    }
     toastStore.error('MCP Test Failed', err.message)
   } finally {
+    const idx = catalog.value.findIndex(item => item.id === selectedConnector.value?.id)
+    if (idx !== -1 && selectedConnector.value) {
+      catalog.value[idx].status = selectedConnector.value.status
+      catalog.value[idx].latency_ms = selectedConnector.value.latency_ms
+      catalog.value[idx].last_tested_at = selectedConnector.value.last_tested_at
+      catalog.value[idx].error_message = selectedConnector.value.error_message
+    }
     isTestingMCP.value = false
   }
 }
@@ -505,6 +557,12 @@ onMounted(async () => {
           existing.latency_ms = u.latency_ms
           existing.last_tested_at = u.last_tested_at
           existing.error_message = u.error_message
+        }
+        if (selectedConnector.value && selectedConnector.value.id === u.id) {
+          selectedConnector.value.status = u.status
+          selectedConnector.value.latency_ms = u.latency_ms
+          selectedConnector.value.last_tested_at = u.last_tested_at
+          selectedConnector.value.error_message = u.error_message
         }
       }
     } catch {
@@ -930,6 +988,29 @@ onUnmounted(() => {
                 >
                   {{ selectedConnector.category_label }}
                 </span>
+                <!-- Live Status Badge -->
+                <span 
+                  class="px-2 py-0.5 rounded-full text-[10px] font-mono uppercase font-bold tracking-wider inline-flex items-center gap-1.5 border"
+                  :class="[
+                    !selectedConnector.enabled ? 'bg-slate-900 border-slate-700 text-slate-400' :
+                    selectedConnector.status === 'connected' ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-400' :
+                    selectedConnector.status === 'error' ? 'bg-rose-950/80 border-rose-500/50 text-rose-400' :
+                    selectedConnector.status === 'configured' ? 'bg-sky-950/80 border-sky-500/50 text-sky-400' :
+                    'bg-slate-900 border-slate-700 text-slate-400'
+                  ]"
+                >
+                  <span 
+                    class="w-1.5 h-1.5 rounded-full"
+                    :class="[
+                      !selectedConnector.enabled ? 'bg-slate-500' :
+                      selectedConnector.status === 'connected' ? 'bg-emerald-400 animate-pulse' :
+                      selectedConnector.status === 'error' ? 'bg-rose-400' :
+                      selectedConnector.status === 'configured' ? 'bg-sky-400' :
+                      'bg-slate-500'
+                    ]"
+                  />
+                  {{ !selectedConnector.enabled ? 'DISABLED' : (selectedConnector.status || 'UNCONFIGURED') }}
+                </span>
               </h2>
             </div>
           </div>
@@ -938,17 +1019,25 @@ onUnmounted(() => {
         <!-- Quick Top Actions: Enable Switch, Test Connection, Save -->
         <div class="flex items-center gap-3">
           <!-- Live Master Enable Toggle -->
-          <label class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 cursor-pointer text-xs">
+          <div 
+            @click="selectedConnector.enabled = !selectedConnector.enabled"
+            class="flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 cursor-pointer text-xs hover:border-slate-700 transition select-none"
+            :title="selectedConnector.enabled ? 'Connector is active. Click to disable.' : 'Connector is disabled. Click to enable.'"
+          >
             <span class="text-slate-400 font-mono text-[11px]">Enabled:</span>
-            <input
-              v-model="selectedConnector.enabled"
-              type="checkbox"
-              class="w-4 h-4 rounded text-blue-600 focus:ring-0 focus:ring-offset-0 bg-slate-950 border-slate-700 cursor-pointer"
-            />
+            <div 
+              class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+              :class="selectedConnector.enabled ? 'bg-emerald-500 shadow-sm shadow-emerald-950' : 'bg-slate-700'"
+            >
+              <span 
+                class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out"
+                :class="selectedConnector.enabled ? 'translate-x-4' : 'translate-x-0'"
+              />
+            </div>
             <span :class="selectedConnector.enabled ? 'text-emerald-400 font-bold' : 'text-slate-500'">
               {{ selectedConnector.enabled ? 'ON' : 'OFF' }}
             </span>
-          </label>
+          </div>
 
           <!-- Test Connection Button -->
           <button
@@ -1168,29 +1257,43 @@ onUnmounted(() => {
                 <!-- JIRA SPECIFIC TOGGLES -->
                 <template v-if="selectedConnector.id === 'jira'">
                   <div class="space-y-3">
-                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                    <div 
+                      @click="selectedConnector.extra_settings!.auto_detect_keys = !selectedConnector.extra_settings!.auto_detect_keys"
+                      class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition select-none"
+                    >
                       <div>
                         <div class="text-xs font-medium text-slate-200">Automatically Detect JIRA Keys on Kanban Cards</div>
                         <div class="text-[11px] text-slate-400">Scans task titles and descriptions for ticket keys (e.g. [PAY-1042]) and adds deep-link badges.</div>
                       </div>
-                      <input
-                        v-model="selectedConnector.extra_settings!.auto_detect_keys"
-                        type="checkbox"
-                        class="w-4 h-4 rounded text-blue-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                      />
-                    </label>
+                      <div 
+                        class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                        :class="selectedConnector.extra_settings?.auto_detect_keys ? 'bg-emerald-500 shadow-sm shadow-emerald-950' : 'bg-slate-700'"
+                      >
+                        <span 
+                          class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out"
+                          :class="selectedConnector.extra_settings?.auto_detect_keys ? 'translate-x-4' : 'translate-x-0'"
+                        />
+                      </div>
+                    </div>
 
-                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                    <div 
+                      @click="selectedConnector.extra_settings!.auto_sync_status = !selectedConnector.extra_settings!.auto_sync_status"
+                      class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition select-none"
+                    >
                       <div>
                         <div class="text-xs font-medium text-slate-200">Auto-Sync Stage Transitions to JIRA Status</div>
                         <div class="text-[11px] text-slate-400">Advances JIRA issue workflow as pipeline stages complete.</div>
                       </div>
-                      <input
-                        v-model="selectedConnector.extra_settings!.auto_sync_status"
-                        type="checkbox"
-                        class="w-4 h-4 rounded text-blue-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                      />
-                    </label>
+                      <div 
+                        class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                        :class="selectedConnector.extra_settings?.auto_sync_status ? 'bg-emerald-500 shadow-sm shadow-emerald-950' : 'bg-slate-700'"
+                      >
+                        <span 
+                          class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out"
+                          :class="selectedConnector.extra_settings?.auto_sync_status ? 'translate-x-4' : 'translate-x-0'"
+                        />
+                      </div>
+                    </div>
 
                     <div>
                       <label class="block text-xs font-medium text-slate-300 mb-1.5">Default JQL Query Filter</label>
@@ -1207,109 +1310,158 @@ onUnmounted(() => {
                 <!-- CONFLUENCE SPECIFIC TOGGLES -->
                 <template v-else-if="selectedConnector.id === 'confluence'">
                   <div class="space-y-3">
-                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                    <div 
+                      @click="selectedConnector.extra_settings!.auto_publish_tech_docs = !selectedConnector.extra_settings!.auto_publish_tech_docs"
+                      class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition select-none"
+                    >
                       <div>
                         <div class="text-xs font-medium text-slate-200">Automatically Publish Tech Doc RFCs</div>
                         <div class="text-[11px] text-slate-400">Pushes Technical Architecture Design documents (TECH_DOC_RFC.md) to Confluence upon reaching the RFC design stage.</div>
                       </div>
-                      <input
-                        v-model="selectedConnector.extra_settings!.auto_publish_tech_docs"
-                        type="checkbox"
-                        class="w-4 h-4 rounded text-indigo-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                      />
-                    </label>
+                      <div 
+                        class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                        :class="selectedConnector.extra_settings?.auto_publish_tech_docs ? 'bg-emerald-500 shadow-sm shadow-emerald-950' : 'bg-slate-700'"
+                      >
+                        <span 
+                          class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out"
+                          :class="selectedConnector.extra_settings?.auto_publish_tech_docs ? 'translate-x-4' : 'translate-x-0'"
+                        />
+                      </div>
+                    </div>
 
-                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                    <div 
+                      @click="selectedConnector.extra_settings!.auto_publish_prd = !selectedConnector.extra_settings!.auto_publish_prd"
+                      class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition select-none"
+                    >
                       <div>
                         <div class="text-xs font-medium text-slate-200">Automatically Publish PRD Discovery Documents</div>
                         <div class="text-[11px] text-slate-400">Exports synthesized product requirement specifications into Confluence team spaces.</div>
                       </div>
-                      <input
-                        v-model="selectedConnector.extra_settings!.auto_publish_prd"
-                        type="checkbox"
-                        class="w-4 h-4 rounded text-indigo-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                      />
-                    </label>
+                      <div 
+                        class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                        :class="selectedConnector.extra_settings?.auto_publish_prd ? 'bg-emerald-500 shadow-sm shadow-emerald-950' : 'bg-slate-700'"
+                      >
+                        <span 
+                          class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out"
+                          :class="selectedConnector.extra_settings?.auto_publish_prd ? 'translate-x-4' : 'translate-x-0'"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </template>
 
                 <!-- BITBUCKET SPECIFIC TOGGLES -->
                 <template v-else-if="selectedConnector.id === 'bitbucket'">
                   <div class="space-y-3">
-                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                    <div 
+                      @click="selectedConnector.extra_settings!.auto_sync_prs = !selectedConnector.extra_settings!.auto_sync_prs"
+                      class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition select-none"
+                    >
                       <div>
                         <div class="text-xs font-medium text-slate-200">Auto-Create Bitbucket Pull Request upon Code Generation</div>
                         <div class="text-[11px] text-slate-400">Generates pull request with diff summary and ATDD checklist directly into Bitbucket repo.</div>
                       </div>
-                      <input
-                        type="checkbox"
-                        checked
-                        class="w-4 h-4 rounded text-cyan-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                      />
-                    </label>
+                      <div 
+                        class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                        :class="selectedConnector.extra_settings?.auto_sync_prs ? 'bg-cyan-500 shadow-sm shadow-cyan-950' : 'bg-slate-700'"
+                      >
+                        <span 
+                          class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out"
+                          :class="selectedConnector.extra_settings?.auto_sync_prs ? 'translate-x-4' : 'translate-x-0'"
+                        />
+                      </div>
+                    </div>
 
-                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                    <div 
+                      @click="selectedConnector.extra_settings!.sync_pipelines = !selectedConnector.extra_settings!.sync_pipelines"
+                      class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition select-none"
+                    >
                       <div>
                         <div class="text-xs font-medium text-slate-200">Verify Bitbucket Pipelines Status Before Marking ATDD Done</div>
                         <div class="text-[11px] text-slate-400">Checks commit status build results from Bitbucket Pipelines CI/CD.</div>
                       </div>
-                      <input
-                        type="checkbox"
-                        checked
-                        class="w-4 h-4 rounded text-cyan-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                      />
-                    </label>
+                      <div 
+                        class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                        :class="selectedConnector.extra_settings?.sync_pipelines ? 'bg-cyan-500 shadow-sm shadow-cyan-950' : 'bg-slate-700'"
+                      >
+                        <span 
+                          class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out"
+                          :class="selectedConnector.extra_settings?.sync_pipelines ? 'translate-x-4' : 'translate-x-0'"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </template>
 
                 <!-- SLACK SPECIFIC TOGGLES -->
                 <template v-else-if="selectedConnector.id === 'slack'">
                   <div class="space-y-3">
-                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                    <div 
+                      @click="selectedConnector.extra_settings!.post_channel_notifications = !selectedConnector.extra_settings!.post_channel_notifications"
+                      class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition select-none"
+                    >
                       <div>
                         <div class="text-xs font-medium text-slate-200">Real-Time Human-In-The-Loop (HITL) Gate Alerts</div>
                         <div class="text-[11px] text-slate-400">Sends instant notifications to the channel when a stage requires human review or gate confirmation.</div>
                       </div>
-                      <input
-                        type="checkbox"
-                        checked
-                        class="w-4 h-4 rounded text-purple-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                      />
-                    </label>
+                      <div 
+                        class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                        :class="selectedConnector.extra_settings?.post_channel_notifications ? 'bg-purple-600 shadow-sm shadow-purple-950' : 'bg-slate-700'"
+                      >
+                        <span 
+                          class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out"
+                          :class="selectedConnector.extra_settings?.post_channel_notifications ? 'translate-x-4' : 'translate-x-0'"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </template>
 
                 <!-- GITHUB / GITLAB TOGGLES -->
                 <template v-else-if="selectedConnector.id === 'github' || selectedConnector.id === 'gitlab'">
                   <div class="space-y-3">
-                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                    <div 
+                      @click="selectedConnector.extra_settings!.sync_pull_requests = !selectedConnector.extra_settings!.sync_pull_requests"
+                      class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition select-none"
+                    >
                       <div>
                         <div class="text-xs font-medium text-slate-200">Auto-Create Pull/Merge Request on Code Signoff</div>
                         <div class="text-[11px] text-slate-400">Automatically creates an upstream branch and draft Pull Request once code generation completes.</div>
                       </div>
-                      <input
-                        type="checkbox"
-                        checked
-                        class="w-4 h-4 rounded text-slate-400 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                      />
-                    </label>
+                      <div 
+                        class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                        :class="selectedConnector.extra_settings?.sync_pull_requests ? 'bg-blue-600 shadow-sm shadow-blue-950' : 'bg-slate-700'"
+                      >
+                        <span 
+                          class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out"
+                          :class="selectedConnector.extra_settings?.sync_pull_requests ? 'translate-x-4' : 'translate-x-0'"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </template>
 
                 <!-- GENERIC / WEBHOOK TOGGLES -->
                 <template v-else>
                   <div class="space-y-3">
-                    <label class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+                    <div 
+                      @click="selectedConnector.extra_settings!.sign_payloads = !selectedConnector.extra_settings!.sign_payloads"
+                      class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition select-none"
+                    >
                       <div>
                         <div class="text-xs font-medium text-slate-200">Sign Payloads with HMAC SHA-256 Header (X-Hub-Signature-256)</div>
                         <div class="text-[11px] text-slate-400">Ensures message integrity and security for receiver endpoints.</div>
                       </div>
-                      <input
-                        type="checkbox"
-                        checked
-                        class="w-4 h-4 rounded text-emerald-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                      />
-                    </label>
+                      <div 
+                        class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                        :class="selectedConnector.extra_settings?.sign_payloads ? 'bg-emerald-500 shadow-sm shadow-emerald-950' : 'bg-slate-700'"
+                      >
+                        <span 
+                          class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out"
+                          :class="selectedConnector.extra_settings?.sign_payloads ? 'translate-x-4' : 'translate-x-0'"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </template>
               </div>
@@ -1357,16 +1509,23 @@ onUnmounted(() => {
               </div>
 
               <!-- MCP Enable Toggle -->
-              <div class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800">
+              <div 
+                @click="selectedConnector.mcp.enabled = !selectedConnector.mcp.enabled"
+                class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition select-none"
+              >
                 <div>
                   <div class="text-xs font-medium text-slate-200">Enable MCP Server for {{ selectedConnector.name }}</div>
                   <div class="text-[11px] text-slate-400">Includes this connector in generated MCP server manifests and agent toolsets.</div>
                 </div>
-                <input
-                  v-model="selectedConnector.mcp.enabled"
-                  type="checkbox"
-                  class="w-4 h-4 rounded text-purple-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 border-slate-700"
-                />
+                <div 
+                  class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                  :class="selectedConnector.mcp?.enabled ? 'bg-purple-600 shadow-sm shadow-purple-950' : 'bg-slate-700'"
+                >
+                  <span 
+                    class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out"
+                    :class="selectedConnector.mcp?.enabled ? 'translate-x-4' : 'translate-x-0'"
+                  />
+                </div>
               </div>
 
               <!-- MCP Server Configuration -->
