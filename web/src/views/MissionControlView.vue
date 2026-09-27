@@ -6,12 +6,14 @@ import KanbanToolbar from '../components/kanban/KanbanToolbar.vue'
 import KanbanColumn from '../components/kanban/KanbanColumn.vue'
 import NewTaskModal from '../components/kanban/NewTaskModal.vue'
 import JiraImportModal from '../components/kanban/JiraImportModal.vue'
+import TaskConsoleDrawer from '../components/kanban/TaskConsoleDrawer.vue'
 
 const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
 
 const showNewTaskModal = ref(false)
 const showJiraImportModal = ref(false)
+const activeConsoleTaskId = ref<string | null>(null)
 const initialStageForNewTask = ref<string | undefined>(undefined)
 const density = ref<'comfortable' | 'compact'>('comfortable')
 const collapsedStages = ref<Record<string, boolean>>({})
@@ -87,6 +89,7 @@ onMounted(async () => {
           :all-stages="workflowStore.projectedColumns"
           @toggle-collapse="toggleColumnCollapse"
           @quick-add="openNewTaskForStage"
+          @open-console="(id) => activeConsoleTaskId = id"
         />
       </div>
     </main>
@@ -103,6 +106,13 @@ onMounted(async () => {
     <JiraImportModal
       v-if="showJiraImportModal"
       @close="showJiraImportModal = false"
+    />
+
+    <!-- Task Background Process & Console Terminal Slide-over Drawer -->
+    <TaskConsoleDrawer
+      v-if="activeConsoleTaskId"
+      :task-id="activeConsoleTaskId"
+      @close="activeConsoleTaskId = null"
     />
   </div>
 </template>

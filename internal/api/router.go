@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,10 +37,11 @@ type RouterConfig struct {
 
 // Router provides the HTTP REST API handler for the Mission Control frontend.
 type Router struct {
-	cfg   RouterConfig
-	mux   *http.ServeMux
-	mu    sync.RWMutex
-	tasks map[string]*types.Task
+	cfg           RouterConfig
+	mux           *http.ServeMux
+	mu            sync.RWMutex
+	tasks         map[string]*types.Task
+	taskProcesses map[string]*types.TaskProcessInfo
 }
 
 // NewRouter constructs a new REST API router.
@@ -62,9 +65,10 @@ func NewRouter(cfg RouterConfig) *Router {
 		cfg.ConnectorsManager.SetBroadcastFunc(cfg.WSHub.BroadcastEvent)
 	}
 	r := &Router{
-		cfg:   cfg,
-		mux:   http.NewServeMux(),
-		tasks: make(map[string]*types.Task),
+		cfg:           cfg,
+		mux:           http.NewServeMux(),
+		tasks:         make(map[string]*types.Task),
+		taskProcesses: make(map[string]*types.TaskProcessInfo),
 	}
 	r.seedDefaultTasks()
 	r.registerRoutes()
@@ -204,6 +208,153 @@ func (r *Router) seedDefaultTasks() {
 		CreatedAt: now.Add(-240 * time.Minute),
 		UpdatedAt: now,
 	}
+
+	// Seed realistic background processes & console logs for Mission Control tasks
+	r.taskProcesses["TASK-8942"] = &types.TaskProcessInfo{
+		TaskID:          "TASK-8942",
+		ProcessID:       4812,
+		Command:         "go test -v ./internal/billing/... -run TestStripeWebhookIdempotency",
+		WorkingDir:      "/workspaces/TASK-8942/backend-core",
+		ContainerID:     "orch-sandbox-8942",
+		Status:          "RUNNING",
+		StartedAt:       now.Add(-45 * time.Minute),
+		DurationSeconds: 2700,
+		CPUPercent:      18.4,
+		MemoryMB:        142.5,
+		CurrentStep:     "Step 4 of 7: Task Implementation (BMAD Method)",
+		ActiveAgent:     "senior_fullstack_dev (Claude 3.5 Sonnet)",
+		SubProcesses: []types.TaskSubProcess{
+			{PID: 4813, Command: "npm --prefix frontend-portal run test:unit -- PaymentModal", Status: "RUNNING"},
+		},
+		Logs: []string{
+			fmt.Sprintf("[%s] \x1b[36m[Orchestrator]\x1b[0m Container sandbox initialized on isolated docker network (orch-sandbox-8942).", now.Add(-45*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[32m[Git Coordinator]\x1b[0m Synchronized feature branches across target repositories: frontend-portal, backend-core, api-contracts.", now.Add(-44*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[33m[Agent Loop]\x1b[0m Selected BMAD Method. Executing implementation phase for Stripe billing & webhook idempotency.", now.Add(-43*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[34m[Process Spawn]\x1b[0m Spawned PID 4812: `go test -v ./internal/billing/... -run TestStripeWebhookIdempotency` in /workspaces/TASK-8942/backend-core", now.Add(-40*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] === RUN   TestStripeWebhookIdempotency", now.Add(-39*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] === RUN   TestStripeWebhookIdempotency/Replay_Protection_With_Redis_Lock", now.Add(-38*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] --- PASS: TestStripeWebhookIdempotency/Replay_Protection_With_Redis_Lock (0.12s)", now.Add(-38*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] === RUN   TestStripeWebhookIdempotency/Signature_Validation_Header_Verification", now.Add(-37*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] --- PASS: TestStripeWebhookIdempotency/Signature_Validation_Header_Verification (0.04s)", now.Add(-37*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[32m[Coverage]\x1b[0m Backend test suite passed (89.2%% line coverage).", now.Add(-35*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[35m[Sub-Process]\x1b[0m Spawned PID 4813: `npm --prefix frontend-portal run test:unit -- PaymentModal`", now.Add(-20*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] PASS  frontend-portal/src/components/PaymentModal.test.tsx (12 tests passed)", now.Add(-18*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[32m[ATDD Check]\x1b[0m 12/12 ATDD specifications passing green.", now.Add(-10*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[36m[Orchestrator]\x1b[0m Background process active: running continuous integration verification & watching file changes.", now.Add(-2*time.Minute).Format("15:04:05")),
+		},
+	}
+
+	r.taskProcesses["TASK-8943"] = &types.TaskProcessInfo{
+		TaskID:          "TASK-8943",
+		ProcessID:       5120,
+		Command:         "playwright codegen --save-trace=atdd/auth-expiry.spec.ts",
+		WorkingDir:      "/workspaces/TASK-8943/frontend-portal",
+		ContainerID:     "orch-sandbox-8943",
+		Status:          "RUNNING",
+		StartedAt:       now.Add(-20 * time.Minute),
+		DurationSeconds: 1200,
+		CPUPercent:      9.2,
+		MemoryMB:        88.0,
+		CurrentStep:     "Step 2 of 7: ATDD Specification & Test Recording (Supervisor Method)",
+		ActiveAgent:     "qa_automation_specialist (Supervisor)",
+		Logs: []string{
+			fmt.Sprintf("[%s] \x1b[36m[Orchestrator]\x1b[0m Container sandbox initialized on isolated docker network (orch-sandbox-8943).", now.Add(-20*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[33m[Write-Lock Guard]\x1b[0m Read-only locks verified on application source tree (Red Phase ATDD).", now.Add(-19*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[34m[Process Spawn]\x1b[0m Spawned PID 5120: `playwright codegen --save-trace=atdd/auth-expiry.spec.ts`", now.Add(-18*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[32m[ATDD Synthesizer]\x1b[0m Generating failing acceptance tests for silent token refresh & session timeout.", now.Add(-10*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[36m[Orchestrator]\x1b[0m Synthesized ATDD suite in atdd/auth-expiry.spec.ts (Expected RED state).", now.Add(-2*time.Minute).Format("15:04:05")),
+		},
+	}
+
+	r.taskProcesses["TASK-8940"] = &types.TaskProcessInfo{
+		TaskID:          "TASK-8940",
+		ProcessID:       4380,
+		Command:         "npx playwright test e2e/subscription.spec.ts --timeout=5000",
+		WorkingDir:      "/workspaces/TASK-8940/backend-core",
+		ContainerID:     "orch-sandbox-8940",
+		Status:          "BLOCKED",
+		StartedAt:       now.Add(-120 * time.Minute),
+		DurationSeconds: 7200,
+		CPUPercent:      0.0,
+		MemoryMB:        45.2,
+		CurrentStep:     "Step 5 of 7: E2E Validation (Halted by Frustration Circuit Breaker)",
+		ActiveAgent:     "backend_engineer (ReAct Method)",
+		ExitCode:        1,
+		Logs: []string{
+			fmt.Sprintf("[%s] \x1b[36m[Orchestrator]\x1b[0m Container sandbox initialized on isolated docker network (orch-sandbox-8940).", now.Add(-120*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[34m[Process Spawn]\x1b[0m Spawned PID 4380: `npx playwright test e2e/subscription.spec.ts --timeout=5000`", now.Add(-115*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] Running 1 test using 1 worker", now.Add(-114*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[31m[ERROR]\x1b[0m Playwright timeout: expected status 200 within 5000ms, received 504 Gateway Timeout", now.Add(-110*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[31m[FAIL]\x1b[0m e2e/subscription.spec.ts:42:5 › WebSocket GraphQL Resolver Subscription Timeout", now.Add(-110*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[33m[Loop Attempt 2/3]\x1b[0m Retrying with adjusted keep-alive interval...", now.Add(-80*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[31m[FAIL]\x1b[0m Repeated timeout: 504 Gateway Timeout from GraphQL subscription handler.", now.Add(-75*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[33m[Loop Attempt 3/3]\x1b[0m Retrying query payload with exponential backoff...", now.Add(-40*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[31m[FAIL]\x1b[0m 504 Gateway Timeout encountered on 3 consecutive iterations.", now.Add(-35*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[31;1m[CIRCUIT BREAKER]\x1b[0m Frustration threshold exceeded (3 consecutive failures). Process suspended for Human-In-The-Loop guidance.", now.Add(-30*time.Minute).Format("15:04:05")),
+		},
+	}
+
+	r.taskProcesses["TASK-8938"] = &types.TaskProcessInfo{
+		TaskID:          "TASK-8938",
+		ProcessID:       3920,
+		Command:         "git push origin feature/avatar-upload && gh pr create --fill",
+		WorkingDir:      "/workspaces/TASK-8938/frontend-portal",
+		ContainerID:     "orch-sandbox-8938",
+		Status:          "COMPLETED",
+		StartedAt:       now.Add(-240 * time.Minute),
+		DurationSeconds: 14400,
+		CPUPercent:      0.0,
+		MemoryMB:        12.0,
+		CurrentStep:     "Step 7 of 7: Signoff & Merge Complete",
+		ActiveAgent:     "lead_architect (BMAD Method)",
+		ExitCode:        0,
+		Logs: []string{
+			fmt.Sprintf("[%s] \x1b[36m[Orchestrator]\x1b[0m All ATDD specifications and UAT verification passed (100%% green).", now.Add(-60*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[32m[Git Signoff]\x1b[0m Pushed commits to origin/feature/avatar-upload.", now.Add(-55*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[32m[Pull Request]\x1b[0m Created Pull Request #48: 'User Profile Avatar Upload & S3 Bucket Presigned URLs'.", now.Add(-50*time.Minute).Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[32m[SUCCESS]\x1b[0m Task execution completed successfully. Container sandbox preserved in cold storage.", now.Add(-45*time.Minute).Format("15:04:05")),
+		},
+	}
+}
+
+func (r *Router) getOrCreateTaskProcessLocked(taskID string) *types.TaskProcessInfo {
+	if proc, ok := r.taskProcesses[taskID]; ok {
+		return proc
+	}
+
+	task := r.tasks[taskID]
+	title := taskID
+	method := "BMAD"
+	step := "Step 1 of 7: Discovery"
+	if task != nil {
+		title = task.Title
+		method = task.SelectedMethod
+		step = fmt.Sprintf("Step %d of 7: %s (%s Method)", task.CurrentStageIndex+1, task.CurrentStageID, method)
+	}
+
+	now := time.Now()
+	proc := &types.TaskProcessInfo{
+		TaskID:          taskID,
+		ProcessID:       4900 + len(r.taskProcesses),
+		Command:         fmt.Sprintf("orchestrator run-stage --task=%s --method=%s", taskID, method),
+		WorkingDir:      fmt.Sprintf("/workspaces/%s", taskID),
+		ContainerID:     fmt.Sprintf("orch-sandbox-%s", strings.ToLower(taskID)),
+		Status:          "RUNNING",
+		StartedAt:       now,
+		DurationSeconds: 120,
+		CPUPercent:      12.5,
+		MemoryMB:        96.0,
+		CurrentStep:     step,
+		ActiveAgent:     "orchestrator_agent",
+		Logs: []string{
+			fmt.Sprintf("[%s] \x1b[36m[Orchestrator]\x1b[0m Container sandbox initialized on isolated docker network.", now.Format("15:04:05")),
+			fmt.Sprintf("[%s] \x1b[32m[Task Coordinator]\x1b[0m Active background process started for %s.", now.Format("15:04:05"), title),
+			fmt.Sprintf("[%s] \x1b[34m[Process Spawn]\x1b[0m Spawned PID %d: `orchestrator run-stage --task=%s --method=%s`", now.Format("15:04:05"), 4900+len(r.taskProcesses), taskID, method),
+			fmt.Sprintf("[%s] \x1b[36m[Console Stream]\x1b[0m STDOUT / STDERR live streaming active.", now.Format("15:04:05")),
+		},
+	}
+	r.taskProcesses[taskID] = proc
+	return proc
 }
 
 func (r *Router) registerRoutes() {

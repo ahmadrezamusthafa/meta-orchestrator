@@ -230,3 +230,63 @@ func TestWorkflowsAndRegistriesAPI(t *testing.T) {
 		t.Fatalf("Expected 200 OK, got %d", wReg.Code)
 	}
 }
+
+func TestTasksAPI_ProcessAndTerminalLogs(t *testing.T) {
+	router := setupTestRouter()
+
+	// 1. GET /api/v1/tasks/TASK-8942/process
+	reqProc := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/TASK-8942/process", nil)
+	wProc := httptest.NewRecorder()
+	router.ServeHTTP(wProc, reqProc)
+
+	if wProc.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for task process, got %d", wProc.Code)
+	}
+
+	var proc types.TaskProcessInfo
+	if err := json.NewDecoder(wProc.Body).Decode(&proc); err != nil {
+		t.Fatalf("Failed to decode TaskProcessInfo: %v", err)
+	}
+
+	if proc.TaskID != "TASK-8942" {
+		t.Errorf("Expected task ID TASK-8942, got %s", proc.TaskID)
+	}
+	if proc.ProcessID <= 0 {
+		t.Errorf("Expected valid process ID, got %d", proc.ProcessID)
+	}
+	if proc.Status != "RUNNING" {
+		t.Errorf("Expected status RUNNING, got %s", proc.Status)
+	}
+	if len(proc.Logs) == 0 {
+		t.Errorf("Expected console logs, got 0")
+	}
+
+	// 2. POST /api/v1/tasks/TASK-8942/process/execute
+	cmdPayload := []byte(`{"command":"go test -v ./... -run TestBilling"}`)
+	reqExec := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/TASK-8942/process/execute", bytes.NewReader(cmdPayload))
+	reqExec.Header.Set("Content-Type", "application/json")
+	wExec := httptest.NewRecorder()
+	router.ServeHTTP(wExec, reqExec)
+
+	if wExec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for command execute, got %d", wExec.Code)
+	}
+
+	// 3. GET /api/v1/tasks/TASK-8942/terminal
+	reqTerm := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/TASK-8942/terminal", nil)
+	wTerm := httptest.NewRecorder()
+	router.ServeHTTP(wTerm, reqTerm)
+
+	if wTerm.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for terminal logs, got %d", wTerm.Code)
+	}
+
+	var termResp struct {
+		TaskID string   `json:"task_id"`
+		Logs   []string `json:"logs"`
+	}
+	_ = json.NewDecoder(wTerm.Body).Decode(&termResp)
+	if len(termResp.Logs) < len(proc.Logs) {
+		t.Errorf("Expected logs count to increase after execute, before=%d, after=%d", len(proc.Logs), len(termResp.Logs))
+	}
+}

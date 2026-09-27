@@ -40,6 +40,30 @@ export interface Task {
   updated_at: string
 }
 
+export interface TaskSubProcessDTO {
+  pid: number
+  command: string
+  status: string
+}
+
+export interface TaskProcessDTO {
+  task_id: string
+  process_id: number
+  command: string
+  working_dir: string
+  container_id: string
+  status: 'RUNNING' | 'IDLE' | 'COMPLETED' | 'PAUSED' | 'BLOCKED' | 'FAILED'
+  started_at: string
+  duration_seconds: number
+  cpu_percent: number
+  memory_mb: number
+  current_step: string
+  active_agent: string
+  exit_code?: number
+  subprocesses?: TaskSubProcessDTO[]
+  logs: string[]
+}
+
 export interface WorkflowStage {
   id: string
   name: string

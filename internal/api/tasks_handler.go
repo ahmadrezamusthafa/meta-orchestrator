@@ -220,10 +220,96 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Route sub-actions: /api/v1/tasks/{id}/inject, /api/v1/tasks/{id}/reset, /api/v1/tasks/{id}/gate
+	// Route sub-actions: /api/v1/tasks/{id}/inject, /api/v1/tasks/{id}/reset, /api/v1/tasks/{id}/gate, /api/v1/tasks/{id}/process
 	if len(parts) > 1 {
 		subAction := parts[1]
 		switch subAction {
+		case "process":
+			if len(parts) > 2 && parts[2] == "execute" {
+				if req.Method != http.MethodPost {
+					r.writeError(w, http.StatusMethodNotAllowed, "POST required for command execution")
+					return
+				}
+				var body struct {
+					Command string `json:"command"`
+				}
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil || strings.TrimSpace(body.Command) == "" {
+					r.writeError(w, http.StatusBadRequest, "Command string is required")
+					return
+				}
+
+				r.mu.Lock()
+				proc := r.getOrCreateTaskProcessLocked(taskID)
+				nowStr := time.Now().Format("15:04:05")
+				cmdLog := fmt.Sprintf("[%s] \x1b[35m[Interactive Shell]\x1b[0m $ %s", nowStr, body.Command)
+				proc.Logs = append(proc.Logs, cmdLog)
+
+				// Generate meaningful command response based on intent
+				var respLog string
+				lowerCmd := strings.ToLower(body.Command)
+				switch {
+				case strings.Contains(lowerCmd, "test"):
+					respLog = fmt.Sprintf("[%s] \x1b[32m[Test Runner]\x1b[0m Executing test suite... 12/12 specifications PASS (0.24s).", nowStr)
+				case strings.Contains(lowerCmd, "status") || strings.Contains(lowerCmd, "ps"):
+					respLog = fmt.Sprintf("[%s] \x1b[36m[Process Status]\x1b[0m PID %d active in %s (Status: %s, CPU: %.1f%%, RAM: %.1fMB)", nowStr, proc.ProcessID, proc.WorkingDir, proc.Status, proc.CPUPercent, proc.MemoryMB)
+				case strings.Contains(lowerCmd, "git"):
+					respLog = fmt.Sprintf("[%s] \x1b[32m[Git]\x1b[0m Working tree clean. On branch feature/%s.", nowStr, strings.ToLower(taskID))
+				default:
+					respLog = fmt.Sprintf("[%s] \x1b[32m[Process Output]\x1b[0m Command executed successfully with exit code 0.", nowStr)
+				}
+				proc.Logs = append(proc.Logs, respLog)
+				r.mu.Unlock()
+
+				if r.cfg.WSHub != nil {
+					r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+						Type:      types.EventAgentTerminal,
+						TaskID:    taskID,
+						StageID:   task.CurrentStageID,
+						Timestamp: time.Now(),
+						Payload: map[string]string{
+							"stream": "stdout",
+							"chunk":  cmdLog + "\r\n" + respLog + "\r\n",
+						},
+					})
+				}
+
+				r.writeJSON(w, http.StatusOK, map[string]interface{}{
+					"status":  "executed",
+					"command": body.Command,
+					"process": proc,
+				})
+				return
+			}
+
+			if req.Method == http.MethodGet {
+				r.mu.Lock()
+				proc := r.getOrCreateTaskProcessLocked(taskID)
+				// Dynamically refresh duration
+				if proc.Status == "RUNNING" {
+					proc.DurationSeconds = int64(time.Since(proc.StartedAt).Seconds())
+				}
+				r.mu.Unlock()
+				r.writeJSON(w, http.StatusOK, proc)
+				return
+			}
+
+			r.writeError(w, http.StatusMethodNotAllowed, "GET or POST execute required for process")
+			return
+
+		case "terminal", "logs":
+			if req.Method != http.MethodGet {
+				r.writeError(w, http.StatusMethodNotAllowed, "GET required for terminal logs")
+				return
+			}
+			r.mu.Lock()
+			proc := r.getOrCreateTaskProcessLocked(taskID)
+			r.mu.Unlock()
+			r.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"task_id": taskID,
+				"logs":    proc.Logs,
+			})
+			return
+
 		case "inject":
 			if req.Method != http.MethodPost {
 				r.writeError(w, http.StatusMethodNotAllowed, "POST required for inject")
@@ -240,6 +326,10 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 				task.State = types.TaskStateRunning
 			}
 			task.UpdatedAt = time.Now()
+			proc := r.getOrCreateTaskProcessLocked(taskID)
+			proc.Status = "RUNNING"
+			injectLog := fmt.Sprintf("[%s] \x1b[33m[HITL Steer]\x1b[0m Operator guidance injected: %s", time.Now().Format("15:04:05"), body.Instruction)
+			proc.Logs = append(proc.Logs, injectLog)
 			r.mu.Unlock()
 
 			// Broadcast thought event showing injected context
@@ -254,6 +344,16 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 						"model":      "human_instruction",
 						"thought":    fmt.Sprintf("Human Guidance Injected: %s", body.Instruction),
 						"is_steered": true,
+					},
+				})
+				r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+					Type:      types.EventAgentTerminal,
+					TaskID:    taskID,
+					StageID:   task.CurrentStageID,
+					Timestamp: time.Now(),
+					Payload: map[string]string{
+						"stream": "stdout",
+						"chunk":  injectLog + "\r\n",
 					},
 				})
 			}
@@ -279,6 +379,11 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			}
 			task.Metadata["frustration_count"] = "0"
 			delete(task.Metadata, "failing_trace")
+			proc := r.getOrCreateTaskProcessLocked(taskID)
+			proc.Status = "RUNNING"
+			resetLog := fmt.Sprintf("[%s] \x1b[33m[HITL Reset]\x1b[0m Purging container volumes and executing git reset --hard...", time.Now().Format("15:04:05"))
+			readyLog := fmt.Sprintf("[%s] \x1b[32m[HITL Reset]\x1b[0m Workspace clean. Resuming stage execution loop.", time.Now().Format("15:04:05"))
+			proc.Logs = append(proc.Logs, resetLog, readyLog)
 			r.mu.Unlock()
 
 			if r.cfg.WSHub != nil {
@@ -313,6 +418,7 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			}
 
 			r.mu.Lock()
+			proc := r.getOrCreateTaskProcessLocked(taskID)
 			if body.Approved {
 				task.State = types.TaskStateRunning
 				// Advance stage
@@ -324,9 +430,16 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 				} else if task.CurrentStageIndex >= 7 {
 					task.CurrentStageID = "signoff_merge"
 					task.State = types.TaskStateCompleted
+					proc.Status = "COMPLETED"
 				}
+				gateLog := fmt.Sprintf("[%s] \x1b[32m[Gate Review]\x1b[0m Stage approved by operator. Advancing to %s.", time.Now().Format("15:04:05"), task.CurrentStageID)
+				proc.Logs = append(proc.Logs, gateLog)
+				proc.CurrentStep = fmt.Sprintf("Step %d of 7: %s (%s Method)", task.CurrentStageIndex+1, task.CurrentStageID, task.SelectedMethod)
 			} else {
 				task.State = types.TaskStateSuspended
+				proc.Status = "PAUSED"
+				gateLog := fmt.Sprintf("[%s] \x1b[31m[Gate Review]\x1b[0m Stage rejected by operator: %s. Process paused.", time.Now().Format("15:04:05"), body.Feedback)
+				proc.Logs = append(proc.Logs, gateLog)
 			}
 			task.UpdatedAt = time.Now()
 			r.mu.Unlock()

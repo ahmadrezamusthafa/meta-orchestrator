@@ -25,6 +25,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'toggle-collapse', stageId: string): void
   (e: 'quick-add', stageId: string): void
+  (e: 'open-console', taskId: string): void
 }>()
 
 const taskStore = useTaskStore()
@@ -195,6 +196,7 @@ function handleDrop(e: DragEvent) {
           :task="task"
           :density="density"
           :all-stages="allStages"
+          @open-console="(id) => emit('open-console', id)"
         />
       </template>
 

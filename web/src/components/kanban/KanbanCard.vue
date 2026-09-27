@@ -8,7 +8,7 @@ import { getStageGuidance } from '../../composables/useStageGuidance'
 import RoutingExplainerPill from '../common/RoutingExplainerPill.vue'
 import { 
   Layers, Flame, Clock, Lock, AlertTriangle, ArrowRight, 
-  ExternalLink, FileText, User, MoreVertical, Check, Copy 
+  ExternalLink, FileText, User, MoreVertical, Check, Copy, Terminal 
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{
@@ -19,6 +19,10 @@ const props = withDefaults(defineProps<{
   density: 'comfortable',
   allStages: () => []
 })
+
+const emit = defineEmits<{
+  (e: 'open-console', taskId: string): void
+}>()
 
 const router = useRouter()
 const taskStore = useTaskStore()
@@ -165,6 +169,17 @@ function moveToStage(stageId: string, e: Event) {
 
         <!-- 1-Click Advance Button & Move Menu -->
         <div class="flex items-center gap-1 flex-shrink-0" @click.stop>
+          <!-- Console Terminal Button -->
+          <button
+            @click="emit('open-console', task.id)"
+            type="button"
+            title="View background process & console terminal"
+            class="h-6 px-1.5 rounded bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-emerald-500/80 text-slate-300 hover:text-emerald-300 text-[10px] font-mono flex items-center gap-1 transition-all"
+          >
+            <Terminal class="w-3 h-3 text-emerald-400" />
+            <span v-if="task.state === 'RUNNING'" class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          </button>
+
           <button
             v-if="nextStage"
             @click="advanceStage"
@@ -256,6 +271,18 @@ function moveToStage(stageId: string, e: Event) {
               :rationale="task.metadata?.router_rationale"
             />
 
+            <!-- Dedicated 1-Click Console Terminal Button -->
+            <button
+              @click.stop="emit('open-console', task.id)"
+              type="button"
+              title="View background process & console terminal"
+              class="h-6 px-2 rounded bg-slate-950 border border-slate-800 hover:border-emerald-500/80 hover:bg-slate-900 text-slate-300 hover:text-emerald-300 text-[10px] font-mono flex items-center gap-1.5 transition-all shadow-sm group/console"
+            >
+              <Terminal class="w-3 h-3 text-emerald-400 group-hover/console:text-emerald-300" />
+              <span>Console</span>
+              <span v-if="task.state === 'RUNNING'" class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            </button>
+
             <!-- Quick Stage Move Dropdown Menu -->
             <div class="relative" @click.stop>
               <button
@@ -331,6 +358,39 @@ function moveToStage(stageId: string, e: Event) {
           >
             <User class="w-2.5 h-2.5 text-blue-400" />
             <span>{{ task.metadata.assignee }}</span>
+          </span>
+        </div>
+
+        <!-- Live Background Process Telemetry Pill -->
+        <div
+          @click.stop="emit('open-console', task.id)"
+          class="mb-2.5 px-2.5 py-1.5 rounded-lg border transition-all cursor-pointer flex items-center justify-between text-[10px] font-mono group/proc shadow-sm"
+          :class="{
+            'bg-emerald-950/30 border-emerald-800/60 hover:border-emerald-500 text-emerald-300': task.state === 'RUNNING',
+            'bg-rose-950/30 border-rose-800/60 hover:border-rose-500 text-rose-300': isBlocked,
+            'bg-amber-950/30 border-amber-800/60 hover:border-amber-500 text-amber-300': task.state === 'WAITING_GATE_APPROVAL',
+            'bg-slate-950/60 border-slate-800 hover:border-slate-700 text-slate-400': task.state !== 'RUNNING' && !isBlocked && task.state !== 'WAITING_GATE_APPROVAL'
+          }"
+          title="Click to view live background process terminal"
+        >
+          <div class="flex items-center gap-2 truncate flex-1 min-w-0">
+            <span
+              class="w-2 h-2 rounded-full flex-shrink-0"
+              :class="{
+                'bg-emerald-400 animate-pulse': task.state === 'RUNNING',
+                'bg-rose-500 animate-pulse': isBlocked,
+                'bg-amber-400': task.state === 'WAITING_GATE_APPROVAL',
+                'bg-slate-500': task.state !== 'RUNNING' && !isBlocked && task.state !== 'WAITING_GATE_APPROVAL'
+              }"
+            ></span>
+            <span class="text-slate-400">Process:</span>
+            <span class="font-medium text-slate-200 truncate group-hover/proc:text-white">
+              {{ task.state === 'RUNNING' ? 'Background Execution Active' : isBlocked ? 'Execution Blocked (Trace Ready)' : task.state === 'WAITING_GATE_APPROVAL' ? 'Process Paused at Gate' : 'Process Idle / Completed' }}
+            </span>
+          </div>
+
+          <span class="flex items-center gap-1 text-[10px] font-semibold text-emerald-400 group-hover/proc:underline flex-shrink-0 ml-2">
+            <span>&gt;_ Console</span>
           </span>
         </div>
 

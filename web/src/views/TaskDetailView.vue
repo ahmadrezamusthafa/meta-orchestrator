@@ -18,6 +18,8 @@ import GateApprovalBar from '../components/hitl/GateApprovalBar.vue'
 import PhaseStatusBadge from '../components/common/PhaseStatusBadge.vue'
 import RoutingExplainerPill from '../components/common/RoutingExplainerPill.vue'
 import OperatorGuidanceCard from '../components/common/OperatorGuidanceCard.vue'
+import type { TaskProcessDTO } from '../types'
+import { api } from '../services/api'
 import {
   ChevronLeft,
   Terminal,
@@ -26,6 +28,13 @@ import {
   Film,
   Image,
   FileCode,
+  Activity,
+  Cpu,
+  HardDrive,
+  Clock,
+  Copy,
+  Check,
+  Folder
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -39,11 +48,23 @@ const toastStore = useToastStore()
 const leftTab = ref<'terminal' | 'thoughts' | 'graph'>('terminal')
 const rightTab = ref<'artifacts' | 'video' | 'screenshots'>('artifacts')
 const showResetModal = ref(false)
+const taskProcess = ref<TaskProcessDTO | null>(null)
+const copiedProcessCommand = ref(false)
 
 let unsubscribeWS: (() => void) | null = null
 
 onMounted(async () => {
   await taskStore.fetchTask(taskId.value)
+  try {
+    const proc = await api.getTaskProcess(taskId.value)
+    taskProcess.value = proc
+    if (proc?.logs && proc.logs.length > 0) {
+      terminalStore.clearLogs()
+      proc.logs.forEach(l => terminalStore.appendLog(l))
+    }
+  } catch (err) {
+    console.debug('Failed to load process info:', err)
+  }
   unsubscribeWS = terminalStore.initTaskListeners(taskId.value)
 })
 
@@ -203,11 +224,51 @@ async function handleGateReject() {
             </div>
 
             <!-- Left Tab Content -->
-            <div class="flex-1 overflow-hidden">
-              <XtermTerminal
-                v-if="leftTab === 'terminal'"
-                :logs="terminalStore.logs"
-              />
+            <div class="flex-1 overflow-hidden flex flex-col">
+              <template v-if="leftTab === 'terminal'">
+                <!-- Background Process Telemetry Bar -->
+                <div v-if="taskProcess" class="px-3 py-2 bg-slate-900 border-b border-slate-800 space-y-1.5 flex-shrink-0 font-mono text-xs">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-2 truncate flex-1 min-w-0">
+                      <span
+                        class="w-2 h-2 rounded-full flex-shrink-0"
+                        :class="{
+                          'bg-emerald-400 animate-pulse': taskProcess.status === 'RUNNING',
+                          'bg-rose-400': taskProcess.status === 'BLOCKED' || taskProcess.status === 'FAILED',
+                          'bg-amber-400': taskProcess.status === 'PAUSED',
+                          'bg-blue-400': taskProcess.status === 'COMPLETED'
+                        }"
+                      ></span>
+                      <span class="text-slate-400">PID {{ taskProcess.process_id }}:</span>
+                      <code class="text-slate-200 truncate font-semibold bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800">{{ taskProcess.command }}</code>
+                    </div>
+
+                    <div class="flex items-center gap-3 text-[11px] text-slate-400 flex-shrink-0">
+                      <span class="flex items-center gap-1">
+                        <Cpu class="w-3 h-3 text-purple-400" />
+                        <span>{{ taskProcess.cpu_percent }}%</span>
+                      </span>
+                      <span class="flex items-center gap-1">
+                        <HardDrive class="w-3 h-3 text-amber-400" />
+                        <span>{{ taskProcess.memory_mb }}MB</span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div class="flex items-center justify-between text-[11px] text-slate-400 pt-0.5">
+                    <span class="truncate text-slate-300">
+                      {{ taskProcess.current_step }}
+                    </span>
+                    <span class="text-slate-500 truncate max-w-[200px]">
+                      {{ taskProcess.working_dir }}
+                    </span>
+                  </div>
+                </div>
+
+                <div class="flex-1 min-h-0">
+                  <XtermTerminal :logs="terminalStore.logs" />
+                </div>
+              </template>
               <ThoughtFeed
                 v-else-if="leftTab === 'thoughts'"
                 :thoughts="terminalStore.thoughts"

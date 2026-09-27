@@ -1,5 +1,5 @@
 import type { 
-  Task, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
+  Task, TaskProcessDTO, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
   Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse,
   ConnectorsConfig, JiraConfig, ConfluenceConfig, JiraIssueDTO, ImportJiraIssueRequest,
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
@@ -27,6 +27,22 @@ export const api = {
   async getTask(id: string): Promise<Task> {
     const res = await fetch(`${BASE_URL}/tasks/${id}`)
     if (!res.ok) throw new Error(`Failed to fetch task ${id}`)
+    return res.json()
+  },
+
+  async getTaskProcess(taskId: string): Promise<TaskProcessDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/process`)
+    if (!res.ok) throw new Error(`Failed to fetch background process for task ${taskId}`)
+    return res.json()
+  },
+
+  async executeTaskProcessCommand(taskId: string, command: string): Promise<any> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/process/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command })
+    })
+    if (!res.ok) throw new Error('Failed to execute command in background process')
     return res.json()
   },
 

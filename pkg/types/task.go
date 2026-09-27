@@ -54,3 +54,29 @@ type TaskProfile struct {
 	TokenBudget      int64    `json:"token_budget"`
 	RequiresDocker   bool     `json:"requires_docker"`
 }
+
+// TaskSubProcess represents a child process spawned within the task container.
+type TaskSubProcess struct {
+	PID     int    `json:"pid"`
+	Command string `json:"command"`
+	Status  string `json:"status"` // "RUNNING", "COMPLETED", "FAILED"
+}
+
+// TaskProcessInfo describes the background runtime process, console terminal logs, and system telemetry of a task.
+type TaskProcessInfo struct {
+	TaskID          string           `json:"task_id"`
+	ProcessID       int              `json:"process_id"`
+	Command         string           `json:"command"`
+	WorkingDir      string           `json:"working_dir"`
+	ContainerID     string           `json:"container_id"`
+	Status          string           `json:"status"` // "RUNNING", "IDLE", "COMPLETED", "PAUSED", "BLOCKED", "FAILED"
+	StartedAt       time.Time        `json:"started_at"`
+	DurationSeconds int64            `json:"duration_seconds"`
+	CPUPercent      float64          `json:"cpu_percent"`
+	MemoryMB        float64          `json:"memory_mb"`
+	CurrentStep     string           `json:"current_step"`
+	ActiveAgent     string           `json:"active_agent"`
+	ExitCode        int              `json:"exit_code,omitempty"`
+	SubProcesses    []TaskSubProcess `json:"subprocesses,omitempty"`
+	Logs            []string         `json:"logs"`
+}
