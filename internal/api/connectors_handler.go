@@ -488,3 +488,47 @@ func (r *Router) handleConnectorMCPConfig(w http.ResponseWriter, req *http.Reque
 	mcpExport := r.cfg.ConnectorsManager.GetMCPExportConfig()
 	r.writeJSON(w, http.StatusOK, mcpExport)
 }
+
+// handleConnectorPing triggers an immediate live connectivity probe across all active connectors.
+func (r *Router) handleConnectorPing(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	if r.cfg.ConnectorsManager == nil {
+		r.writeError(w, http.StatusServiceUnavailable, "Connectors manager not configured")
+		return
+	}
+
+	summary := r.cfg.ConnectorsManager.PingAll(req.Context())
+	r.writeJSON(w, http.StatusOK, summary)
+}
+
+// handleConnectorPingConfig retrieves or updates periodic background ping settings.
+func (r *Router) handleConnectorPingConfig(w http.ResponseWriter, req *http.Request) {
+	if r.cfg.ConnectorsManager == nil {
+		r.writeError(w, http.StatusServiceUnavailable, "Connectors manager not configured")
+		return
+	}
+
+	switch req.Method {
+	case http.MethodGet:
+		cfg := r.cfg.ConnectorsManager.GetPingConfig()
+		r.writeJSON(w, http.StatusOK, cfg)
+
+	case http.MethodPut, http.MethodPost:
+		var pingCfg types.ConnectorPingConfig
+		if err := json.NewDecoder(req.Body).Decode(&pingCfg); err != nil {
+			r.writeError(w, http.StatusBadRequest, "Invalid JSON payload: "+err.Error())
+			return
+		}
+		if err := r.cfg.ConnectorsManager.UpdatePingConfig(pingCfg); err != nil {
+			r.writeError(w, http.StatusInternalServerError, "Failed to update ping config: "+err.Error())
+			return
+		}
+		r.writeJSON(w, http.StatusOK, r.cfg.ConnectorsManager.GetPingConfig())
+
+	default:
+		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+}

@@ -13,6 +13,7 @@ const (
 	EventFrustrationHalt EventType = "event.frustration_halt"
 	EventHITLRequired    EventType = "hitl.required"
 	EventToolProgress   EventType = "tool.install.progress"
+	EventConnectorStatus EventType = "connector.status"
 )
 
 // OrchestratorEvent encapsulates payload broadcast via Redis and WebSocket.

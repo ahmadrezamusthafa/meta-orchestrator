@@ -332,5 +332,46 @@ func TestConnectorsCatalogEndpoints(t *testing.T) {
 	if !ok || len(servers) == 0 {
 		t.Errorf("expected non-empty mcpServers in export, got: %+v", mcpExport)
 	}
+
+	// 8. POST /api/v1/connectors/ping (PingAll)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/connectors/ping", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v1/connectors/ping returned %d", rec.Code)
+	}
+	var pingSummary types.PingAllSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &pingSummary); err != nil {
+		t.Fatalf("failed to decode ping summary: %v", err)
+	}
+	if pingSummary.TotalPinged == 0 {
+		t.Errorf("expected at least 1 connector pinged in summary")
+	}
+
+	// 9. GET & PUT /api/v1/connectors/ping-config
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/connectors/ping-config", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/connectors/ping-config returned %d", rec.Code)
+	}
+
+	newPingCfg := types.ConnectorPingConfig{
+		Enabled:         true,
+		IntervalSeconds: 60,
+	}
+	b, _ = json.Marshal(newPingCfg)
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/connectors/ping-config", bytes.NewReader(b))
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT /api/v1/connectors/ping-config returned %d", rec.Code)
+	}
+	var resPingCfg types.ConnectorPingConfig
+	_ = json.Unmarshal(rec.Body.Bytes(), &resPingCfg)
+	if resPingCfg.IntervalSeconds != 60 {
+		t.Errorf("expected updated interval 60, got %d", resPingCfg.IntervalSeconds)
+	}
 }
 

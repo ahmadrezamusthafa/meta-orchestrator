@@ -3,7 +3,7 @@ import type {
   Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse,
   ConnectorsConfig, JiraConfig, ConfluenceConfig, JiraIssueDTO, ImportJiraIssueRequest,
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
-  ConnectorItem, ToggleConnectorRequest, MCPConfig
+  ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary
 } from '../types'
 
 const BASE_URL = '/api/v1'
@@ -384,6 +384,36 @@ export const api = {
   async getMCPConfigExport(): Promise<{ mcpServers: Record<string, any> }> {
     const res = await fetch(`${BASE_URL}/connectors/mcp-config`)
     if (!res.ok) throw new Error('Failed to export MCP config')
+    return res.json()
+  },
+
+  async pingAllConnectors(): Promise<PingAllSummary> {
+    const res = await fetch(`${BASE_URL}/connectors/ping`, {
+      method: 'POST'
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to ping connectors' }))
+      throw new Error(err.error || 'Failed to ping connectors')
+    }
+    return res.json()
+  },
+
+  async getPingConfig(): Promise<ConnectorPingConfig> {
+    const res = await fetch(`${BASE_URL}/connectors/ping-config`)
+    if (!res.ok) throw new Error('Failed to fetch ping configuration')
+    return res.json()
+  },
+
+  async updatePingConfig(cfg: ConnectorPingConfig): Promise<ConnectorPingConfig> {
+    const res = await fetch(`${BASE_URL}/connectors/ping-config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to update ping configuration' }))
+      throw new Error(err.error || 'Failed to update ping configuration')
+    }
     return res.json()
   }
 }

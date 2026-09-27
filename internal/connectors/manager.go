@@ -22,12 +22,15 @@ var jiraKeyRegex = regexp.MustCompile(`\b([A-Z]{2,10}-\d+)\b`)
 
 // Manager orchestrates third-party tool integrations like JIRA, Confluence, and the modular catalog.
 type Manager struct {
-	mu         sync.RWMutex
-	rootDir    string
-	configPath string
-	config     types.ConnectorsConfig
-	items      map[string]*types.ConnectorItem
-	client     *http.Client
+	mu            sync.RWMutex
+	rootDir       string
+	configPath    string
+	config        types.ConnectorsConfig
+	items         map[string]*types.ConnectorItem
+	client        *http.Client
+	broadcastFunc func(*types.OrchestratorEvent)
+	stopPing      chan struct{}
+	pingRunning   bool
 }
 
 // NewManager creates a new connector manager.
@@ -41,6 +44,10 @@ func NewManager(rootDir string) *Manager {
 			Timeout: 10 * time.Second,
 		},
 		config: types.ConnectorsConfig{
+			Ping: types.ConnectorPingConfig{
+				Enabled:         true,
+				IntervalSeconds: 30,
+			},
 			Jira: types.JiraConfig{
 				Enabled:        true,
 				BaseURL:        "https://jira.atlassian.net",
@@ -64,6 +71,7 @@ func NewManager(rootDir string) *Manager {
 	}
 
 	m.load()
+	m.StartPeriodicPinger(context.Background())
 	return m
 }
 
@@ -498,6 +506,10 @@ func (m *Manager) load() {
 		var cfg types.ConnectorsConfig
 		if err := json.Unmarshal(data, &cfg); err == nil {
 			m.config = cfg
+			if m.config.Ping.IntervalSeconds <= 0 {
+				m.config.Ping.IntervalSeconds = 30
+				m.config.Ping.Enabled = true
+			}
 			for _, it := range cfg.Items {
 				if it != nil && it.ID != "" {
 					m.items[it.ID] = it
@@ -927,17 +939,48 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 
 func (m *Manager) updateItemStatus(id string, success bool, latency int64, errMsg string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if item, ok := m.items[id]; ok {
-		item.LastTestedAt = time.Now()
-		item.LatencyMs = latency
-		if success {
-			item.Status = "connected"
-			item.ErrorMessage = ""
-		} else {
-			item.Status = "error"
-			item.ErrorMessage = errMsg
-		}
+	item, ok := m.items[id]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	item.LastTestedAt = time.Now()
+	item.LatencyMs = latency
+	if success {
+		item.Status = "connected"
+		item.ErrorMessage = ""
+	} else {
+		item.Status = "error"
+		item.ErrorMessage = errMsg
+	}
+
+	if id == "jira" {
+		m.config.Jira.Status = item.Status
+		m.config.Jira.LastTestedAt = item.LastTestedAt
+		m.config.Jira.ErrorMessage = item.ErrorMessage
+	} else if id == "confluence" {
+		m.config.Confluence.Status = item.Status
+		m.config.Confluence.LastTestedAt = item.LastTestedAt
+		m.config.Confluence.ErrorMessage = item.ErrorMessage
+	}
+
+	itemCopy := *item
+	fn := m.broadcastFunc
+	m.mu.Unlock()
+
+	if fn != nil {
+		fn(&types.OrchestratorEvent{
+			Type:      types.EventConnectorStatus,
+			Timestamp: time.Now(),
+			Payload: types.ConnectorStatusEvent{
+				ConnectorID:  id,
+				Status:       itemCopy.Status,
+				LatencyMs:    itemCopy.LatencyMs,
+				LastTestedAt: itemCopy.LastTestedAt,
+				ErrorMessage: itemCopy.ErrorMessage,
+				Item:         itemCopy,
+			},
+		})
 	}
 }
 
@@ -945,18 +988,22 @@ func (m *Manager) updateItemStatus(id string, success bool, latency int64, errMs
 func (m *Manager) TestMCPConnector(ctx context.Context, id string, mcp *types.MCPConfig) types.TestConnectorResponse {
 	start := time.Now()
 	if mcp == nil {
-		return types.TestConnectorResponse{
+		res := types.TestConnectorResponse{
 			Success:   false,
 			Message:   "MCP configuration is missing",
 			LatencyMs: 0,
 		}
+		m.updateItemStatus(id, false, 0, res.Message)
+		return res
 	}
 	if strings.TrimSpace(mcp.Command) == "" {
-		return types.TestConnectorResponse{
+		res := types.TestConnectorResponse{
 			Success:   false,
 			Message:   "MCP server command is required (e.g. npx, uvx, docker)",
 			LatencyMs: 0,
 		}
+		m.updateItemStatus(id, false, 0, res.Message)
+		return res
 	}
 
 	// 1. Check if the binary executable exists in PATH or common macOS dirs
@@ -976,11 +1023,15 @@ func (m *Manager) TestMCPConnector(ctx context.Context, id string, mcp *types.MC
 			}
 		}
 		if !found {
-			return types.TestConnectorResponse{
+			msg := fmt.Sprintf("MCP command '%s' not found on system PATH. Please ensure runtime is installed.", mcp.Command)
+			latency := time.Since(start).Milliseconds()
+			res := types.TestConnectorResponse{
 				Success:   false,
-				LatencyMs: time.Since(start).Milliseconds(),
-				Message:   fmt.Sprintf("MCP command '%s' not found on system PATH. Please ensure runtime is installed.", mcp.Command),
+				LatencyMs: latency,
+				Message:   msg,
 			}
+			m.updateItemStatus(id, false, latency, msg)
+			return res
 		}
 	}
 
@@ -1060,16 +1111,147 @@ func (m *Manager) UpdateConfluence(cfg types.ConfluenceConfig) error {
 	return m.save()
 }
 
+// SetBroadcastFunc sets a callback to broadcast connector events (e.g. via WebSocket).
+func (m *Manager) SetBroadcastFunc(fn func(*types.OrchestratorEvent)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.broadcastFunc = fn
+}
+
+// GetPingConfig returns the current periodic ping configuration.
+func (m *Manager) GetPingConfig() types.ConnectorPingConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	cfg := m.config.Ping
+	if cfg.IntervalSeconds <= 0 {
+		cfg.IntervalSeconds = 30
+		cfg.Enabled = true
+	}
+	return cfg
+}
+
+// UpdatePingConfig updates periodic ping settings and persists them.
+func (m *Manager) UpdatePingConfig(cfg types.ConnectorPingConfig) error {
+	m.mu.Lock()
+	if cfg.IntervalSeconds < 5 {
+		cfg.IntervalSeconds = 30
+	}
+	m.config.Ping = cfg
+	m.mu.Unlock()
+	return m.save()
+}
+
+// StartPeriodicPinger initiates background scheduled connectivity probes.
+func (m *Manager) StartPeriodicPinger(ctx context.Context) {
+	m.mu.Lock()
+	if m.pingRunning {
+		m.mu.Unlock()
+		return
+	}
+	m.pingRunning = true
+	m.stopPing = make(chan struct{})
+
+	intervalSec := m.config.Ping.IntervalSeconds
+	if intervalSec < 5 {
+		intervalSec = 30
+		m.config.Ping.IntervalSeconds = 30
+	}
+	m.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-m.stopPing:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.mu.RLock()
+				isEnabled := m.config.Ping.Enabled
+				curInterval := m.config.Ping.IntervalSeconds
+				m.mu.RUnlock()
+
+				if curInterval < 5 {
+					curInterval = 30
+				}
+				if curInterval != intervalSec {
+					intervalSec = curInterval
+					ticker.Reset(time.Duration(intervalSec) * time.Second)
+				}
+
+				if isEnabled {
+					pingCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+					_ = m.PingAll(pingCtx)
+					cancel()
+				}
+			}
+		}
+	}()
+}
+
+// StopPeriodicPinger gracefully terminates the background ping routine.
+func (m *Manager) StopPeriodicPinger() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pingRunning && m.stopPing != nil {
+		close(m.stopPing)
+		m.pingRunning = false
+	}
+}
+
+// PingAll executes live connection tests on all enabled or active connectors and returns diagnostic summary.
+func (m *Manager) PingAll(ctx context.Context) *types.PingAllSummary {
+	m.mu.RLock()
+	var targets []*types.ConnectorItem
+	for _, it := range m.items {
+		// Ping if connector is enabled, configured, or has non-empty credentials/endpoints
+		if it.Enabled || it.Status != "unconfigured" || it.BaseURL != "" || (it.MCP != nil && it.MCP.Enabled) {
+			targets = append(targets, it)
+		}
+	}
+	jiraCfg := m.config.Jira
+	confCfg := m.config.Confluence
+	m.mu.RUnlock()
+
+	summary := &types.PingAllSummary{
+		Timestamp:   time.Now(),
+		TotalPinged: 0,
+		Results:     make(map[string]types.TestConnectorResponse),
+	}
+
+	for _, item := range targets {
+		var res types.TestConnectorResponse
+		if item.ConfigMode == "mcp" || (item.MCP != nil && item.MCP.Enabled && item.APIToken == "") {
+			res = m.TestMCPConnector(ctx, item.ID, item.MCP)
+		} else if item.ID == "jira" {
+			res = m.TestJira(ctx, jiraCfg)
+		} else if item.ID == "confluence" {
+			res = m.TestConfluence(ctx, confCfg)
+		} else {
+			res = m.TestGenericConnector(ctx, item.ID, nil)
+		}
+		summary.Results[item.ID] = res
+		summary.TotalPinged++
+	}
+
+	return summary
+}
+
 // TestJira performs a real connectivity check against JIRA.
 func (m *Manager) TestJira(ctx context.Context, cfg types.JiraConfig) types.TestConnectorResponse {
 	start := time.Now()
 	cleanURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	if cleanURL == "" {
-		return types.TestConnectorResponse{
+		res := types.TestConnectorResponse{
 			Success:   false,
 			LatencyMs: 0,
 			Message:   "JIRA Base URL is required",
 		}
+		m.updateItemStatus("jira", false, 0, res.Message)
+		return res
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
@@ -1077,11 +1259,13 @@ func (m *Manager) TestJira(ctx context.Context, cfg types.JiraConfig) types.Test
 
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, cleanURL+"/rest/api/2/myself", nil)
 	if err != nil {
-		return types.TestConnectorResponse{
+		res := types.TestConnectorResponse{
 			Success:   false,
 			LatencyMs: time.Since(start).Milliseconds(),
 			Message:   fmt.Sprintf("Invalid URL: %v", err),
 		}
+		m.updateItemStatus("jira", false, res.LatencyMs, res.Message)
+		return res
 	}
 
 	if cfg.Username != "" && cfg.APIToken != "" && !strings.Contains(cfg.APIToken, "••••") {
@@ -1093,11 +1277,13 @@ func (m *Manager) TestJira(ctx context.Context, cfg types.JiraConfig) types.Test
 	resp, err := m.client.Do(req)
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
-		return types.TestConnectorResponse{
+		res := types.TestConnectorResponse{
 			Success:   false,
 			LatencyMs: latency,
 			Message:   fmt.Sprintf("Connection to JIRA failed: %v", err),
 		}
+		m.updateItemStatus("jira", false, latency, res.Message)
+		return res
 	}
 	defer resp.Body.Close()
 
@@ -1108,7 +1294,7 @@ func (m *Manager) TestJira(ctx context.Context, cfg types.JiraConfig) types.Test
 		if displayName == "<nil>" || displayName == "" {
 			displayName = cfg.Username
 		}
-		return types.TestConnectorResponse{
+		res := types.TestConnectorResponse{
 			Success:      true,
 			LatencyMs:    latency,
 			Message:      fmt.Sprintf("Successfully authenticated with JIRA as %s", displayName),
@@ -1116,21 +1302,27 @@ func (m *Manager) TestJira(ctx context.Context, cfg types.JiraConfig) types.Test
 			ServerInfo:   cleanURL,
 			TargetEntity: fmt.Sprintf("Project: %s", cfg.ProjectKey),
 		}
+		m.updateItemStatus("jira", true, latency, "")
+		return res
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return types.TestConnectorResponse{
+		res := types.TestConnectorResponse{
 			Success:   false,
 			LatencyMs: latency,
 			Message:   "HTTP 401 Unauthorized: Invalid JIRA username or API token",
 		}
+		m.updateItemStatus("jira", false, latency, res.Message)
+		return res
 	}
 
-	return types.TestConnectorResponse{
+	res := types.TestConnectorResponse{
 		Success:   false,
 		LatencyMs: latency,
 		Message:   fmt.Sprintf("JIRA server returned HTTP %d %s", resp.StatusCode, resp.Status),
 	}
+	m.updateItemStatus("jira", false, latency, res.Message)
+	return res
 }
 
 // TestConfluence performs a real connectivity check against Confluence.
@@ -1138,11 +1330,13 @@ func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig
 	start := time.Now()
 	cleanURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	if cleanURL == "" {
-		return types.TestConnectorResponse{
+		res := types.TestConnectorResponse{
 			Success:   false,
 			LatencyMs: 0,
 			Message:   "Confluence Base URL is required",
 		}
+		m.updateItemStatus("confluence", false, 0, res.Message)
+		return res
 	}
 
 	spaceKey := cfg.SpaceKey
@@ -1155,11 +1349,13 @@ func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig
 
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, fmt.Sprintf("%s/rest/api/space/%s", cleanURL, spaceKey), nil)
 	if err != nil {
-		return types.TestConnectorResponse{
+		res := types.TestConnectorResponse{
 			Success:   false,
 			LatencyMs: time.Since(start).Milliseconds(),
 			Message:   fmt.Sprintf("Invalid URL: %v", err),
 		}
+		m.updateItemStatus("confluence", false, res.LatencyMs, res.Message)
+		return res
 	}
 
 	if cfg.Username != "" && cfg.APIToken != "" && !strings.Contains(cfg.APIToken, "••••") {
@@ -1171,16 +1367,18 @@ func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig
 	resp, err := m.client.Do(req)
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
-		return types.TestConnectorResponse{
+		res := types.TestConnectorResponse{
 			Success:   false,
 			LatencyMs: latency,
 			Message:   fmt.Sprintf("Connection to Confluence failed: %v", err),
 		}
+		m.updateItemStatus("confluence", false, latency, res.Message)
+		return res
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		return types.TestConnectorResponse{
+		res := types.TestConnectorResponse{
 			Success:      true,
 			LatencyMs:    latency,
 			Message:      fmt.Sprintf("Successfully connected to Confluence space '%s'", spaceKey),
@@ -1188,21 +1386,27 @@ func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig
 			ServerInfo:   cleanURL,
 			TargetEntity: fmt.Sprintf("Space: %s", spaceKey),
 		}
+		m.updateItemStatus("confluence", true, latency, "")
+		return res
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return types.TestConnectorResponse{
+		res := types.TestConnectorResponse{
 			Success:   false,
 			LatencyMs: latency,
 			Message:   "HTTP 401 Unauthorized: Invalid Confluence credentials or API token",
 		}
+		m.updateItemStatus("confluence", false, latency, res.Message)
+		return res
 	}
 
-	return types.TestConnectorResponse{
+	res := types.TestConnectorResponse{
 		Success:   false,
 		LatencyMs: latency,
 		Message:   fmt.Sprintf("Confluence server returned HTTP %d %s", resp.StatusCode, resp.Status),
 	}
+	m.updateItemStatus("confluence", false, latency, res.Message)
+	return res
 }
 
 // SearchJiraIssues queries JIRA issues or returns curated project tickets matching search/project.

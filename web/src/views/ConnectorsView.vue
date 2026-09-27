@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { api } from '../services/api'
 import { useToastStore } from '../stores/toast'
+import { wsService } from '../services/websocket'
 import type { 
   ConnectorItem, ConnectorCategory, TestConnectorResponse, 
-  JiraIssueDTO, MCPConfig 
+  JiraIssueDTO, MCPConfig, ConnectorPingConfig, PingAllSummary 
 } from '../types'
 import JiraImportModal from '../components/kanban/JiraImportModal.vue'
 import { 
   Plug, CheckCircle2, AlertCircle, RefreshCw, Wifi, Save, ExternalLink, 
   Eye, EyeOff, Search, Download, FileText, Check, ShieldCheck, ArrowRight, 
   ArrowLeft, Layers, GitBranch, MessageSquare, BookOpen, Globe, Sliders, 
-  CheckSquare, Sparkles, Zap, Activity, Settings, Cpu, Terminal, Copy, Plus, Trash2, Code
+  CheckSquare, Sparkles, Zap, Activity, Settings, Cpu, Terminal, Copy, Plus, Trash2, Code,
+  Radio, Clock, ChevronDown, Play, Pause
 } from 'lucide-vue-next'
 
 const toastStore = useToastStore()
@@ -42,6 +44,16 @@ const mcpExportJSON = ref('')
 const copiedMCP = ref(false)
 const newEnvKey = ref('')
 const newEnvVal = ref('')
+
+// Periodic Ping State
+const isPingingAll = ref(false)
+const pingConfig = ref<ConnectorPingConfig>({ enabled: true, interval_seconds: 30 })
+const showPingSettings = ref(false)
+const isUpdatingPing = ref(false)
+const recentlyPingedIds = ref<Set<string>>(new Set())
+const lastPingTime = ref<Date | null>(null)
+let unsubscribeWS: (() => void) | null = null
+let backgroundSyncTimer: any = null
 
 // Explorer Tab State (for JIRA)
 const explorerQuery = ref('')
@@ -382,8 +394,128 @@ async function searchExplorer() {
   }
 }
 
+// Periodic Ping Methods
+async function loadPingConfig() {
+  try {
+    pingConfig.value = await api.getPingConfig()
+  } catch (e) {
+    // default
+  }
+}
+
+async function updatePingSetting(enabled: boolean, interval: number) {
+  isUpdatingPing.value = true
+  try {
+    const updated = await api.updatePingConfig({ enabled, interval_seconds: interval })
+    pingConfig.value = updated
+    toastStore.success('Auto-Ping Updated', enabled ? `Pinging active connectors every ${interval}s` : 'Periodic ping paused')
+    showPingSettings.value = false
+  } catch (err: any) {
+    toastStore.error('Ping Config Failed', err.message)
+  } finally {
+    isUpdatingPing.value = false
+  }
+}
+
+function flashConnectorPing(id: string) {
+  recentlyPingedIds.value.add(id)
+  setTimeout(() => {
+    recentlyPingedIds.value.delete(id)
+  }, 2500)
+}
+
+async function triggerPingAll() {
+  isPingingAll.value = true
+  try {
+    const summary = await api.pingAllConnectors()
+    lastPingTime.value = new Date()
+    for (const [id, res] of Object.entries(summary.results)) {
+      const item = catalog.value.find(c => c.id === id)
+      if (item) {
+        item.status = res.success ? 'connected' : 'error'
+        item.latency_ms = res.latency_ms
+        item.last_tested_at = summary.timestamp
+        if (!res.success) {
+          item.error_message = res.message
+        } else {
+          item.error_message = ''
+        }
+        flashConnectorPing(id)
+      }
+    }
+    toastStore.success('Ping All Completed', `Tested ${summary.total_pinged} active connectors`)
+  } catch (err: any) {
+    toastStore.error('Ping All Failed', err.message)
+  } finally {
+    isPingingAll.value = false
+  }
+}
+
+function formatRelativeTime(dateStr?: string): string {
+  if (!dateStr || dateStr.startsWith('0001-01-01')) return ''
+  try {
+    const d = new Date(dateStr)
+    const diffSec = Math.floor((Date.now() - d.getTime()) / 1000)
+    if (diffSec < 5) return 'just now'
+    if (diffSec < 60) return `${diffSec}s ago`
+    const diffMin = Math.floor(diffSec / 60)
+    if (diffMin < 60) return `${diffMin}m ago`
+    return `${Math.floor(diffMin / 60)}h ago`
+  } catch {
+    return ''
+  }
+}
+
 onMounted(async () => {
   await loadCatalog()
+  await loadPingConfig()
+
+  // Real-time WebSocket listener: automatically updates cards whenever background pinger or live test completes
+  unsubscribeWS = wsService.subscribe((event) => {
+    if (event.type === 'connector.status') {
+      const payload = event.payload as any
+      if (!payload) return
+      const targetId = payload.connector_id || payload.item?.id
+      const item = catalog.value.find(c => c.id === targetId)
+      if (item) {
+        item.status = payload.status
+        item.latency_ms = payload.latency_ms
+        item.last_tested_at = payload.last_tested_at
+        if (payload.error_message !== undefined) {
+          item.error_message = payload.error_message
+        }
+        flashConnectorPing(targetId)
+      }
+      if (selectedConnector.value && selectedConnector.value.id === targetId) {
+        selectedConnector.value.status = payload.status
+        selectedConnector.value.latency_ms = payload.latency_ms
+        selectedConnector.value.last_tested_at = payload.last_tested_at
+      }
+    }
+  })
+
+  // Resilient background auto-sync to ensure UI accuracy even through brief network disruptions
+  backgroundSyncTimer = setInterval(async () => {
+    try {
+      const items = await api.getConnectorCatalog()
+      for (const u of items) {
+        const existing = catalog.value.find(c => c.id === u.id)
+        if (existing) {
+          existing.status = u.status
+          existing.latency_ms = u.latency_ms
+          existing.last_tested_at = u.last_tested_at
+          existing.error_message = u.error_message
+        }
+      }
+    } catch {
+      // background silent
+    }
+  }, 15000)
+})
+
+onUnmounted(() => {
+  if (unsubscribeWS) unsubscribeWS()
+  if (backgroundSyncTimer) clearInterval(backgroundSyncTimer)
 })
 </script>
 
@@ -414,7 +546,7 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- Ecosystem Status Badges & MCP Export Action -->
+        <!-- Ecosystem Status Badges, Live Auto-Ping, & Actions -->
         <div class="flex items-center gap-2.5">
           <div class="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center gap-2 text-xs font-mono">
             <span class="text-slate-400">Catalog:</span>
@@ -427,20 +559,95 @@ onMounted(async () => {
             <span :class="stats.connectedCount > 0 ? 'text-emerald-400 font-semibold' : 'text-slate-400'">{{ stats.connectedCount }} Connected</span>
           </div>
 
+          <!-- Live Auto-Ping Badge & Settings Popover -->
+          <div class="relative">
+            <button
+              @click="showPingSettings = !showPingSettings"
+              class="px-3 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-2 transition shadow cursor-pointer"
+              :class="pingConfig.enabled 
+                ? 'border-emerald-800/60 bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-300' 
+                : 'border-slate-800 bg-slate-900 text-slate-400 hover:bg-slate-850'"
+              title="Configure periodic background ping"
+            >
+              <span class="relative flex h-2 w-2">
+                <span v-if="pingConfig.enabled" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2 w-2" :class="pingConfig.enabled ? 'bg-emerald-500' : 'bg-slate-600'"></span>
+              </span>
+              <span class="font-mono text-[11px]">
+                {{ pingConfig.enabled ? `Auto-Ping: ${pingConfig.interval_seconds}s` : 'Auto-Ping: Paused' }}
+              </span>
+              <ChevronDown class="w-3 h-3 opacity-60" />
+            </button>
+
+            <!-- Dropdown Menu for Ping Configuration -->
+            <div 
+              v-if="showPingSettings" 
+              class="absolute right-0 top-full mt-2 w-64 rounded-xl bg-slate-900 border border-slate-800 shadow-2xl p-3 z-50 flex flex-col gap-3"
+            >
+              <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+                <div class="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+                  <Activity class="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Periodic Live Ping</span>
+                </div>
+                <button
+                  @click="updatePingSetting(!pingConfig.enabled, pingConfig.interval_seconds)"
+                  :disabled="isUpdatingPing"
+                  class="px-2 py-0.5 rounded text-[10px] font-medium transition cursor-pointer"
+                  :class="pingConfig.enabled ? 'bg-rose-950 text-rose-300 hover:bg-rose-900 border border-rose-800/60' : 'bg-emerald-950 text-emerald-300 hover:bg-emerald-900 border border-emerald-800/60'"
+                >
+                  {{ pingConfig.enabled ? 'Pause' : 'Enable' }}
+                </button>
+              </div>
+
+              <div>
+                <span class="text-[10px] uppercase font-mono text-slate-400 block mb-1.5">Ping Interval</span>
+                <div class="grid grid-cols-4 gap-1">
+                  <button
+                    v-for="sec in [10, 30, 60, 120]"
+                    :key="sec"
+                    @click="updatePingSetting(true, sec)"
+                    :disabled="isUpdatingPing"
+                    class="py-1 px-1.5 rounded text-[11px] font-mono border transition text-center cursor-pointer"
+                    :class="pingConfig.interval_seconds === sec && pingConfig.enabled
+                      ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 font-semibold'
+                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-850 hover:text-slate-200'"
+                  >
+                    {{ sec }}s
+                  </button>
+                </div>
+              </div>
+
+              <p class="text-[10px] text-slate-500 leading-normal">
+                Autonomous background daemon pings all enabled REST & MCP services to keep statuses and latency real-time without user action.
+              </p>
+            </div>
+          </div>
+
+          <!-- Ping All Now Button -->
+          <button
+            @click="triggerPingAll"
+            :disabled="isPingingAll"
+            class="px-3 py-1.5 rounded-lg border border-sky-800/60 bg-sky-950/40 hover:bg-sky-900/60 text-sky-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition shadow disabled:opacity-50 cursor-pointer"
+            title="Immediately trigger live connection probe across all active connectors"
+          >
+            <Activity class="w-3.5 h-3.5" :class="{ 'animate-spin': isPingingAll }" />
+            <span>{{ isPingingAll ? 'Pinging All...' : 'Ping All' }}</span>
+          </button>
+
           <!-- MCP Config Export Button -->
           <button
             @click="openMCPExport"
-            class="px-3 py-1.5 rounded-lg border border-purple-800/60 bg-purple-950/40 hover:bg-purple-900/60 text-purple-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition shadow"
+            class="px-3 py-1.5 rounded-lg border border-purple-800/60 bg-purple-950/40 hover:bg-purple-900/60 text-purple-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition shadow cursor-pointer"
             title="Export standard mcp_config.json configuration"
           >
             <Code class="w-3.5 h-3.5" />
-            <span>Export MCP Config</span>
+            <span>Export MCP</span>
           </button>
 
           <button
             @click="loadCatalog"
             :disabled="isLoading"
-            class="p-2 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-850 text-slate-400 hover:text-white transition"
+            class="p-2 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-850 text-slate-400 hover:text-white transition cursor-pointer"
             title="Refresh Catalog"
           >
             <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': isLoading }" />
@@ -531,8 +738,11 @@ onMounted(async () => {
               v-for="c in filteredCatalog"
               :key="c.id"
               @click="openConnectorSetup(c)"
-              class="p-5 rounded-2xl border border-slate-800 bg-slate-900/40 hover:bg-slate-900/80 transition-all duration-200 cursor-pointer flex flex-col justify-between group relative overflow-hidden shadow-lg hover:shadow-2xl"
+              class="p-5 rounded-2xl border bg-slate-900/40 hover:bg-slate-900/80 transition-all duration-300 cursor-pointer flex flex-col justify-between group relative overflow-hidden shadow-lg hover:shadow-2xl"
               :class="[
+                recentlyPingedIds.has(c.id) 
+                  ? 'border-emerald-500/80 ring-2 ring-emerald-400/80 shadow-[0_0_20px_rgba(52,211,153,0.35)]' 
+                  : 'border-slate-800',
                 getBrandColor(c).accentBorder,
                 c.enabled ? 'ring-1 ring-emerald-500/20' : 'opacity-90'
               ]"
@@ -624,7 +834,7 @@ onMounted(async () => {
                 </div>
               </div>
 
-              <!-- Card Bottom: Real Status & Setup Prompt -->
+              <!-- Card Bottom: Real Status, Live Ping, & Setup Prompt -->
               <div class="pt-4 mt-4 border-t border-slate-800/80 flex items-center justify-between text-xs relative z-10">
                 <!-- Status Badge (REAL INFORMATION ONLY) -->
                 <div class="flex items-center gap-2 font-mono text-[11px]">
@@ -644,17 +854,35 @@ onMounted(async () => {
                   <template v-else-if="c.status === 'error'">
                     <span class="w-2 h-2 rounded-full bg-rose-400"></span>
                     <span class="text-rose-400 font-semibold uppercase">Error</span>
+                    <span v-if="c.latency_ms && c.latency_ms > 0" class="text-[10px] text-rose-400/80">({{ c.latency_ms }}ms)</span>
                   </template>
                   <template v-else>
                     <span class="w-2 h-2 rounded-full bg-slate-500"></span>
                     <span class="text-slate-400 font-semibold uppercase">Unconfigured</span>
                   </template>
+
+                  <!-- Live Ping Flash Badge -->
+                  <span 
+                    v-if="recentlyPingedIds.has(c.id)"
+                    class="px-1.5 py-0.5 rounded text-[9px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-700/60 flex items-center gap-1 animate-pulse"
+                  >
+                    <Wifi class="w-2.5 h-2.5" /> Pinged
+                  </span>
                 </div>
 
-                <!-- Setup / Configure CTA -->
-                <div class="flex items-center gap-1 text-[11px] font-medium text-slate-400 group-hover:text-blue-400 transition">
-                  <span>Setup</span>
-                  <ArrowRight class="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition-transform" />
+                <!-- Last tested timestamp & Setup CTA -->
+                <div class="flex items-center gap-2">
+                  <span 
+                    v-if="c.last_tested_at && formatRelativeTime(c.last_tested_at)" 
+                    class="text-[10px] text-slate-500 font-mono hidden sm:inline"
+                    :title="`Last tested: ${new Date(c.last_tested_at).toLocaleString()}`"
+                  >
+                    {{ formatRelativeTime(c.last_tested_at) }}
+                  </span>
+                  <div class="flex items-center gap-1 text-[11px] font-medium text-slate-400 group-hover:text-blue-400 transition">
+                    <span>Setup</span>
+                    <ArrowRight class="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition-transform" />
+                  </div>
                 </div>
               </div>
 

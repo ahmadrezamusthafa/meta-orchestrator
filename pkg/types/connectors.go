@@ -94,11 +94,35 @@ type ToggleConnectorRequest struct {
 	Enabled bool `json:"enabled"`
 }
 
+// ConnectorPingConfig controls automatic periodic pinging of external connectors.
+type ConnectorPingConfig struct {
+	Enabled         bool `json:"enabled"`
+	IntervalSeconds int  `json:"interval_seconds"` // Default e.g. 30
+}
+
+// ConnectorStatusEvent is emitted over WebSocket when periodic ping or manual test completes.
+type ConnectorStatusEvent struct {
+	ConnectorID  string        `json:"connector_id"`
+	Status       string        `json:"status"`
+	LatencyMs    int64         `json:"latency_ms"`
+	LastTestedAt time.Time     `json:"last_tested_at"`
+	ErrorMessage string        `json:"error_message,omitempty"`
+	Item         ConnectorItem `json:"item"`
+}
+
+// PingAllSummary represents the results of a full connectors ping cycle.
+type PingAllSummary struct {
+	Timestamp   time.Time                        `json:"timestamp"`
+	TotalPinged int                              `json:"total_pinged"`
+	Results     map[string]TestConnectorResponse `json:"results"`
+}
+
 // ConnectorsConfig represents all integrated third-party connectors.
 type ConnectorsConfig struct {
-	Jira       JiraConfig       `json:"jira"`
-	Confluence ConfluenceConfig `json:"confluence"`
-	Items      []*ConnectorItem `json:"items,omitempty"`
+	Jira       JiraConfig          `json:"jira"`
+	Confluence ConfluenceConfig    `json:"confluence"`
+	Items      []*ConnectorItem    `json:"items,omitempty"`
+	Ping       ConnectorPingConfig `json:"ping"`
 }
 
 // JiraIssueDTO represents an issue fetched or imported from JIRA.

@@ -92,4 +92,39 @@ func TestConnectorsManager(t *testing.T) {
 	if pubResp.PageURL == "" {
 		t.Errorf("Expected non-empty Confluence page URL")
 	}
+
+	// 8. Test WebSocket event broadcast hook
+	var receivedEvents []*types.OrchestratorEvent
+	mgr.SetBroadcastFunc(func(ev *types.OrchestratorEvent) {
+		receivedEvents = append(receivedEvents, ev)
+	})
+
+	// 9. Test PingAll
+	summary := mgr.PingAll(context.Background())
+	if summary == nil || summary.TotalPinged == 0 {
+		t.Fatalf("Expected PingAll to return summary with pinged connectors")
+	}
+	if len(receivedEvents) == 0 {
+		t.Errorf("Expected broadcast events to be emitted on PingAll")
+	}
+
+	// 10. Test PingConfig
+	pingCfg := mgr.GetPingConfig()
+	if !pingCfg.Enabled || pingCfg.IntervalSeconds <= 0 {
+		t.Errorf("Expected default ping config enabled and interval > 0, got: %+v", pingCfg)
+	}
+
+	err = mgr.UpdatePingConfig(types.ConnectorPingConfig{
+		Enabled:         true,
+		IntervalSeconds: 45,
+	})
+	if err != nil {
+		t.Fatalf("Failed to update ping config: %v", err)
+	}
+	updatedPing := mgr.GetPingConfig()
+	if updatedPing.IntervalSeconds != 45 {
+		t.Errorf("Expected interval 45, got %d", updatedPing.IntervalSeconds)
+	}
+
+	mgr.StopPeriodicPinger()
 }

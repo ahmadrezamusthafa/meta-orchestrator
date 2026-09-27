@@ -42,6 +42,9 @@ func NewRouter(cfg RouterConfig) *Router {
 	if cfg.ConnectorsManager == nil {
 		cfg.ConnectorsManager = connectors.NewManager(cfg.RootDir)
 	}
+	if cfg.WSHub != nil && cfg.ConnectorsManager != nil {
+		cfg.ConnectorsManager.SetBroadcastFunc(cfg.WSHub.BroadcastEvent)
+	}
 	r := &Router{
 		cfg:   cfg,
 		mux:   http.NewServeMux(),
@@ -215,6 +218,8 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/connectors/jira/issues", r.handleJiraIssues)
 	r.mux.HandleFunc("/api/v1/connectors/jira/import", r.handleJiraImport)
 	r.mux.HandleFunc("/api/v1/connectors/confluence/publish", r.handleConfluencePublish)
+	r.mux.HandleFunc("/api/v1/connectors/ping", r.handleConnectorPing)
+	r.mux.HandleFunc("/api/v1/connectors/ping-config", r.handleConnectorPingConfig)
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {

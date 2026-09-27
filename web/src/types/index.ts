@@ -282,10 +282,22 @@ export interface ToggleConnectorRequest {
   enabled: boolean
 }
 
+export interface ConnectorPingConfig {
+  enabled: boolean
+  interval_seconds: number
+}
+
+export interface PingAllSummary {
+  timestamp: string
+  total_pinged: number
+  results: Record<string, TestConnectorResponse>
+}
+
 export interface ConnectorsConfig {
   jira: JiraConfig
   confluence: ConfluenceConfig
   items?: ConnectorItem[]
+  ping?: ConnectorPingConfig
 }
 
 export interface JiraIssueDTO {
