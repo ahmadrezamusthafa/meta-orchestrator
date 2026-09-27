@@ -4,8 +4,10 @@ import type {
   ConnectorsConfig, JiraConfig, ConfluenceConfig, JiraIssueDTO, ImportJiraIssueRequest,
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
-  UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse
+  UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse,
+  PromptItemDTO, PromptSourceDTO
 } from '../types'
+
 
 const BASE_URL = '/api/v1'
 
@@ -493,8 +495,69 @@ export const api = {
     })
     if (!res.ok) throw new Error('Failed to rescan skills')
     return res.json()
+  },
+
+  // Prompts (Multi-Tier & Dynamic Parameter Extraction)
+  async getPrompts(params?: { search?: string; source?: string }): Promise<PromptItemDTO[]> {
+    const query = new URLSearchParams()
+    if (params?.search) query.set('search', params.search)
+    if (params?.source) query.set('source', params.source)
+    const res = await fetch(`${BASE_URL}/prompts?${query.toString()}`)
+    if (!res.ok) throw new Error('Failed to fetch prompt templates')
+    return res.json()
+  },
+
+  async getPromptSources(): Promise<PromptSourceDTO[]> {
+    const res = await fetch(`${BASE_URL}/prompts/sources`)
+    if (!res.ok) throw new Error('Failed to fetch prompt sources')
+    return res.json()
+  },
+
+  async registerPromptSource(payload: { name: string; path: string }): Promise<{ source: PromptSourceDTO; discovered_count: number; templates: PromptItemDTO[] }> {
+    const res = await fetch(`${BASE_URL}/prompts/sources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to register prompt source' }))
+      throw new Error(err.error || 'Failed to register prompt source')
+    }
+    return res.json()
+  },
+
+  async removePromptSource(sourceId: string): Promise<{ status: string; source_id: string }> {
+    const res = await fetch(`${BASE_URL}/prompts/sources/${encodeURIComponent(sourceId)}`, {
+      method: 'DELETE'
+    })
+    if (!res.ok) throw new Error('Failed to unregister prompt source')
+    return res.json()
+  },
+
+  async checkPromptCompatibility(path: string): Promise<{ compatible: boolean; path: string; discovered_count: number; templates: PromptItemDTO[]; error?: string }> {
+    const res = await fetch(`${BASE_URL}/prompts/check-compatibility`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path })
+    })
+    if (!res.ok) throw new Error('Failed to check prompt compatibility')
+    return res.json()
+  },
+
+  async renderPrompt(payload: { template_id?: string; raw_template?: string; parameters: Record<string, string> }): Promise<{ template_id: string; rendered: string }> {
+    const res = await fetch(`${BASE_URL}/prompts/render`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to render prompt' }))
+      throw new Error(err.error || 'Failed to render prompt')
+    }
+    return res.json()
   }
 }
+
 
 
 

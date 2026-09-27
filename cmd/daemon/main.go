@@ -46,6 +46,7 @@ func main() {
 	profileReg := registry.NewProfileRegistry()
 	_ = profileReg.LoadFromFile("configs/profiles.json")
 
+	promptReg := registry.NewPromptRegistry(cwd)
 	skillResolver := skills.NewMultiSourceSkillResolver(cwd)
 	artifactMgr := artifacts.NewArtifactManager(".sdlc/artifacts")
 	hookEngine := hooks.NewHookEngine(cwd)
@@ -116,6 +117,7 @@ func main() {
 		ConfigResolver:  configResolver,
 		ProjectManager:  projectMgr,
 		SkillResolver:   skillResolver,
+		PromptRegistry:  promptReg,
 		WSHub:           wsHub,
 		RootDir:         cwd,
 	})

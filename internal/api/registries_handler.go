@@ -2,12 +2,14 @@ package api
 
 import (
 	"net/http"
+
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
 )
 
 type RegistryDTO struct {
-	Skills []SkillItemDTO `json:"skills"`
-	Prompts []PromptItemDTO `json:"prompts"`
-	Hooks   []HookItemDTO   `json:"hooks"`
+	Skills  []SkillItemDTO           `json:"skills"`
+	Prompts []registry.PromptItemDTO `json:"prompts"`
+	Hooks   []HookItemDTO            `json:"hooks"`
 }
 
 type SkillItemDTO struct {
@@ -17,14 +19,6 @@ type SkillItemDTO struct {
 	Format      string `json:"format"` // "BMAD", "CLAUDE", "SUPERPOWER", "MCP", "OPENAI"
 	Description string `json:"description"`
 	RepoURL     string `json:"repo_url,omitempty"`
-}
-
-type PromptItemDTO struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	Source         string   `json:"source"`
-	Variables      []string `json:"variables"`
-	SystemOverride bool     `json:"system_override"`
 }
 
 type HookItemDTO struct {
@@ -41,6 +35,11 @@ func (r *Router) handleRegistries(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	var prompts []registry.PromptItemDTO
+	if r.cfg.PromptRegistry != nil {
+		prompts = r.cfg.PromptRegistry.ListPromptTemplates()
+	}
+
 	data := RegistryDTO{
 		Skills: []SkillItemDTO{
 			{ID: "bmad_architect", Name: "BMAD Architecture Reviewer", Source: "BUILTIN", Format: "BMAD", Description: "Analyzes system architecture and AST impact"},
@@ -48,11 +47,7 @@ func (r *Router) handleRegistries(w http.ResponseWriter, req *http.Request) {
 			{ID: "superpower_container_runner", Name: "Superpower Shell Harness", Source: "USER_SYSTEM", Format: "SUPERPOWER", Description: "High-speed isolated execution with bounded capabilities"},
 			{ID: "mcp_filesystem_bridge", Name: "MCP Host Bridge", Source: "REMOTE_GIT", Format: "MCP", Description: "Model Context Protocol bridge for container execution", RepoURL: "github.com/modelcontextprotocol/servers"},
 		},
-		Prompts: []PromptItemDTO{
-			{ID: "prompt_architect_v3", Name: "Architect RFC Generator", Source: "PROJECT_LOCAL", Variables: []string{"system_architecture", "prd_requirements"}, SystemOverride: true},
-			{ID: "prompt_qa_atdd_v2", Name: "QA ATDD Generator", Source: "BUILTIN", Variables: []string{"ast_routes", "acceptance_criteria"}, SystemOverride: false},
-			{ID: "prompt_developer_bmad", Name: "BMAD Persona Implementation", Source: "USER_SYSTEM", Variables: []string{"task_wbs", "codebase_context"}, SystemOverride: true},
-		},
+		Prompts: prompts,
 		Hooks: []HookItemDTO{
 			{ID: "pre_stage_security_check", Event: "pre-stage", Type: "SHELL", Command: "./scripts/security_audit.sh", Policy: "BLOCK"},
 			{ID: "on_failure_slack_notify", Event: "on-failure", Type: "WEBHOOK", Command: "https://hooks.slack.com/services/T00/B00/X00", Policy: "WARN"},
@@ -62,3 +57,4 @@ func (r *Router) handleRegistries(w http.ResponseWriter, req *http.Request) {
 
 	r.writeJSON(w, http.StatusOK, data)
 }
+

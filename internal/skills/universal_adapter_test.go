@@ -602,4 +602,30 @@ Check for SQL injection and broken access controls.
 	}
 }
 
+func TestBillingSkillsRealDirectory(t *testing.T) {
+	realPath := "/Users/rezamekari/Projects/go/src/bitbucket.org/mid-kelola-indonesia/billing/.claude/skills"
+	if _, err := os.Stat(realPath); os.IsNotExist(err) {
+		t.Skip("billing repo path not found, skipping real directory test")
+	}
+
+	resolver := NewMultiSourceSkillResolver(t.TempDir())
+	skills, err := resolver.CheckPathCompatibility(realPath)
+	if err != nil {
+		t.Fatalf("CheckPathCompatibility on billing failed: %v", err)
+	}
+	if len(skills) == 0 {
+		t.Fatalf("expected skills to be discovered in billing repo, got 0")
+	}
+
+	t.Logf("Discovered %d skills in billing repo:", len(skills))
+	for _, s := range skills {
+		if s.Compatibility == nil {
+			t.Errorf("expected compatibility report for %s", s.Name)
+		} else {
+			t.Logf(" - [%s] (%s, Score: %d/100, Issues: %d)", s.Name, s.Compatibility.Status, s.Compatibility.Score, len(s.Compatibility.Issues))
+		}
+	}
+}
+
+
 

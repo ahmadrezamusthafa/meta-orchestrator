@@ -30,11 +30,13 @@ const isSubmitting = ref(false)
 const testResult = ref<CheckPathCompatibilityResponse | null>(null)
 
 const presets = [
+  { label: 'Billing Claude Skills (.claude/skills)', path: '/Users/rezamekari/Projects/go/src/bitbucket.org/mid-kelola-indonesia/billing/.claude/skills' },
   { label: 'Project Claude (.claude/skills)', path: '.claude/skills' },
   { label: 'Agent Custom (.agents/skills)', path: '.agents/skills' },
   { label: 'Home Claude (~/.claude/skills)', path: '~/.claude/skills' },
   { label: 'Project Local (.sdlc/skills)', path: '.sdlc/skills' },
 ]
+
 
 function applyPreset(presetPath: string) {
   sourcePath.value = presetPath

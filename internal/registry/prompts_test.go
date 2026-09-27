@@ -51,3 +51,82 @@ func TestPromptRegistryResolutionAndSlotFilling(t *testing.T) {
 		t.Errorf("project override did not take precedence: %s", overridden)
 	}
 }
+
+func TestBillingPromptsRealDirectory(t *testing.T) {
+	billingPromptsDir := "/Users/rezamekari/Projects/go/src/bitbucket.org/mid-kelola-indonesia/billing/.github/prompts"
+	if _, err := os.Stat(billingPromptsDir); os.IsNotExist(err) {
+		t.Skipf("Billing prompts directory not found at %s, skipping live test", billingPromptsDir)
+	}
+
+	reg := NewPromptRegistry("")
+	templates, err := reg.CheckDirectoryCompatibility(billingPromptsDir)
+	if err != nil {
+		t.Fatalf("Failed to check compatibility of billing prompts: %v", err)
+	}
+
+	if len(templates) < 15 {
+		t.Errorf("Expected at least 15 prompt templates, found %d", len(templates))
+	}
+
+	foundPRD := false
+	foundTechDoc := false
+	foundBreakdown := false
+
+	for _, tmpl := range templates {
+		if !tmpl.Compatible {
+			t.Errorf("Template %s marked as not compatible", tmpl.Name)
+		}
+		if strings.Contains(tmpl.ID, "prd-to-jira-user-story") {
+			foundPRD = true
+			if tmpl.Name == "" {
+				t.Errorf("Template %s has empty Name", tmpl.ID)
+			}
+		}
+		if strings.Contains(tmpl.ID, "generate-technical-document") {
+			foundTechDoc = true
+		}
+		if strings.Contains(tmpl.ID, "task-breakdown") {
+			foundBreakdown = true
+		}
+	}
+
+	if !foundPRD {
+		t.Errorf("prd-to-jira-user-story template not discovered")
+	}
+	if !foundTechDoc {
+		t.Errorf("generate-technical-document template not discovered")
+	}
+	if !foundBreakdown {
+		t.Errorf("task-breakdown template not discovered")
+	}
+
+	// Test registration
+	source, registeredTemplates, err := reg.RegisterSource("Billing Prompts", billingPromptsDir)
+	if err != nil {
+		t.Fatalf("Failed to register billing prompts source: %v", err)
+	}
+	if source.TemplateCount != len(templates) {
+		t.Errorf("Source template count mismatch: %d vs %d", source.TemplateCount, len(templates))
+	}
+	if len(registeredTemplates) != len(templates) {
+		t.Errorf("Registered templates count mismatch")
+	}
+
+	// Test rendering of registered template
+	rendered, err := reg.ResolveTemplate("prd-to-jira-user-story")
+	if err != nil {
+		t.Fatalf("Failed to resolve prd-to-jira-user-story from registered source: %v", err)
+	}
+	if !strings.Contains(rendered, "PRD to Jira User Story") {
+		t.Errorf("Resolved template does not contain expected header")
+	}
+
+	// Test custom parameter substitution
+	customRendered := reg.RenderCustom(rendered, map[string]string{
+		"parent_issue_key": "MIB-1234",
+	})
+	if !strings.Contains(customRendered, "MIB-1234") && !strings.Contains(rendered, "MIB-9685") {
+		t.Errorf("Rendering failed to produce expected content")
+	}
+}
+

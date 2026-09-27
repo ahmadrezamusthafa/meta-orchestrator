@@ -11,6 +11,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/connectors"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
@@ -27,6 +28,7 @@ type RouterConfig struct {
 	ProjectManager    *projects.ProjectManager
 	ConnectorsManager *connectors.Manager
 	SkillResolver     *skills.MultiSourceSkillResolver
+	PromptRegistry    *registry.PromptRegistry
 	WSHub             *ws.Hub
 	RootDir           string
 }
@@ -46,6 +48,9 @@ func NewRouter(cfg RouterConfig) *Router {
 	}
 	if cfg.SkillResolver == nil {
 		cfg.SkillResolver = skills.NewMultiSourceSkillResolver(cfg.RootDir)
+	}
+	if cfg.PromptRegistry == nil {
+		cfg.PromptRegistry = registry.NewPromptRegistry(cfg.RootDir)
 	}
 	if cfg.SkillResolver != nil && cfg.ConnectorsManager != nil {
 		cfg.SkillResolver.SetMCPProvider(cfg.ConnectorsManager)
@@ -237,6 +242,13 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/skills/check-compatibility", r.handleSkillCheckCompatibility)
 	r.mux.HandleFunc("/api/v1/skills/rescan", r.handleSkillRescan)
 	r.mux.HandleFunc("/api/v1/skills/", r.handleSkillAction)
+
+	// Prompt template endpoints (Multi-Tier: Local, GitHub, Custom, System, Builtin)
+	r.mux.HandleFunc("/api/v1/prompts", r.handlePrompts)
+	r.mux.HandleFunc("/api/v1/prompts/sources", r.handlePromptSources)
+	r.mux.HandleFunc("/api/v1/prompts/sources/", r.handlePromptSourceAction)
+	r.mux.HandleFunc("/api/v1/prompts/check-compatibility", r.handlePromptCheckCompatibility)
+	r.mux.HandleFunc("/api/v1/prompts/render", r.handlePromptRender)
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {

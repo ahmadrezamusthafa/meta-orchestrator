@@ -112,9 +112,23 @@ export interface PromptItemDTO {
   id: string
   name: string
   source: string
+  source_path?: string
+  role?: string
+  description?: string
   variables: string[]
+  raw_content?: string
   system_override: boolean
+  compatible?: boolean
 }
+
+export interface PromptSourceDTO {
+  id: string
+  name: string
+  path: string
+  template_count: number
+  added_at: string
+}
+
 
 export interface HookItemDTO {
   id: string

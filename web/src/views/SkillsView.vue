@@ -4,10 +4,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { useSkillsStore } from '../stores/skills'
 import { useToastStore } from '../stores/toast'
 import { api } from '../services/api'
-import type { UniversalSkillDTO, PromptItemDTO, HookItemDTO } from '../types'
+import type { UniversalSkillDTO, PromptItemDTO, HookItemDTO, PromptSourceDTO } from '../types'
 import SkillCard from '../components/skills/SkillCard.vue'
 import CompatibilityModal from '../components/skills/CompatibilityModal.vue'
 import RegisterSourceModal from '../components/skills/RegisterSourceModal.vue'
+import RegisterPromptModal from '../components/registries/RegisterPromptModal.vue'
 import PromptTemplatesTab from '../components/registries/PromptTemplatesTab.vue'
 import LifecycleHooksTab from '../components/registries/LifecycleHooksTab.vue'
 import AddRemoteSkillModal from '../components/registries/AddRemoteSkillModal.vue'
@@ -39,9 +40,11 @@ type HubTab = 'skills' | 'prompts' | 'hooks' | 'sources'
 const activeTab = ref<HubTab>('skills')
 
 // Prompts & Hooks state
-const prompts = ref<any[]>([])
+const prompts = ref<PromptItemDTO[]>([])
+const promptSources = ref<PromptSourceDTO[]>([])
 const hooks = ref<any[]>([])
 const remoteGitRepos = ref<any[]>([
+
   {
     id: 'repo-anthropic-skills',
     name: 'Anthropic Official Skills Pack',
@@ -69,6 +72,7 @@ const selectedCompat = ref<'all' | 'compatible' | 'issues'>('all')
 // Modals
 const activeSkillModal = ref<UniversalSkillDTO | null>(null)
 const showRegisterModal = ref(false)
+const showRegisterPromptModal = ref(false)
 const showAddRemoteModal = ref(false)
 
 // Sync tab with URL query (?tab=prompts | hooks | sources | skills)
@@ -92,16 +96,42 @@ onMounted(async () => {
     skillsStore.fetchSkills(),
     skillsStore.fetchSources(),
     loadRegistriesData(),
+    loadPromptSources(),
   ])
 })
 
+async function loadPromptSources() {
+  try {
+    promptSources.value = await api.getPromptSources()
+  } catch (err) {
+    console.error('Failed to load prompt sources:', err)
+  }
+}
+
 async function loadRegistriesData() {
   try {
-    const regData = await api.getRegistries()
-    if (regData.prompts) prompts.value = regData.prompts
+    const [regData, promptList] = await Promise.all([
+      api.getRegistries(),
+      api.getPrompts().catch(() => [])
+    ])
+    if (promptList && promptList.length > 0) {
+      prompts.value = promptList
+    } else if (regData.prompts) {
+      prompts.value = regData.prompts
+    }
     if (regData.hooks) hooks.value = regData.hooks
   } catch (err) {
     console.error('Failed to load prompts/hooks registries:', err)
+  }
+}
+
+async function handleRemovePromptSource(sourceId: string, sourceName: string) {
+  try {
+    await api.removePromptSource(sourceId)
+    toastStore.success('Source Removed', `${sourceName} unregistered`)
+    await Promise.all([loadPromptSources(), loadRegistriesData()])
+  } catch (err: any) {
+    toastStore.error('Removal Failed', err.message || 'Could not unregister prompt source')
   }
 }
 
@@ -267,9 +297,10 @@ async function handleRescan() {
           <FolderGit2 class="w-3.5 h-3.5" />
           <span>Sources & Git</span>
           <span class="px-1.5 py-0.2 rounded-full text-[10px] font-mono" :class="activeTab === 'sources' ? 'bg-amber-950 text-amber-300' : 'bg-slate-900 text-slate-500'">
-            {{ skillsStore.sources.length + remoteGitRepos.length }}
+            {{ skillsStore.sources.length + remoteGitRepos.length + promptSources.length }}
           </span>
         </button>
+
       </div>
 
       <!-- Quick Actions -->
@@ -471,8 +502,9 @@ async function handleRescan() {
 
     <!-- TAB 2: PROMPT TEMPLATES -->
     <div v-else-if="activeTab === 'prompts'" class="flex-1 p-6 overflow-y-auto">
-      <PromptTemplatesTab :prompts="prompts" />
+      <PromptTemplatesTab :prompts="prompts" @reload="loadRegistriesData(); loadPromptSources()" />
     </div>
+
 
     <!-- TAB 3: LIFECYCLE HOOKS -->
     <div v-else-if="activeTab === 'hooks'" class="flex-1 p-6 overflow-y-auto">
@@ -599,6 +631,69 @@ async function handleRescan() {
           </div>
         </div>
       </div>
+
+      <!-- Section 3: Registered Prompt Template Directories -->
+      <div class="space-y-3 pt-4">
+        <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+          <div>
+            <h3 class="text-xs font-bold text-slate-100 uppercase tracking-wide flex items-center gap-2">
+              <MessageSquare class="w-4 h-4 text-sky-400" />
+              <span>Registered Prompt Template Directories</span>
+            </h3>
+            <span class="text-[11px] text-slate-400">
+              Scanned for <span class="font-mono text-sky-400">*.prompt.md</span> and markdown prompt specifications
+            </span>
+          </div>
+
+          <button
+            type="button"
+            @click="showRegisterPromptModal = true"
+            class="h-7 px-2.5 rounded bg-sky-950 border border-sky-800 text-sky-300 hover:bg-sky-900 text-[11px] font-mono flex items-center gap-1.5 transition-colors"
+          >
+            <FolderPlus class="w-3.5 h-3.5" />
+            <span>Register Prompt Dir</span>
+          </button>
+        </div>
+
+        <div v-if="promptSources.length === 0" class="p-6 rounded-xl bg-slate-900/60 border border-slate-800 text-center text-xs text-slate-400 space-y-2">
+          <p>No custom prompt directories registered yet.</p>
+          <p class="text-[11px] text-slate-500 font-mono">
+            Default auto-discovery checks: <span class="text-slate-300">.sdlc/prompts</span>, <span class="text-slate-300">.github/prompts</span>, <span class="text-slate-300">~/.config/meta-orchestrator/prompts</span>
+          </p>
+        </div>
+
+        <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div
+            v-for="src in promptSources"
+            :key="src.id"
+            class="p-4 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between gap-3 shadow-sm hover:border-slate-700 transition-colors"
+          >
+            <div class="min-w-0 space-y-1">
+              <div class="flex items-center gap-2">
+                <span class="font-bold text-slate-100 text-xs">{{ src.name }}</span>
+                <span class="px-2 py-0.5 rounded text-[10px] font-mono uppercase bg-sky-950 text-sky-300 border border-sky-800">
+                  PROMPT DIRECTORY
+                </span>
+              </div>
+              <div class="text-xs text-slate-400 font-mono truncate" :title="src.path">
+                {{ src.path }}
+              </div>
+              <div class="text-[11px] text-sky-400 font-mono">
+                {{ src.template_count }} prompt template(s) active & ready
+              </div>
+            </div>
+
+            <button
+              type="button"
+              @click="handleRemovePromptSource(src.id, src.name)"
+              class="p-2 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-950 transition-colors"
+              title="Unregister prompt directory"
+            >
+              <Trash2 class="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Modals -->
@@ -615,6 +710,12 @@ async function handleRescan() {
       @registered="skillsStore.fetchSkills()"
     />
 
+    <RegisterPromptModal
+      v-if="showRegisterPromptModal"
+      @close="showRegisterPromptModal = false"
+      @registered="loadRegistriesData(); loadPromptSources()"
+    />
+
     <AddRemoteSkillModal
       v-if="showAddRemoteModal"
       @close="showAddRemoteModal = false"
@@ -622,3 +723,4 @@ async function handleRescan() {
     />
   </div>
 </template>
+
