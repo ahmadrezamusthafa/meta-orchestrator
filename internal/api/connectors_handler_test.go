@@ -13,24 +13,62 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
-func setupTestRouterWithConnectors(t *testing.T) (*Router, string) {
+func setupTestRouterWithConnectors(t *testing.T) (*Router, string, *httptest.Server) {
 	tempDir, err := os.MkdirTemp("", "connectors_test_*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 
+	// Real mock HTTP server handling JIRA, Confluence, Slack, Bitbucket test endpoints
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "myself") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"displayName": "DevOps Engineer", "key": "devops"}`))
+			return
+		}
+		if strings.Contains(r.URL.Path, "space") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"key": "ARCH", "name": "Architecture"}`))
+			return
+		}
+		if strings.Contains(r.URL.Path, "content") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id": "1048576", "title": "Published Tech Doc", "_links": {"webui": "/spaces/ARCH/pages/1048576"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status": "ok", "ok": true, "user": "sdlc-bot", "team": "acme"}`))
+	}))
+
 	mgr := connectors.NewManager(tempDir)
+	_ = mgr.UpdateJira(types.JiraConfig{
+		Enabled:    true,
+		BaseURL:    mockServer.URL,
+		Username:   "devops@test.local",
+		APIToken:   "test-token",
+		ProjectKey: "PAY",
+	})
+	_ = mgr.UpdateConfluence(types.ConfluenceConfig{
+		Enabled:   true,
+		BaseURL:   mockServer.URL,
+		Username:  "devops@test.local",
+		APIToken:  "test-token",
+		SpaceKey:  "ARCH",
+	})
+
 	router := NewRouter(RouterConfig{
 		RootDir:           tempDir,
 		ConnectorsManager: mgr,
 	})
 
-	return router, tempDir
+	return router, tempDir, mockServer
 }
 
 func TestConnectorsEndpoints(t *testing.T) {
-	router, tempDir := setupTestRouterWithConnectors(t)
+	router, tempDir, mockServer := setupTestRouterWithConnectors(t)
 	defer os.RemoveAll(tempDir)
+	defer mockServer.Close()
 
 	// 1. GET /api/v1/connectors
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/connectors", nil)
@@ -173,10 +211,11 @@ func TestConnectorsEndpoints(t *testing.T) {
 }
 
 func TestConnectorsCatalogEndpoints(t *testing.T) {
-	router, tempDir := setupTestRouterWithConnectors(t)
+	router, tempDir, mockServer := setupTestRouterWithConnectors(t)
 	defer os.RemoveAll(tempDir)
+	defer mockServer.Close()
 
-	// 1. GET /api/v1/connectors/catalog
+	// 1. GET /api/v1/connectors/catalog (includes bitbucket)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/connectors/catalog", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -188,24 +227,24 @@ func TestConnectorsCatalogEndpoints(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &catalog); err != nil {
 		t.Fatalf("failed to decode catalog: %v", err)
 	}
-	if len(catalog) < 8 {
-		t.Fatalf("expected at least 8 catalog items, got %d", len(catalog))
+	if len(catalog) < 9 {
+		t.Fatalf("expected at least 9 catalog items (including Bitbucket), got %d", len(catalog))
 	}
 
-	// 2. GET /api/v1/connectors/items/slack
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/connectors/items/slack", nil)
+	// 2. GET /api/v1/connectors/items/bitbucket
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/connectors/items/bitbucket", nil)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/v1/connectors/items/slack returned %d", rec.Code)
+		t.Fatalf("GET /api/v1/connectors/items/bitbucket returned %d", rec.Code)
 	}
-	var slackItem types.ConnectorItem
-	if err := json.Unmarshal(rec.Body.Bytes(), &slackItem); err != nil {
-		t.Fatalf("failed to decode slack item: %v", err)
+	var bbItem types.ConnectorItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &bbItem); err != nil {
+		t.Fatalf("failed to decode bitbucket item: %v", err)
 	}
-	if slackItem.ID != "slack" || slackItem.Category != types.ConnectorCategoryChatOps {
-		t.Errorf("unexpected slack item: %+v", slackItem)
+	if bbItem.ID != "bitbucket" || bbItem.Category != types.ConnectorCategoryVCS || bbItem.MCP == nil {
+		t.Errorf("unexpected bitbucket item: %+v", bbItem)
 	}
 
 	// 3. POST /api/v1/connectors/items/slack/toggle
@@ -227,18 +266,18 @@ func TestConnectorsCatalogEndpoints(t *testing.T) {
 	}
 
 	// 4. PUT /api/v1/connectors/items/slack
-	slackItem.TargetEntity = "#engineering-alerts"
-	slackItem.BaseURL = "https://hooks.slack.com/services/T00/B00/X00"
-	b, _ = json.Marshal(slackItem)
+	toggledItem.TargetEntity = "#engineering-alerts"
+	toggledItem.BaseURL = mockServer.URL
+	b, _ = json.Marshal(toggledItem)
 	req = httptest.NewRequest(http.MethodPut, "/api/v1/connectors/items/slack", bytes.NewReader(b))
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("PUT /api/v1/connectors/items/slack returned %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("PUT /api/v1/connectors/items/slack returned %d", rec.Code)
 	}
 
-	// 5. POST /api/v1/connectors/items/slack/test
+	// 5. POST /api/v1/connectors/items/slack/test (testing against real loopback mock server)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/connectors/items/slack/test", bytes.NewReader(b))
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -252,6 +291,46 @@ func TestConnectorsCatalogEndpoints(t *testing.T) {
 	}
 	if !testResp.Success {
 		t.Errorf("expected test success, got false. Message: %s", testResp.Message)
+	}
+
+	// 6. POST /api/v1/connectors/items/github/test-mcp (validates real npx on system)
+	mcpTestPayload := types.MCPConfig{
+		Enabled:   true,
+		Command:   "npx",
+		Args:      []string{"-y", "@modelcontextprotocol/server-github"},
+		Transport: "stdio",
+	}
+	b, _ = json.Marshal(mcpTestPayload)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/connectors/items/github/test-mcp", bytes.NewReader(b))
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v1/connectors/items/github/test-mcp returned %d", rec.Code)
+	}
+	var mcpResp types.TestConnectorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &mcpResp); err != nil {
+		t.Fatalf("failed to decode mcp test response: %v", err)
+	}
+	if !mcpResp.Success {
+		t.Errorf("expected MCP test success for npx, got false: %s", mcpResp.Message)
+	}
+
+	// 7. GET /api/v1/connectors/mcp-config (export to mcpServers dictionary)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/connectors/mcp-config", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/connectors/mcp-config returned %d", rec.Code)
+	}
+	var mcpExport map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &mcpExport); err != nil {
+		t.Fatalf("failed to decode mcp config: %v", err)
+	}
+	servers, ok := mcpExport["mcpServers"].(map[string]interface{})
+	if !ok || len(servers) == 0 {
+		t.Errorf("expected non-empty mcpServers in export, got: %+v", mcpExport)
 	}
 }
 

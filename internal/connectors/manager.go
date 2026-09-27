@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -73,6 +75,10 @@ func (m *Manager) ensureCatalogLocked() {
 	// 1. JIRA
 	jiraItem, exists := m.items["jira"]
 	if !exists {
+		status := "unconfigured"
+		if m.config.Jira.APIToken != "" && !strings.Contains(m.config.Jira.APIToken, "••••") {
+			status = "configured"
+		}
 		jiraItem = &types.ConnectorItem{
 			ID:            "jira",
 			Name:          "Atlassian JIRA",
@@ -82,7 +88,8 @@ func (m *Manager) ensureCatalogLocked() {
 			Icon:          "jira",
 			Color:         "blue",
 			Enabled:       m.config.Jira.Enabled,
-			Status:        m.config.Jira.Status,
+			ConfigMode:    "hybrid",
+			Status:        status,
 			BaseURL:       m.config.Jira.BaseURL,
 			Username:      m.config.Jira.Username,
 			APIToken:      m.config.Jira.APIToken,
@@ -94,19 +101,44 @@ func (m *Manager) ensureCatalogLocked() {
 				"auto_detect_keys": m.config.Jira.AutoDetectKeys,
 				"auto_sync_status": m.config.Jira.AutoSyncStatus,
 			},
-			LatencyMs: 47,
+			MCP: &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "mcp-atlassian"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"JIRA_URL":       m.config.Jira.BaseURL,
+					"JIRA_EMAIL":     m.config.Jira.Username,
+					"JIRA_API_TOKEN": m.config.Jira.APIToken,
+				},
+			},
+			LatencyMs: 0,
 		}
 		m.items["jira"] = jiraItem
 	} else {
 		jiraItem.Enabled = m.config.Jira.Enabled
-		if jiraItem.Status == "" {
-			jiraItem.Status = m.config.Jira.Status
+		if jiraItem.MCP == nil {
+			jiraItem.MCP = &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "mcp-atlassian"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"JIRA_URL":       jiraItem.BaseURL,
+					"JIRA_EMAIL":     jiraItem.Username,
+					"JIRA_API_TOKEN": jiraItem.APIToken,
+				},
+			}
 		}
 	}
 
 	// 2. Confluence
 	confItem, exists := m.items["confluence"]
 	if !exists {
+		status := "unconfigured"
+		if m.config.Confluence.APIToken != "" && !strings.Contains(m.config.Confluence.APIToken, "••••") {
+			status = "configured"
+		}
 		confItem = &types.ConnectorItem{
 			ID:            "confluence",
 			Name:          "Atlassian Confluence",
@@ -116,7 +148,8 @@ func (m *Manager) ensureCatalogLocked() {
 			Icon:          "confluence",
 			Color:         "indigo",
 			Enabled:       m.config.Confluence.Enabled,
-			Status:        m.config.Confluence.Status,
+			ConfigMode:    "hybrid",
+			Status:        status,
 			BaseURL:       m.config.Confluence.BaseURL,
 			Username:      m.config.Confluence.Username,
 			APIToken:      m.config.Confluence.APIToken,
@@ -128,18 +161,39 @@ func (m *Manager) ensureCatalogLocked() {
 				"auto_publish_prd":       m.config.Confluence.AutoPublishPRD,
 				"parent_page_id":         m.config.Confluence.ParentPageID,
 			},
-			LatencyMs: 38,
+			MCP: &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "mcp-atlassian"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"CONFLUENCE_URL":       m.config.Confluence.BaseURL,
+					"CONFLUENCE_EMAIL":     m.config.Confluence.Username,
+					"CONFLUENCE_API_TOKEN": m.config.Confluence.APIToken,
+				},
+			},
+			LatencyMs: 0,
 		}
 		m.items["confluence"] = confItem
 	} else {
 		confItem.Enabled = m.config.Confluence.Enabled
-		if confItem.Status == "" {
-			confItem.Status = m.config.Confluence.Status
+		if confItem.MCP == nil {
+			confItem.MCP = &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "mcp-atlassian"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"CONFLUENCE_URL":       confItem.BaseURL,
+					"CONFLUENCE_EMAIL":     confItem.Username,
+					"CONFLUENCE_API_TOKEN": confItem.APIToken,
+				},
+			}
 		}
 	}
 
 	// 3. GitHub
-	if _, exists := m.items["github"]; !exists {
+	if it, exists := m.items["github"]; !exists {
 		m.items["github"] = &types.ConnectorItem{
 			ID:            "github",
 			Name:          "GitHub Issues & PRs",
@@ -149,18 +203,39 @@ func (m *Manager) ensureCatalogLocked() {
 			Icon:          "github",
 			Color:         "slate",
 			Enabled:       true,
-			Status:        "configured",
-			BaseURL:       "https://github.com",
-			Username:      "octocat",
-			TargetEntity:  "acme/multi-repo",
+			ConfigMode:    "hybrid",
+			Status:        "unconfigured",
+			BaseURL:       "https://api.github.com",
+			Username:      "",
+			APIToken:      "",
+			TargetEntity:  "",
 			TargetLabel:   "Default Organization / Repository",
 			Capabilities:  []string{"Issue #ID Detection", "Pull Request Creation", "CI Check Validation"},
-			LatencyMs:     34,
+			MCP: &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "@modelcontextprotocol/server-github"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"GITHUB_PERSONAL_ACCESS_TOKEN": "",
+				},
+			},
+			LatencyMs: 0,
+		}
+	} else if it.MCP == nil {
+		it.MCP = &types.MCPConfig{
+			Enabled:   true,
+			Command:   "npx",
+			Args:      []string{"-y", "@modelcontextprotocol/server-github"},
+			Transport: "stdio",
+			Env: map[string]string{
+				"GITHUB_PERSONAL_ACCESS_TOKEN": it.APIToken,
+			},
 		}
 	}
 
 	// 4. GitLab
-	if _, exists := m.items["gitlab"]; !exists {
+	if it, exists := m.items["gitlab"]; !exists {
 		m.items["gitlab"] = &types.ConnectorItem{
 			ID:            "gitlab",
 			Name:          "GitLab DevOps",
@@ -170,18 +245,85 @@ func (m *Manager) ensureCatalogLocked() {
 			Icon:          "gitlab",
 			Color:         "amber",
 			Enabled:       false,
-			Status:        "disabled",
+			ConfigMode:    "hybrid",
+			Status:        "unconfigured",
 			BaseURL:       "https://gitlab.com",
-			Username:      "gitlab-agent",
-			TargetEntity:  "engineering/backend-core",
+			Username:      "",
+			APIToken:      "",
+			TargetEntity:  "",
 			TargetLabel:   "Default Project Path",
 			Capabilities:  []string{"Merge Request Automation", "Issue Sync", "CI/CD Pipeline Triggers"},
-			LatencyMs:     52,
+			MCP: &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "@modelcontextprotocol/server-gitlab"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"GITLAB_PERSONAL_ACCESS_TOKEN": "",
+					"GITLAB_API_URL":               "https://gitlab.com",
+				},
+			},
+			LatencyMs: 0,
+		}
+	} else if it.MCP == nil {
+		it.MCP = &types.MCPConfig{
+			Enabled:   true,
+			Command:   "npx",
+			Args:      []string{"-y", "@modelcontextprotocol/server-gitlab"},
+			Transport: "stdio",
+			Env: map[string]string{
+				"GITLAB_PERSONAL_ACCESS_TOKEN": it.APIToken,
+				"GITLAB_API_URL":               it.BaseURL,
+			},
 		}
 	}
 
-	// 5. Slack
-	if _, exists := m.items["slack"]; !exists {
+	// 5. Bitbucket (NEW)
+	if it, exists := m.items["bitbucket"]; !exists {
+		m.items["bitbucket"] = &types.ConnectorItem{
+			ID:            "bitbucket",
+			Name:          "Atlassian Bitbucket",
+			Category:      types.ConnectorCategoryVCS,
+			CategoryLabel: "Source Control & Code Review",
+			Description:   "Integrates with Bitbucket Cloud and Server repositories, pull request reviews, and Bitbucket Pipelines CI/CD automation.",
+			Icon:          "bitbucket",
+			Color:         "cyan",
+			Enabled:       false,
+			ConfigMode:    "hybrid",
+			Status:        "unconfigured",
+			BaseURL:       "https://api.bitbucket.org/2.0",
+			Username:      "",
+			APIToken:      "",
+			TargetEntity:  "",
+			TargetLabel:   "Workspace / Repository Slug",
+			Capabilities:  []string{"Pull Request Automation", "Branch Permissions", "Bitbucket Pipelines CI", "Commit Status Checks"},
+			MCP: &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "@atlassian/mcp-server-bitbucket"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"BITBUCKET_USERNAME":     "",
+					"BITBUCKET_APP_PASSWORD": "",
+				},
+			},
+			LatencyMs: 0,
+		}
+	} else if it.MCP == nil {
+		it.MCP = &types.MCPConfig{
+			Enabled:   true,
+			Command:   "npx",
+			Args:      []string{"-y", "@atlassian/mcp-server-bitbucket"},
+			Transport: "stdio",
+			Env: map[string]string{
+				"BITBUCKET_USERNAME":     it.Username,
+				"BITBUCKET_APP_PASSWORD": it.APIToken,
+			},
+		}
+	}
+
+	// 6. Slack
+	if it, exists := m.items["slack"]; !exists {
 		m.items["slack"] = &types.ConnectorItem{
 			ID:            "slack",
 			Name:          "Slack ChatOps",
@@ -190,19 +332,42 @@ func (m *Manager) ensureCatalogLocked() {
 			Description:   "Sends real-time alerts for gate reviews, blocker escalations, and interactive pipeline approvals via Incoming Webhooks or Bot Token.",
 			Icon:          "slack",
 			Color:         "purple",
-			Enabled:       true,
-			Status:        "connected",
-			BaseURL:       "https://hooks.slack.com/services/T00/B00/XXXX",
-			Username:      "SDLC-Bot",
-			TargetEntity:  "#sdlc-orchestration",
+			Enabled:       false,
+			ConfigMode:    "hybrid",
+			Status:        "unconfigured",
+			BaseURL:       "https://hooks.slack.com/services/...",
+			Username:      "",
+			APIToken:      "",
+			TargetEntity:  "",
 			TargetLabel:   "Default Alert Channel",
 			Capabilities:  []string{"Gate Approval Alerts", "Frustration Escalations", "Stage Completion Pings"},
-			LatencyMs:     29,
+			MCP: &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "@modelcontextprotocol/server-slack"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"SLACK_BOT_TOKEN": "",
+					"SLACK_TEAM_ID":   "",
+				},
+			},
+			LatencyMs: 0,
+		}
+	} else if it.MCP == nil {
+		it.MCP = &types.MCPConfig{
+			Enabled:   true,
+			Command:   "npx",
+			Args:      []string{"-y", "@modelcontextprotocol/server-slack"},
+			Transport: "stdio",
+			Env: map[string]string{
+				"SLACK_BOT_TOKEN": it.APIToken,
+				"SLACK_TEAM_ID":   it.TargetEntity,
+			},
 		}
 	}
 
-	// 6. Linear
-	if _, exists := m.items["linear"]; !exists {
+	// 7. Linear
+	if it, exists := m.items["linear"]; !exists {
 		m.items["linear"] = &types.ConnectorItem{
 			ID:            "linear",
 			Name:          "Linear App",
@@ -212,18 +377,39 @@ func (m *Manager) ensureCatalogLocked() {
 			Icon:          "linear",
 			Color:         "violet",
 			Enabled:       false,
-			Status:        "disabled",
+			ConfigMode:    "hybrid",
+			Status:        "unconfigured",
 			BaseURL:       "https://api.linear.app/graphql",
-			Username:      "linear-integration@meta-orchestrator.io",
-			TargetEntity:  "ENG",
+			Username:      "",
+			APIToken:      "",
+			TargetEntity:  "",
 			TargetLabel:   "Team Prefix / Project",
 			Capabilities:  []string{"Identifier Detection", "Cycle Sync", "High-speed Import"},
-			LatencyMs:     41,
+			MCP: &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "@modelcontextprotocol/server-linear"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"LINEAR_API_KEY": "",
+				},
+			},
+			LatencyMs: 0,
+		}
+	} else if it.MCP == nil {
+		it.MCP = &types.MCPConfig{
+			Enabled:   true,
+			Command:   "npx",
+			Args:      []string{"-y", "@modelcontextprotocol/server-linear"},
+			Transport: "stdio",
+			Env: map[string]string{
+				"LINEAR_API_KEY": it.APIToken,
+			},
 		}
 	}
 
-	// 7. Notion
-	if _, exists := m.items["notion"]; !exists {
+	// 8. Notion
+	if it, exists := m.items["notion"]; !exists {
 		m.items["notion"] = &types.ConnectorItem{
 			ID:            "notion",
 			Name:          "Notion Workspace",
@@ -233,18 +419,39 @@ func (m *Manager) ensureCatalogLocked() {
 			Icon:          "notion",
 			Color:         "stone",
 			Enabled:       false,
-			Status:        "disabled",
+			ConfigMode:    "hybrid",
+			Status:        "unconfigured",
 			BaseURL:       "https://api.notion.com/v1",
-			Username:      "notion-bot@meta-orchestrator.io",
-			TargetEntity:  "Engineering Wiki",
+			Username:      "",
+			APIToken:      "",
+			TargetEntity:  "",
 			TargetLabel:   "Database / Parent Page",
 			Capabilities:  []string{"Page Creation", "Database Row Sync", "Rich Text Blocks"},
-			LatencyMs:     56,
+			MCP: &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "@modelcontextprotocol/server-notion"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"NOTION_API_KEY": "",
+				},
+			},
+			LatencyMs: 0,
+		}
+	} else if it.MCP == nil {
+		it.MCP = &types.MCPConfig{
+			Enabled:   true,
+			Command:   "npx",
+			Args:      []string{"-y", "@modelcontextprotocol/server-notion"},
+			Transport: "stdio",
+			Env: map[string]string{
+				"NOTION_API_KEY": it.APIToken,
+			},
 		}
 	}
 
-	// 8. Custom Webhook
-	if _, exists := m.items["custom_webhook"]; !exists {
+	// 9. Custom Webhook
+	if it, exists := m.items["custom_webhook"]; !exists {
 		m.items["custom_webhook"] = &types.ConnectorItem{
 			ID:            "custom_webhook",
 			Name:          "Custom Webhook Dispatcher",
@@ -253,14 +460,31 @@ func (m *Manager) ensureCatalogLocked() {
 			Description:   "Dispatches signed HMAC JSON events to external internal microservices on task state changes and stage completions.",
 			Icon:          "webhook",
 			Color:         "emerald",
-			Enabled:       true,
-			Status:        "connected",
-			BaseURL:       "https://internal-bus.company.net/events",
-			Username:      "event-bus-agent",
+			Enabled:       false,
+			ConfigMode:    "hybrid",
+			Status:        "unconfigured",
+			BaseURL:       "",
+			Username:      "",
+			APIToken:      "",
 			TargetEntity:  "task.*, stage.*",
 			TargetLabel:   "Subscribed Event Topics",
 			Capabilities:  []string{"HMAC-SHA256 Signing", "Payload Retries", "Filter Expressions"},
-			LatencyMs:     22,
+			MCP: &types.MCPConfig{
+				Enabled:   false,
+				Command:   "npx",
+				Args:      []string{"-y", "mcp-proxy-webhook"},
+				Transport: "stdio",
+				Env:       map[string]string{},
+			},
+			LatencyMs: 0,
+		}
+	} else if it.MCP == nil {
+		it.MCP = &types.MCPConfig{
+			Enabled:   false,
+			Command:   "npx",
+			Args:      []string{"-y", "mcp-proxy-webhook"},
+			Transport: "stdio",
+			Env:       map[string]string{},
 		}
 	}
 }
@@ -304,7 +528,7 @@ func (m *Manager) GetConfig() types.ConnectorsConfig {
 }
 
 func (m *Manager) listConnectorsLocked() []*types.ConnectorItem {
-	order := []string{"jira", "confluence", "github", "gitlab", "slack", "linear", "notion", "custom_webhook"}
+	order := []string{"jira", "confluence", "github", "gitlab", "bitbucket", "slack", "linear", "notion", "custom_webhook"}
 	seen := make(map[string]bool)
 	var list []*types.ConnectorItem
 
@@ -433,24 +657,30 @@ func (m *Manager) ToggleConnector(id string, enabled bool) (*types.ConnectorItem
 	return item, nil
 }
 
-// TestGenericConnector performs a connectivity check for any connector in the catalog.
+// TestGenericConnector performs a real connectivity check for any connector in the catalog.
 func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *types.ConnectorItem) types.TestConnectorResponse {
 	m.mu.RLock()
 	existing := m.items[id]
 	m.mu.RUnlock()
 
 	activeItem := existing
-	if item != nil && item.BaseURL != "" {
+	if item != nil && (item.BaseURL != "" || item.MCP != nil || item.TargetEntity != "") {
 		activeItem = item
 	}
 	if activeItem == nil {
 		return types.TestConnectorResponse{
 			Success:   false,
-			Message:   fmt.Sprintf("Connector '%s' not found", id),
+			Message:   fmt.Sprintf("Connector '%s' not found in catalog", id),
 			LatencyMs: 0,
 		}
 	}
 
+	// If MCP mode is explicitly selected, test MCP runtime
+	if activeItem.ConfigMode == "mcp" && activeItem.MCP != nil {
+		return m.TestMCPConnector(ctx, id, activeItem.MCP)
+	}
+
+	// Special routing for JIRA & Confluence
 	if id == "jira" {
 		cfg := m.config.Jira
 		if activeItem != nil {
@@ -461,7 +691,9 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 			}
 			cfg.ProjectKey = activeItem.TargetEntity
 		}
-		return m.TestJira(ctx, cfg)
+		res := m.TestJira(ctx, cfg)
+		m.updateItemStatus(id, res.Success, res.LatencyMs, res.Message)
+		return res
 	}
 
 	if id == "confluence" {
@@ -474,34 +706,327 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 			}
 			cfg.SpaceKey = activeItem.TargetEntity
 		}
-		return m.TestConfluence(ctx, cfg)
+		res := m.TestConfluence(ctx, cfg)
+		m.updateItemStatus(id, res.Success, res.LatencyMs, res.Message)
+		return res
 	}
 
 	start := time.Now()
 	cleanURL := strings.TrimRight(strings.TrimSpace(activeItem.BaseURL), "/")
 	if cleanURL == "" {
+		res := types.TestConnectorResponse{
+			Success:   false,
+			Message:   fmt.Sprintf("%s Base URL or endpoint is required", activeItem.Name),
+			LatencyMs: 0,
+		}
+		m.updateItemStatus(id, false, 0, res.Message)
+		return res
+	}
+
+	// Real HTTP Request with timeout
+	probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+
+	var req *http.Request
+	var err error
+
+	switch id {
+	case "github":
+		reqURL := "https://api.github.com/user"
+		if activeItem.TargetEntity != "" && strings.Contains(activeItem.TargetEntity, "/") {
+			reqURL = fmt.Sprintf("https://api.github.com/repos/%s", activeItem.TargetEntity)
+		} else if activeItem.APIToken == "" {
+			reqURL = "https://api.github.com/zen"
+		}
+		req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, reqURL, nil)
+		if err == nil {
+			req.Header.Set("User-Agent", "Meta-Orchestrator")
+			req.Header.Set("Accept", "application/vnd.github.v3+json")
+			if activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
+				req.Header.Set("Authorization", "Bearer "+activeItem.APIToken)
+			}
+		}
+
+	case "gitlab":
+		reqURL := cleanURL + "/api/v4/user"
+		if activeItem.APIToken == "" {
+			reqURL = cleanURL + "/api/v4/version"
+		}
+		req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, reqURL, nil)
+		if err == nil {
+			req.Header.Set("User-Agent", "Meta-Orchestrator")
+			if activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
+				req.Header.Set("PRIVATE-TOKEN", activeItem.APIToken)
+			}
+		}
+
+	case "bitbucket":
+		reqURL := "https://api.bitbucket.org/2.0/user"
+		if activeItem.TargetEntity != "" && strings.Contains(activeItem.TargetEntity, "/") {
+			reqURL = fmt.Sprintf("https://api.bitbucket.org/2.0/repositories/%s", activeItem.TargetEntity)
+		}
+		req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, reqURL, nil)
+		if err == nil {
+			req.Header.Set("User-Agent", "Meta-Orchestrator")
+			req.Header.Set("Accept", "application/json")
+			if activeItem.Username != "" && activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
+				req.SetBasicAuth(activeItem.Username, activeItem.APIToken)
+			}
+		}
+
+	case "slack":
+		token := activeItem.APIToken
+		if strings.HasPrefix(token, "xoxb-") || strings.HasPrefix(token, "xoxp-") {
+			req, err = http.NewRequestWithContext(probeCtx, http.MethodPost, "https://slack.com/api/auth.test", nil)
+			if err == nil {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+		} else {
+			req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, cleanURL, nil)
+		}
+
+	case "linear":
+		graphQLBody := bytes.NewBufferString(`{"query": "{ viewer { id name email } }"}`)
+		req, err = http.NewRequestWithContext(probeCtx, http.MethodPost, "https://api.linear.app/graphql", graphQLBody)
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			if activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
+				req.Header.Set("Authorization", activeItem.APIToken)
+			}
+		}
+
+	case "notion":
+		req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, "https://api.notion.com/v1/users/me", nil)
+		if err == nil {
+			req.Header.Set("Notion-Version", "2022-06-28")
+			if activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
+				req.Header.Set("Authorization", "Bearer "+activeItem.APIToken)
+			}
+		}
+
+	default:
+		// Custom Webhook or generic HTTP
+		req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, cleanURL, nil)
+	}
+
+	if err != nil {
+		res := types.TestConnectorResponse{
+			Success:   false,
+			LatencyMs: time.Since(start).Milliseconds(),
+			Message:   fmt.Sprintf("Failed to initialize request: %v", err),
+		}
+		m.updateItemStatus(id, false, res.LatencyMs, res.Message)
+		return res
+	}
+
+	resp, err := m.client.Do(req)
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		res := types.TestConnectorResponse{
+			Success:   false,
+			LatencyMs: latency,
+			Message:   fmt.Sprintf("Connection failed: %v", err),
+		}
+		m.updateItemStatus(id, false, latency, res.Message)
+		return res
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+
+	// Success response processing
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var userStr string
+		var rawMap map[string]interface{}
+		_ = json.Unmarshal(bodyBytes, &rawMap)
+
+		if rawMap != nil {
+			if id == "github" {
+				userStr = fmt.Sprintf("%v", rawMap["login"])
+				if userStr == "<nil>" || userStr == "" {
+					userStr = fmt.Sprintf("%v", rawMap["full_name"])
+				}
+			} else if id == "bitbucket" {
+				userStr = fmt.Sprintf("%v", rawMap["display_name"])
+				if userStr == "<nil>" || userStr == "" {
+					userStr = fmt.Sprintf("%v", rawMap["username"])
+				}
+			} else if id == "gitlab" {
+				userStr = fmt.Sprintf("%v", rawMap["username"])
+				if userStr == "<nil>" || userStr == "" {
+					userStr = fmt.Sprintf("GitLab v%v", rawMap["version"])
+				}
+			} else if id == "slack" {
+				if rawMap["ok"] == true {
+					userStr = fmt.Sprintf("@%v (Team: %v)", rawMap["user"], rawMap["team"])
+				}
+			} else if id == "notion" {
+				userStr = fmt.Sprintf("%v", rawMap["name"])
+			}
+		}
+
+		if userStr == "" || userStr == "<nil>" {
+			userStr = activeItem.Username
+			if userStr == "" {
+				userStr = "Authenticated Client"
+			}
+		}
+
+		serverHeader := resp.Header.Get("Server")
+		if serverHeader == "" {
+			serverHeader = resp.Header.Get("X-GitHub-Request-Id")
+		}
+		if serverHeader == "" {
+			serverHeader = cleanURL
+		}
+
+		res := types.TestConnectorResponse{
+			Success:      true,
+			LatencyMs:    latency,
+			Message:      fmt.Sprintf("Live connection established to %s (HTTP %d). Verified user: %s", activeItem.Name, resp.StatusCode, userStr),
+			ConnectedAs:  userStr,
+			ServerInfo:   fmt.Sprintf("%s (%s)", activeItem.Name, serverHeader),
+			TargetEntity: fmt.Sprintf("%s: %s", activeItem.TargetLabel, activeItem.TargetEntity),
+		}
+		m.updateItemStatus(id, true, latency, "")
+		return res
+	}
+
+	// Slack webhooks return 400 with invalid payload or 405 for GET, proving live Slack ingress reached
+	if id == "slack" && (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusMethodNotAllowed) {
+		res := types.TestConnectorResponse{
+			Success:      true,
+			LatencyMs:    latency,
+			Message:      fmt.Sprintf("Slack Webhook ingress reached successfully (HTTP %d)", resp.StatusCode),
+			ConnectedAs:  activeItem.Username,
+			ServerInfo:   "Slack Webhook Ingress (hooks.slack.com)",
+			TargetEntity: activeItem.TargetEntity,
+		}
+		m.updateItemStatus(id, true, latency, "")
+		return res
+	}
+
+	// Failure response with actual HTTP status
+	msg := fmt.Sprintf("%s returned HTTP %d: %s", activeItem.Name, resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	if resp.StatusCode == http.StatusUnauthorized {
+		msg = fmt.Sprintf("HTTP 401 Unauthorized: Invalid API Token / credentials for %s", activeItem.Name)
+	} else if resp.StatusCode == http.StatusForbidden {
+		msg = fmt.Sprintf("HTTP 403 Forbidden: Insufficient permissions for %s", activeItem.Name)
+	} else if resp.StatusCode == http.StatusNotFound {
+		msg = fmt.Sprintf("HTTP 404 Not Found: Target resource or endpoint not found on %s", activeItem.Name)
+	}
+
+	res := types.TestConnectorResponse{
+		Success:   false,
+		LatencyMs: latency,
+		Message:   msg,
+	}
+	m.updateItemStatus(id, false, latency, msg)
+	return res
+}
+
+func (m *Manager) updateItemStatus(id string, success bool, latency int64, errMsg string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if item, ok := m.items[id]; ok {
+		item.LastTestedAt = time.Now()
+		item.LatencyMs = latency
+		if success {
+			item.Status = "connected"
+			item.ErrorMessage = ""
+		} else {
+			item.Status = "error"
+			item.ErrorMessage = errMsg
+		}
+	}
+}
+
+// TestMCPConnector validates MCP server configuration and host runtime.
+func (m *Manager) TestMCPConnector(ctx context.Context, id string, mcp *types.MCPConfig) types.TestConnectorResponse {
+	start := time.Now()
+	if mcp == nil {
 		return types.TestConnectorResponse{
 			Success:   false,
-			Message:   fmt.Sprintf("%s Base URL or Webhook endpoint is required", activeItem.Name),
+			Message:   "MCP configuration is missing",
+			LatencyMs: 0,
+		}
+	}
+	if strings.TrimSpace(mcp.Command) == "" {
+		return types.TestConnectorResponse{
+			Success:   false,
+			Message:   "MCP server command is required (e.g. npx, uvx, docker)",
 			LatencyMs: 0,
 		}
 	}
 
-	time.Sleep(38 * time.Millisecond) // realistic network simulation
-	latency := time.Since(start).Milliseconds()
-
-	userEmail := activeItem.Username
-	if userEmail == "" {
-		userEmail = "operator@orchestrator.local"
+	// 1. Check if the binary executable exists in PATH or common macOS dirs
+	execPath, err := exec.LookPath(mcp.Command)
+	if err != nil {
+		commonPaths := []string{
+			"/usr/local/bin/" + mcp.Command,
+			"/opt/homebrew/bin/" + mcp.Command,
+			"/usr/bin/" + mcp.Command,
+		}
+		found := false
+		for _, cp := range commonPaths {
+			if _, statErr := os.Stat(cp); statErr == nil {
+				execPath = cp
+				found = true
+				break
+			}
+		}
+		if !found {
+			return types.TestConnectorResponse{
+				Success:   false,
+				LatencyMs: time.Since(start).Milliseconds(),
+				Message:   fmt.Sprintf("MCP command '%s' not found on system PATH. Please ensure runtime is installed.", mcp.Command),
+			}
+		}
 	}
 
-	return types.TestConnectorResponse{
+	// 2. Probe command version
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, execPath, "--version")
+	out, _ := cmd.Output()
+	versionStr := strings.TrimSpace(string(out))
+
+	latency := time.Since(start).Milliseconds()
+	argsStr := strings.Join(mcp.Args, " ")
+	envCount := len(mcp.Env)
+
+	res := types.TestConnectorResponse{
 		Success:      true,
 		LatencyMs:    latency,
-		Message:      fmt.Sprintf("Connected to %s Server at %s. Verified target '%s'.", activeItem.Name, cleanURL, activeItem.TargetEntity),
-		ConnectedAs:  userEmail,
-		ServerInfo:   fmt.Sprintf("%s Service (REST/GraphQL API) at %s", activeItem.Name, cleanURL),
-		TargetEntity: fmt.Sprintf("%s: %s", activeItem.TargetLabel, activeItem.TargetEntity),
+		Message:      fmt.Sprintf("MCP runtime '%s' verified at %s (%s). Arguments: %s", mcp.Command, execPath, versionStr, argsStr),
+		ConnectedAs:  execPath,
+		ServerInfo:   fmt.Sprintf("Command: %s %s (v: %s)", mcp.Command, argsStr, versionStr),
+		TargetEntity: fmt.Sprintf("Transport: %s | Env Vars: %d configured", mcp.Transport, envCount),
+	}
+	m.updateItemStatus(id, true, latency, "")
+	return res
+}
+
+// GetMCPExportConfig generates a standard mcpServers configuration map for Claude, Antigravity, and Cursor.
+func (m *Manager) GetMCPExportConfig() map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	servers := make(map[string]interface{})
+	for id, item := range m.items {
+		if item.MCP != nil && (item.MCP.Enabled || item.Enabled) {
+			serverEntry := map[string]interface{}{
+				"command": item.MCP.Command,
+				"args":    item.MCP.Args,
+			}
+			if len(item.MCP.Env) > 0 {
+				serverEntry["env"] = item.MCP.Env
+			}
+			servers[id] = serverEntry
+		}
+	}
+	return map[string]interface{}{
+		"mcpServers": servers,
 	}
 }
 
@@ -535,7 +1060,7 @@ func (m *Manager) UpdateConfluence(cfg types.ConfluenceConfig) error {
 	return m.save()
 }
 
-// TestJira performs a connectivity check against JIRA.
+// TestJira performs a real connectivity check against JIRA.
 func (m *Manager) TestJira(ctx context.Context, cfg types.JiraConfig) types.TestConnectorResponse {
 	start := time.Now()
 	cleanURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
@@ -547,57 +1072,68 @@ func (m *Manager) TestJira(ctx context.Context, cfg types.JiraConfig) types.Test
 		}
 	}
 
-	// If real API token is configured, perform live API call
-	if cfg.APIToken != "" && cfg.Username != "" && !strings.Contains(cleanURL, "mock") {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, cleanURL+"/rest/api/2/myself", nil)
-		if err == nil {
-			req.SetBasicAuth(cfg.Username, cfg.APIToken)
-			req.Header.Set("Accept", "application/json")
-			resp, err := m.client.Do(req)
-			if err == nil {
-				defer resp.Body.Close()
-				latency := time.Since(start).Milliseconds()
-				if resp.StatusCode == http.StatusOK {
-					var user map[string]interface{}
-					_ = json.NewDecoder(resp.Body).Decode(&user)
-					displayName := fmt.Sprintf("%v", user["displayName"])
-					return types.TestConnectorResponse{
-						Success:      true,
-						LatencyMs:    latency,
-						Message:      fmt.Sprintf("Successfully authenticated with JIRA as %s", displayName),
-						ConnectedAs:  displayName,
-						ServerInfo:   cleanURL,
-						TargetEntity: fmt.Sprintf("Project: %s", cfg.ProjectKey),
-					}
-				}
-			}
+	probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, cleanURL+"/rest/api/2/myself", nil)
+	if err != nil {
+		return types.TestConnectorResponse{
+			Success:   false,
+			LatencyMs: time.Since(start).Milliseconds(),
+			Message:   fmt.Sprintf("Invalid URL: %v", err),
 		}
 	}
 
-	// Simulation / Validated Verification mode
-	time.Sleep(45 * time.Millisecond) // realistic network simulation
-	latency := time.Since(start).Milliseconds()
-
-	userEmail := cfg.Username
-	if userEmail == "" {
-		userEmail = "operator@company.org"
+	if cfg.Username != "" && cfg.APIToken != "" && !strings.Contains(cfg.APIToken, "••••") {
+		req.SetBasicAuth(cfg.Username, cfg.APIToken)
 	}
-	projKey := cfg.ProjectKey
-	if projKey == "" {
-		projKey = "PROJ"
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Meta-Orchestrator")
+
+	resp, err := m.client.Do(req)
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		return types.TestConnectorResponse{
+			Success:   false,
+			LatencyMs: latency,
+			Message:   fmt.Sprintf("Connection to JIRA failed: %v", err),
+		}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		var user map[string]interface{}
+		_ = json.NewDecoder(resp.Body).Decode(&user)
+		displayName := fmt.Sprintf("%v", user["displayName"])
+		if displayName == "<nil>" || displayName == "" {
+			displayName = cfg.Username
+		}
+		return types.TestConnectorResponse{
+			Success:      true,
+			LatencyMs:    latency,
+			Message:      fmt.Sprintf("Successfully authenticated with JIRA as %s", displayName),
+			ConnectedAs:  displayName,
+			ServerInfo:   cleanURL,
+			TargetEntity: fmt.Sprintf("Project: %s", cfg.ProjectKey),
+		}
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return types.TestConnectorResponse{
+			Success:   false,
+			LatencyMs: latency,
+			Message:   "HTTP 401 Unauthorized: Invalid JIRA username or API token",
+		}
 	}
 
 	return types.TestConnectorResponse{
-		Success:      true,
-		LatencyMs:    latency,
-		Message:      fmt.Sprintf("Connected to JIRA Server at %s. Verified project key '%s'.", cleanURL, projKey),
-		ConnectedAs:  userEmail,
-		ServerInfo:   fmt.Sprintf("JIRA Cloud / v9.12 (REST API v2) at %s", cleanURL),
-		TargetEntity: fmt.Sprintf("Default Project: %s", projKey),
+		Success:   false,
+		LatencyMs: latency,
+		Message:   fmt.Sprintf("JIRA server returned HTTP %d %s", resp.StatusCode, resp.Status),
 	}
 }
 
-// TestConfluence performs a connectivity check against Confluence.
+// TestConfluence performs a real connectivity check against Confluence.
 func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig) types.TestConnectorResponse {
 	start := time.Now()
 	cleanURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
@@ -614,46 +1150,58 @@ func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig
 		spaceKey = "ARCH"
 	}
 
-	// Live API validation if token provided
-	if cfg.APIToken != "" && cfg.Username != "" && !strings.Contains(cleanURL, "mock") {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/rest/api/space/%s", cleanURL, spaceKey), nil)
-		if err == nil {
-			req.SetBasicAuth(cfg.Username, cfg.APIToken)
-			req.Header.Set("Accept", "application/json")
-			resp, err := m.client.Do(req)
-			if err == nil {
-				defer resp.Body.Close()
-				latency := time.Since(start).Milliseconds()
-				if resp.StatusCode == http.StatusOK {
-					return types.TestConnectorResponse{
-						Success:      true,
-						LatencyMs:    latency,
-						Message:      fmt.Sprintf("Successfully connected to Confluence space '%s'", spaceKey),
-						ConnectedAs:  cfg.Username,
-						ServerInfo:   cleanURL,
-						TargetEntity: fmt.Sprintf("Space: %s", spaceKey),
-					}
-				}
-			}
+	probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, fmt.Sprintf("%s/rest/api/space/%s", cleanURL, spaceKey), nil)
+	if err != nil {
+		return types.TestConnectorResponse{
+			Success:   false,
+			LatencyMs: time.Since(start).Milliseconds(),
+			Message:   fmt.Sprintf("Invalid URL: %v", err),
 		}
 	}
 
-	// Verification simulation mode
-	time.Sleep(38 * time.Millisecond)
-	latency := time.Since(start).Milliseconds()
+	if cfg.Username != "" && cfg.APIToken != "" && !strings.Contains(cfg.APIToken, "••••") {
+		req.SetBasicAuth(cfg.Username, cfg.APIToken)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Meta-Orchestrator")
 
-	userEmail := cfg.Username
-	if userEmail == "" {
-		userEmail = "architect@company.org"
+	resp, err := m.client.Do(req)
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		return types.TestConnectorResponse{
+			Success:   false,
+			LatencyMs: latency,
+			Message:   fmt.Sprintf("Connection to Confluence failed: %v", err),
+		}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return types.TestConnectorResponse{
+			Success:      true,
+			LatencyMs:    latency,
+			Message:      fmt.Sprintf("Successfully connected to Confluence space '%s'", spaceKey),
+			ConnectedAs:  cfg.Username,
+			ServerInfo:   cleanURL,
+			TargetEntity: fmt.Sprintf("Space: %s", spaceKey),
+		}
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return types.TestConnectorResponse{
+			Success:   false,
+			LatencyMs: latency,
+			Message:   "HTTP 401 Unauthorized: Invalid Confluence credentials or API token",
+		}
 	}
 
 	return types.TestConnectorResponse{
-		Success:      true,
-		LatencyMs:    latency,
-		Message:      fmt.Sprintf("Connected to Confluence Wiki. Space '%s' verified with write permissions.", spaceKey),
-		ConnectedAs:  userEmail,
-		ServerInfo:   fmt.Sprintf("Atlassian Confluence Cloud at %s", cleanURL),
-		TargetEntity: fmt.Sprintf("Documentation Space: %s", spaceKey),
+		Success:   false,
+		LatencyMs: latency,
+		Message:   fmt.Sprintf("Confluence server returned HTTP %d %s", resp.StatusCode, resp.Status),
 	}
 }
 

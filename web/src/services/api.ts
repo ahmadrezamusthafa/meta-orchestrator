@@ -3,7 +3,7 @@ import type {
   Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse,
   ConnectorsConfig, JiraConfig, ConfluenceConfig, JiraIssueDTO, ImportJiraIssueRequest,
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
-  ConnectorItem, ToggleConnectorRequest
+  ConnectorItem, ToggleConnectorRequest, MCPConfig
 } from '../types'
 
 const BASE_URL = '/api/v1'
@@ -365,6 +365,25 @@ export const api = {
       const err = await res.json().catch(() => ({ error: `Failed to test connector ${id}` }))
       throw new Error(err.error || `Failed to test connector ${id}`)
     }
+    return res.json()
+  },
+
+  async testMCPConnector(id: string, mcp?: MCPConfig): Promise<TestConnectorResponse> {
+    const res = await fetch(`${BASE_URL}/connectors/items/${id}/test-mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(mcp || {})
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `Failed to test MCP for ${id}` }))
+      throw new Error(err.error || `Failed to test MCP for ${id}`)
+    }
+    return res.json()
+  },
+
+  async getMCPConfigExport(): Promise<{ mcpServers: Record<string, any> }> {
+    const res = await fetch(`${BASE_URL}/connectors/mcp-config`)
+    if (!res.ok) throw new Error('Failed to export MCP config')
     return res.json()
   }
 }

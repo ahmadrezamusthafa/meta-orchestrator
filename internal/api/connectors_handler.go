@@ -84,7 +84,33 @@ func (r *Router) handleConnectorItemAction(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
-	// 3. /api/v1/connectors/items/{id}
+	// 3. POST /api/v1/connectors/items/{id}/test-mcp
+	if len(parts) == 2 && parts[1] == "test-mcp" {
+		if req.Method != http.MethodPost {
+			r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		var payload struct {
+			types.MCPConfig
+			MCP *types.MCPConfig `json:"mcp,omitempty"`
+		}
+		_ = json.NewDecoder(req.Body).Decode(&payload)
+		mcpCfg := payload.MCPConfig
+		if payload.MCP != nil && payload.MCP.Command != "" {
+			mcpCfg = *payload.MCP
+		}
+		if mcpCfg.Command == "" {
+			item, err := r.cfg.ConnectorsManager.GetConnector(id)
+			if err == nil && item.MCP != nil {
+				mcpCfg = *item.MCP
+			}
+		}
+		res := r.cfg.ConnectorsManager.TestMCPConnector(req.Context(), id, &mcpCfg)
+		r.writeJSON(w, http.StatusOK, res)
+		return
+	}
+
+	// 4. /api/v1/connectors/items/{id}
 	switch req.Method {
 	case http.MethodGet:
 		item, err := r.cfg.ConnectorsManager.GetConnector(id)
@@ -451,4 +477,14 @@ func (r *Router) handleConfluencePublish(w http.ResponseWriter, req *http.Reques
 	}
 
 	r.writeJSON(w, http.StatusOK, resp)
+}
+
+// handleConnectorMCPConfig exports active connector configurations as a standard mcpServers JSON dictionary.
+func (r *Router) handleConnectorMCPConfig(w http.ResponseWriter, req *http.Request) {
+	if r.cfg.ConnectorsManager == nil {
+		r.writeError(w, http.StatusServiceUnavailable, "Connectors manager not configured")
+		return
+	}
+	mcpExport := r.cfg.ConnectorsManager.GetMCPExportConfig()
+	r.writeJSON(w, http.StatusOK, mcpExport)
 }

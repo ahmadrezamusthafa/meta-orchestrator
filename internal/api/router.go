@@ -204,9 +204,10 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/fs/browse", r.handleFSBrowse)
 	r.mux.HandleFunc("/api/v1/fs/mkdir", r.handleFSMkdir)
 
-	// Connector endpoints (Modular Catalog, Items, JIRA & Confluence)
+	// Connector endpoints (Modular Catalog, Items, JIRA & Confluence, MCP)
 	r.mux.HandleFunc("/api/v1/connectors", r.handleConnectors)
 	r.mux.HandleFunc("/api/v1/connectors/catalog", r.handleConnectorCatalog)
+	r.mux.HandleFunc("/api/v1/connectors/mcp-config", r.handleConnectorMCPConfig)
 	r.mux.HandleFunc("/api/v1/connectors/items/", r.handleConnectorItemAction)
 	r.mux.HandleFunc("/api/v1/connectors/jira", r.handleConnectorJira)
 	r.mux.HandleFunc("/api/v1/connectors/confluence", r.handleConnectorConfluence)

@@ -245,6 +245,15 @@ export interface ConfluenceConfig {
 
 export type ConnectorCategory = 'issue_tracker' | 'documentation' | 'chatops' | 'vcs' | 'custom'
 
+export interface MCPConfig {
+  enabled: boolean
+  command: string
+  args: string[]
+  env?: Record<string, string>
+  transport: 'stdio' | 'sse' | 'streamable_http'
+  endpoint_url?: string
+}
+
 export interface ConnectorItem {
   id: string
   name: string
@@ -254,6 +263,7 @@ export interface ConnectorItem {
   icon: string
   color: string
   enabled: boolean
+  config_mode?: 'rest' | 'mcp' | 'hybrid'
   status: 'connected' | 'configured' | 'disabled' | 'unconfigured' | 'error'
   base_url: string
   username: string
@@ -262,6 +272,7 @@ export interface ConnectorItem {
   target_label: string
   capabilities?: string[]
   extra_settings?: Record<string, any>
+  mcp?: MCPConfig
   last_tested_at?: string
   latency_ms?: number
   error_message?: string

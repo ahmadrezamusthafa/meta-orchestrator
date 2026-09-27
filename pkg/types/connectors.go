@@ -9,8 +9,19 @@ const (
 	ConnectorTypeJira       ConnectorType = "jira"
 	ConnectorTypeConfluence ConnectorType = "confluence"
 	ConnectorTypeGitHub     ConnectorType = "github"
+	ConnectorTypeBitbucket  ConnectorType = "bitbucket"
 	ConnectorTypeSlack      ConnectorType = "slack"
 )
+
+// MCPConfig defines Model Context Protocol server configuration for a connector.
+type MCPConfig struct {
+	Enabled     bool              `json:"enabled"`
+	Command     string            `json:"command"`                // e.g. "npx", "uvx", "docker", "/path/to/binary"
+	Args        []string          `json:"args"`                   // e.g. ["-y", "@modelcontextprotocol/server-github"]
+	Env         map[string]string `json:"env,omitempty"`          // Environment variables (e.g. API tokens)
+	Transport   string            `json:"transport"`              // "stdio", "sse", "streamable_http"
+	EndpointURL string            `json:"endpoint_url,omitempty"` // For SSE/HTTP transports
+}
 
 // JiraConfig holds settings and credentials for JIRA integration.
 type JiraConfig struct {
@@ -55,14 +66,15 @@ const (
 
 // ConnectorItem represents any third-party connector in the modular catalog.
 type ConnectorItem struct {
-	ID            string                 `json:"id"`             // e.g. "jira", "confluence", "github", "slack", "linear", "notion"
+	ID            string                 `json:"id"`             // e.g. "jira", "confluence", "github", "gitlab", "bitbucket", "slack", "linear", "notion"
 	Name          string                 `json:"name"`           // e.g. "Atlassian JIRA"
 	Category      ConnectorCategory      `json:"category"`       // e.g. "issue_tracker"
 	CategoryLabel string                 `json:"category_label"` // e.g. "Issue Tracking & Agile"
 	Description   string                 `json:"description"`
-	Icon          string                 `json:"icon"`           // icon identifier e.g. "jira", "confluence", "github", "slack", "linear", "notion", "webhook"
+	Icon          string                 `json:"icon"`           // icon identifier e.g. "jira", "confluence", "github", "gitlab", "bitbucket", "slack", "linear", "notion", "webhook"
 	Color         string                 `json:"color"`          // UI accent color
 	Enabled       bool                   `json:"enabled"`
+	ConfigMode    string                 `json:"config_mode"`    // "rest", "mcp", "hybrid"
 	Status        string                 `json:"status"`         // "connected", "configured", "disabled", "unconfigured", "error"
 	BaseURL       string                 `json:"base_url"`
 	Username      string                 `json:"username"`
@@ -71,6 +83,7 @@ type ConnectorItem struct {
 	TargetLabel   string                 `json:"target_label"`   // e.g. "Default Project Key", "Documentation Space"
 	Capabilities  []string               `json:"capabilities"`   // e.g. ["Ticket Auto-Detect", "Issue Import", "Status Sync"]
 	ExtraSettings map[string]interface{} `json:"extra_settings,omitempty"`
+	MCP           *MCPConfig             `json:"mcp,omitempty"`  // MCP server integration
 	LastTestedAt  time.Time              `json:"last_tested_at,omitempty"`
 	LatencyMs     int64                  `json:"latency_ms,omitempty"`
 	ErrorMessage  string                 `json:"error_message,omitempty"`
