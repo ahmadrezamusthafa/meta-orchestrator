@@ -20,3 +20,4 @@ Thumbs.db
 bin/
 workspaces/
 .sdlc/
+.mcp.json

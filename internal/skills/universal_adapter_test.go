@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -261,3 +262,88 @@ Project local instructions
 		t.Errorf("expected exit code 0, got %d", res.ExitCode)
 	}
 }
+
+type mockMCPProvider struct {
+	cfg map[string]interface{}
+}
+
+func (m *mockMCPProvider) GetMCPExportConfig() map[string]interface{} {
+	return m.cfg
+}
+
+func TestMultiSourceResolver_DynamicMCPIntegration(t *testing.T) {
+	tmpProject := t.TempDir()
+	resolver := NewMultiSourceSkillResolver(tmpProject)
+
+	mockProv := &mockMCPProvider{
+		cfg: map[string]interface{}{
+			"mcpServers": map[string]interface{}{
+				"jira": map[string]interface{}{
+					"command": "echo",
+					"args":    []string{"jira-mcp-active"},
+					"env": map[string]interface{}{
+						"JIRA_URL": "https://test.atlassian.net",
+					},
+				},
+				"github": map[string]interface{}{
+					"command": "echo",
+					"args":    []string{"github-mcp-active"},
+				},
+			},
+		},
+	}
+
+	resolver.SetMCPProvider(mockProv)
+
+	// 1. Resolve dynamic MCP skill
+	skill, err := resolver.ResolveSkill("jira")
+	if err != nil || skill == nil {
+		t.Fatalf("failed to dynamically resolve 'jira' MCP skill: %v", err)
+	}
+	if skill.SourceFormat != types.SkillFormatMCP {
+		t.Errorf("expected SourceFormat MCP, got '%s'", skill.SourceFormat)
+	}
+	if skill.Command != "echo" {
+		t.Errorf("expected command 'echo', got '%s'", skill.Command)
+	}
+
+	// 2. List all skills (must include built-ins and active MCP connectors)
+	allSkills, err := resolver.ListSkills()
+	if err != nil {
+		t.Fatalf("ListSkills failed: %v", err)
+	}
+	hasJira := false
+	hasGitHub := false
+	hasBuiltin := false
+	for _, s := range allSkills {
+		if s.Name == "jira" {
+			hasJira = true
+		}
+		if s.Name == "github" {
+			hasGitHub = true
+		}
+		if s.Name == "resolve_symlinks" {
+			hasBuiltin = true
+		}
+	}
+	if !hasJira || !hasGitHub || !hasBuiltin {
+		t.Errorf("ListSkills missing items: jira=%v, github=%v, builtin=%v", hasJira, hasGitHub, hasBuiltin)
+	}
+
+	// 3. Execute MCP skill through StandardSkillExecutor
+	executor := NewStandardSkillExecutor()
+	execReq := &types.SkillExecutionRequest{
+		TaskID: "task-mcp-1",
+	}
+	res, err := executor.Execute(context.Background(), skill, execReq, nil)
+	if err != nil {
+		t.Fatalf("failed to execute MCP skill: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Errorf("expected exit code 0, got %d", res.ExitCode)
+	}
+	if !strings.Contains(res.Stdout, "jira-mcp-active") {
+		t.Errorf("expected output to contain 'jira-mcp-active', got '%s'", res.Stdout)
+	}
+}
+

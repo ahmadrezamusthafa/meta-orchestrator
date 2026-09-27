@@ -1,9 +1,12 @@
 package skills
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"time"
 
@@ -67,6 +70,44 @@ func (e *StandardSkillExecutor) Execute(
 		_ = scriptCandidate
 		return &types.SkillExecutionResult{
 			ExitCode: 0,
+			Stdout:   string(out),
+		}, err
+	}
+
+	if skill.SourceFormat == types.SkillFormatMCP {
+		cmdName := skill.Command
+		if cmdName == "" {
+			cmdName = "npx"
+		}
+		cmd := exec.CommandContext(execCtx, cmdName, skill.Args...)
+		cmd.Env = os.Environ()
+		for k, v := range skill.Environment {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		}
+		for k, v := range req.EnvironmentVars {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		}
+		if req.WorkspacePath != "" {
+			cmd.Dir = req.WorkspacePath
+		}
+		if len(req.Parameters) > 0 {
+			paramBytes, _ := json.Marshal(req.Parameters)
+			cmd.Stdin = bytes.NewReader(paramBytes)
+		}
+		out, err := cmd.CombinedOutput()
+		if streamWriter != nil {
+			_, _ = streamWriter.Write(out)
+		}
+		exitCode := 0
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			} else {
+				exitCode = 1
+			}
+		}
+		return &types.SkillExecutionResult{
+			ExitCode: exitCode,
 			Stdout:   string(out),
 		}, err
 	}

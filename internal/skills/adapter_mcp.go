@@ -63,19 +63,27 @@ func (a *MCPSkillAdapter) ParseConfigFile(filePath string) ([]*types.UniversalSk
 		}
 	} else {
 		for serverName, conf := range root.MCPServers {
-			contracts = append(contracts, &types.UniversalSkillContract{
-				Name:            serverName,
-				Description:     fmt.Sprintf("MCP Server tool proxy for %s (%s)", serverName, conf.Command),
-				SourceFormat:    types.SkillFormatMCP,
-				SourceLocation:  filePath,
-				Isolation:       types.IsolationSubprocess,
-				TimeoutSeconds:  180,
-				RequiresNetwork: true,
-			})
+			contracts = append(contracts, a.ConvertServerConfig(serverName, conf, filePath))
 		}
 	}
 
 	return contracts, nil
+}
+
+// ConvertServerConfig converts an MCPServerConfig to a UniversalSkillContract.
+func (a *MCPSkillAdapter) ConvertServerConfig(serverName string, conf MCPServerConfig, sourceLocation string) *types.UniversalSkillContract {
+	return &types.UniversalSkillContract{
+		Name:            serverName,
+		Description:     fmt.Sprintf("MCP Server tool proxy for %s (%s)", serverName, conf.Command),
+		SourceFormat:    types.SkillFormatMCP,
+		SourceLocation:  sourceLocation,
+		Command:         conf.Command,
+		Args:            conf.Args,
+		Environment:     conf.Environment,
+		Isolation:       types.IsolationSubprocess,
+		TimeoutSeconds:  180,
+		RequiresNetwork: true,
+	}
 }
 
 // ConvertMCPTool converts an individual MCPToolDefinition to UniversalSkillContract.

@@ -11,6 +11,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/connectors"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -25,6 +26,7 @@ type RouterConfig struct {
 	ConfigResolver    *config.CascadingConfigResolver
 	ProjectManager    *projects.ProjectManager
 	ConnectorsManager *connectors.Manager
+	SkillResolver     *skills.MultiSourceSkillResolver
 	WSHub             *ws.Hub
 	RootDir           string
 }
@@ -41,6 +43,15 @@ type Router struct {
 func NewRouter(cfg RouterConfig) *Router {
 	if cfg.ConnectorsManager == nil {
 		cfg.ConnectorsManager = connectors.NewManager(cfg.RootDir)
+	}
+	if cfg.SkillResolver == nil {
+		cfg.SkillResolver = skills.NewMultiSourceSkillResolver(cfg.RootDir)
+	}
+	if cfg.SkillResolver != nil && cfg.ConnectorsManager != nil {
+		cfg.SkillResolver.SetMCPProvider(cfg.ConnectorsManager)
+		cfg.ConnectorsManager.SetOnMCPUpdateFunc(func(mcpExport map[string]interface{}) {
+			cfg.SkillResolver.SetMCPProvider(cfg.ConnectorsManager)
+		})
 	}
 	if cfg.WSHub != nil && cfg.ConnectorsManager != nil {
 		cfg.ConnectorsManager.SetBroadcastFunc(cfg.WSHub.BroadcastEvent)
@@ -220,6 +231,24 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/connectors/confluence/publish", r.handleConfluencePublish)
 	r.mux.HandleFunc("/api/v1/connectors/ping", r.handleConnectorPing)
 	r.mux.HandleFunc("/api/v1/connectors/ping-config", r.handleConnectorPingConfig)
+	r.mux.HandleFunc("/api/v1/skills", r.handleSkillsList)
+}
+
+func (r *Router) handleSkillsList(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	if r.cfg.SkillResolver == nil {
+		r.writeError(w, http.StatusServiceUnavailable, "Skill resolver not configured")
+		return
+	}
+	toolsList, err := r.cfg.SkillResolver.ListSkills()
+	if err != nil {
+		r.writeError(w, http.StatusInternalServerError, "Failed to list skills: "+err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, toolsList)
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {

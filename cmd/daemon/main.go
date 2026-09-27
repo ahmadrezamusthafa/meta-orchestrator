@@ -94,7 +94,9 @@ func main() {
 
 	// 8. Asynchronous Worker Pool
 	workerPool := worker.NewPool(10, 100, func(ctx context.Context, task *types.Task) error {
-		fmt.Printf("[Worker] Executing task %s (%s)...\n", task.ID, task.Title)
+		activeTools, _ := skillResolver.ListSkills()
+		fmt.Printf("[Worker] Executing task %s (%s) with %d active AI tools (including dynamic MCP connectors)...\n",
+			task.ID, task.Title, len(activeTools))
 		return nil
 	})
 
@@ -113,6 +115,7 @@ func main() {
 		ArtifactManager: artifactMgr,
 		ConfigResolver:  configResolver,
 		ProjectManager:  projectMgr,
+		SkillResolver:   skillResolver,
 		WSHub:           wsHub,
 		RootDir:         cwd,
 	})

@@ -29,8 +29,16 @@ type Manager struct {
 	items         map[string]*types.ConnectorItem
 	client        *http.Client
 	broadcastFunc func(*types.OrchestratorEvent)
+	onMCPUpdate   func(map[string]interface{})
 	stopPing      chan struct{}
 	pingRunning   bool
+}
+
+// SetOnMCPUpdateFunc registers a callback invoked whenever MCP server configuration is modified or synchronized.
+func (m *Manager) SetOnMCPUpdateFunc(fn func(map[string]interface{})) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onMCPUpdate = fn
 }
 
 // NewManager creates a new connector manager.
@@ -71,6 +79,9 @@ func NewManager(rootDir string) *Manager {
 	}
 
 	m.load()
+	m.mu.Lock()
+	_ = m.saveMCPConfigLocked()
+	m.mu.Unlock()
 	m.StartPeriodicPinger(context.Background())
 	return m
 }
@@ -555,7 +566,51 @@ func (m *Manager) save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.configPath, data, 0644)
+	if err := os.WriteFile(m.configPath, data, 0644); err != nil {
+		return err
+	}
+	_ = m.saveMCPConfigLocked()
+	return nil
+}
+
+func (m *Manager) getMCPExportConfigLocked() map[string]interface{} {
+	servers := make(map[string]interface{})
+	for id, item := range m.items {
+		if item.Enabled && item.MCP != nil && (item.MCP.Enabled || item.ConfigMode == "mcp") {
+			serverEntry := map[string]interface{}{
+				"command": item.MCP.Command,
+				"args":    item.MCP.Args,
+			}
+			if len(item.MCP.Env) > 0 {
+				serverEntry["env"] = item.MCP.Env
+			}
+			servers[id] = serverEntry
+		}
+	}
+	return map[string]interface{}{
+		"mcpServers": servers,
+	}
+}
+
+func (m *Manager) saveMCPConfigLocked() error {
+	mcpExport := m.getMCPExportConfigLocked()
+	mcpData, err := json.MarshalIndent(mcpExport, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	sdlcDir := filepath.Join(m.rootDir, ".sdlc")
+	_ = os.MkdirAll(sdlcDir, 0755)
+	sdlcMCPPath := filepath.Join(sdlcDir, "mcp.json")
+	_ = os.WriteFile(sdlcMCPPath, mcpData, 0644)
+
+	rootMCPPath := filepath.Join(m.rootDir, ".mcp.json")
+	_ = os.WriteFile(rootMCPPath, mcpData, 0644)
+
+	if m.onMCPUpdate != nil {
+		m.onMCPUpdate(mcpExport)
+	}
+	return nil
 }
 
 // GetConfig returns current connectors configuration.
@@ -1178,23 +1233,7 @@ func (m *Manager) TestMCPConnector(ctx context.Context, id string, mcp *types.MC
 func (m *Manager) GetMCPExportConfig() map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
-	servers := make(map[string]interface{})
-	for id, item := range m.items {
-		if item.MCP != nil && (item.MCP.Enabled || item.Enabled) {
-			serverEntry := map[string]interface{}{
-				"command": item.MCP.Command,
-				"args":    item.MCP.Args,
-			}
-			if len(item.MCP.Env) > 0 {
-				serverEntry["env"] = item.MCP.Env
-			}
-			servers[id] = serverEntry
-		}
-	}
-	return map[string]interface{}{
-		"mcpServers": servers,
-	}
+	return m.getMCPExportConfigLocked()
 }
 
 // UpdateJira updates JIRA connector settings.

@@ -37,6 +37,10 @@ type UniversalSkillContract struct {
 	RequiredRoles   []string               `json:"required_roles,omitempty" yaml:"required_roles,omitempty"`
 	TimeoutSeconds  int                    `json:"timeout_seconds" yaml:"timeout_seconds"`
 	RequiresNetwork bool                   `json:"requires_network" yaml:"requires_network"`
+	Command         string                 `json:"command,omitempty" yaml:"command,omitempty"`
+	Args            []string               `json:"args,omitempty" yaml:"args,omitempty"`
+	Environment     map[string]string      `json:"env,omitempty" yaml:"env,omitempty"`
+	Metadata        map[string]interface{} `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
 // SkillExecutionRequest parameters passed when executing a skill.

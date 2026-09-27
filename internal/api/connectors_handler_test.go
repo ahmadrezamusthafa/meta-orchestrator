@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -372,6 +373,37 @@ func TestConnectorsCatalogEndpoints(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &resPingCfg)
 	if resPingCfg.IntervalSeconds != 60 {
 		t.Errorf("expected updated interval 60, got %d", resPingCfg.IntervalSeconds)
+	}
+
+	// 10. GET /api/v1/skills (verify automated dynamic MCP integration with AI tools)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/skills", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/skills returned %d", rec.Code)
+	}
+	var activeSkills []*types.UniversalSkillContract
+	if err := json.Unmarshal(rec.Body.Bytes(), &activeSkills); err != nil {
+		t.Fatalf("failed to decode skills list: %v", err)
+	}
+	if len(activeSkills) == 0 {
+		t.Errorf("expected active skills to be returned")
+	}
+	hasMCP := false
+	for _, s := range activeSkills {
+		if s.SourceFormat == types.SkillFormatMCP {
+			hasMCP = true
+			break
+		}
+	}
+	if !hasMCP {
+		t.Errorf("expected at least one MCP skill integrated into AI tools list")
+	}
+
+	// 11. Verify .sdlc/mcp.json was automatically written
+	sdlcMCP := filepath.Join(tempDir, ".sdlc", "mcp.json")
+	if _, err := os.Stat(sdlcMCP); err != nil {
+		t.Errorf("expected .sdlc/mcp.json to exist on disk: %v", err)
 	}
 }
 
