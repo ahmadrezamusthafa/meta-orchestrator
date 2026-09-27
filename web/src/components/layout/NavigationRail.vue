@@ -12,6 +12,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-vue-next'
 
 const layoutStore = useLayoutStore()
@@ -48,6 +49,10 @@ const layoutStore = useLayoutStore()
 
         <NavRailItem to="/tools" label="Tool Lifecycle Hub" :is-expanded="layoutStore.isNavExpanded">
           <Wrench class="w-5 h-5" />
+        </NavRailItem>
+
+        <NavRailItem to="/skills" label="Skills & Claude Hub" :is-expanded="layoutStore.isNavExpanded">
+          <Sparkles class="w-5 h-5 text-amber-400" />
         </NavRailItem>
 
         <NavRailItem to="/settings/providers" label="AI Providers & Matrix" :is-expanded="layoutStore.isNavExpanded">

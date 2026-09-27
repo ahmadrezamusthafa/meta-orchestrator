@@ -58,20 +58,66 @@ func (e *StandardSkillExecutor) Execute(
 	defer cancel()
 
 	// In test/subprocess mode: execute script if present
-	scriptPath := skill.SourceLocation
 	if skill.SourceFormat == types.SkillFormatClaude {
-		// Claude skills can execute bash scripts inside scripts/
-		scriptCandidate := scriptPath + "/scripts/run.sh"
-		cmd := exec.CommandContext(execCtx, "sh", "-c", "echo 'Claude skill executed: "+skill.Name+"'")
-		out, err := cmd.CombinedOutput()
-		if streamWriter != nil {
-			_, _ = streamWriter.Write(out)
+		// 1. If explicit command/script is configured, execute it as a subprocess
+		if skill.Command != "" {
+			cmd := exec.CommandContext(execCtx, skill.Command, skill.Args...)
+			cmd.Env = os.Environ()
+			for k, v := range skill.Environment {
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+			}
+			for k, v := range req.EnvironmentVars {
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+			}
+			if req.WorkspacePath != "" {
+				cmd.Dir = req.WorkspacePath
+			} else if skill.SourceLocation != "" {
+				cmd.Dir = skill.SourceLocation
+			}
+			if len(req.Parameters) > 0 {
+				paramBytes, _ := json.Marshal(req.Parameters)
+				cmd.Stdin = bytes.NewReader(paramBytes)
+			}
+			out, err := cmd.CombinedOutput()
+			if streamWriter != nil {
+				_, _ = streamWriter.Write(out)
+			}
+			exitCode := 0
+			if err != nil {
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					exitCode = exitErr.ExitCode()
+				} else {
+					exitCode = 1
+				}
+			}
+			return &types.SkillExecutionResult{
+				ExitCode: exitCode,
+				Stdout:   string(out),
+			}, err
 		}
-		_ = scriptCandidate
+
+		// 2. If prompt/instruction-based Claude skill, return normalized instruction context
+		instructions := ""
+		if skill.Metadata != nil {
+			if inst, ok := skill.Metadata["instructions"].(string); ok {
+				instructions = inst
+			}
+		}
+		if instructions == "" {
+			instructions = skill.Description
+		}
+		stdout := fmt.Sprintf("Claude skill [%s] instructions resolved:\n%s", skill.Name, instructions)
+		if streamWriter != nil {
+			_, _ = streamWriter.Write([]byte(stdout))
+		}
 		return &types.SkillExecutionResult{
 			ExitCode: 0,
-			Stdout:   string(out),
-		}, err
+			Stdout:   stdout,
+			Output: map[string]interface{}{
+				"instructions": instructions,
+				"skill_name":   skill.Name,
+			},
+		}, nil
 	}
 
 	if skill.SourceFormat == types.SkillFormatMCP {

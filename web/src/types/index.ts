@@ -357,4 +357,62 @@ export interface TestConnectorResponse {
   target_entity?: string
 }
 
+export type SkillFormat = 'claude' | 'bmad' | 'superpower' | 'mcp' | 'openai' | 'native'
+export type SkillCompatibilityStatus = 'compatible' | 'warning' | 'incompatible'
+
+export interface SkillCompatibilityIssue {
+  severity: 'error' | 'warning' | 'info'
+  check: string
+  message: string
+  suggestion?: string
+}
+
+export interface SkillCompatibility {
+  status: SkillCompatibilityStatus
+  score: number
+  issues: SkillCompatibilityIssue[]
+  checked_at: string
+  runtime_ready: boolean
+  sandbox_safe: boolean
+}
+
+export interface UniversalSkillDTO {
+  name: string
+  description: string
+  source_format: SkillFormat
+  source_location?: string
+  source_type?: string
+  enabled: boolean
+  compatibility?: SkillCompatibility
+  isolation: 'subprocess' | 'docker' | 'host'
+  input_schema?: Record<string, any>
+  required_roles?: string[]
+  timeout_seconds: number
+  requires_network: boolean
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  metadata?: Record<string, any>
+}
+
+export interface SkillSourceDTO {
+  id: string
+  name: string
+  path: string
+  format: SkillFormat
+  enabled: boolean
+  skill_count: number
+  added_at: string
+  description?: string
+}
+
+export interface CheckPathCompatibilityResponse {
+  compatible: boolean
+  path: string
+  discovered_count: number
+  skills: UniversalSkillDTO[]
+  error?: string
+}
+
+
 

@@ -26,12 +26,42 @@ const (
 	IsolationHost       IsolationLevel = "host"
 )
 
+// SkillCompatibilityStatus indicates compatibility level with meta-orchestrator.
+type SkillCompatibilityStatus string
+
+const (
+	CompatibilityStatusCompatible   SkillCompatibilityStatus = "compatible"
+	CompatibilityStatusWarning      SkillCompatibilityStatus = "warning"
+	CompatibilityStatusIncompatible SkillCompatibilityStatus = "incompatible"
+)
+
+// SkillCompatibilityIssue represents a specific diagnostic finding.
+type SkillCompatibilityIssue struct {
+	Severity   string `json:"severity" yaml:"severity"` // "error", "warning", "info"
+	Check      string `json:"check" yaml:"check"`       // "manifest", "runtime", "security", "schema", "dependencies"
+	Message    string `json:"message" yaml:"message"`
+	Suggestion string `json:"suggestion,omitempty" yaml:"suggestion,omitempty"`
+}
+
+// SkillCompatibility contains the full audit verdict for a skill.
+type SkillCompatibility struct {
+	Status       SkillCompatibilityStatus  `json:"status" yaml:"status"`
+	Score        int                       `json:"score" yaml:"score"`
+	Issues       []SkillCompatibilityIssue `json:"issues" yaml:"issues"`
+	CheckedAt    string                    `json:"checked_at" yaml:"checked_at"`
+	RuntimeReady bool                      `json:"runtime_ready" yaml:"runtime_ready"`
+	SandboxSafe  bool                      `json:"sandbox_safe" yaml:"sandbox_safe"`
+}
+
 // UniversalSkillContract provides the normalized specification for any tool.
 type UniversalSkillContract struct {
 	Name            string                 `json:"name" yaml:"name"`
 	Description     string                 `json:"description" yaml:"description"`
 	SourceFormat    SkillFormat            `json:"source_format" yaml:"source_format"`
 	SourceLocation  string                 `json:"source_location" yaml:"source_location"`
+	SourceType      string                 `json:"source_type,omitempty" yaml:"source_type,omitempty"`
+	Enabled         bool                   `json:"enabled" yaml:"enabled"`
+	Compatibility   *SkillCompatibility    `json:"compatibility,omitempty" yaml:"compatibility,omitempty"`
 	Isolation       IsolationLevel         `json:"isolation" yaml:"isolation"`
 	InputSchema     map[string]interface{} `json:"input_schema" yaml:"input_schema"`
 	RequiredRoles   []string               `json:"required_roles,omitempty" yaml:"required_roles,omitempty"`

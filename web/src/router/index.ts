@@ -7,6 +7,7 @@ import WorkflowSettingsView from '../views/WorkflowSettingsView.vue'
 import RegistriesSettingsView from '../views/RegistriesSettingsView.vue'
 import ProjectSetupView from '../views/ProjectSetupView.vue'
 import ConnectorsView from '../views/ConnectorsView.vue'
+import SkillsView from '../views/SkillsView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -36,6 +37,11 @@ const router = createRouter({
       path: '/tools',
       name: 'tool-hub',
       component: ToolHubView,
+    },
+    {
+      path: '/skills',
+      name: 'skills-hub',
+      component: SkillsView,
     },
     {
       path: '/settings/providers',

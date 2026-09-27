@@ -231,24 +231,12 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/connectors/confluence/publish", r.handleConfluencePublish)
 	r.mux.HandleFunc("/api/v1/connectors/ping", r.handleConnectorPing)
 	r.mux.HandleFunc("/api/v1/connectors/ping-config", r.handleConnectorPingConfig)
-	r.mux.HandleFunc("/api/v1/skills", r.handleSkillsList)
-}
-
-func (r *Router) handleSkillsList(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodGet {
-		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
-	if r.cfg.SkillResolver == nil {
-		r.writeError(w, http.StatusServiceUnavailable, "Skill resolver not configured")
-		return
-	}
-	toolsList, err := r.cfg.SkillResolver.ListSkills()
-	if err != nil {
-		r.writeError(w, http.StatusInternalServerError, "Failed to list skills: "+err.Error())
-		return
-	}
-	r.writeJSON(w, http.StatusOK, toolsList)
+	r.mux.HandleFunc("/api/v1/skills", r.handleSkills)
+	r.mux.HandleFunc("/api/v1/skills/sources", r.handleSkillSources)
+	r.mux.HandleFunc("/api/v1/skills/sources/", r.handleSkillSourceAction)
+	r.mux.HandleFunc("/api/v1/skills/check-compatibility", r.handleSkillCheckCompatibility)
+	r.mux.HandleFunc("/api/v1/skills/rescan", r.handleSkillRescan)
+	r.mux.HandleFunc("/api/v1/skills/", r.handleSkillAction)
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {

@@ -3,7 +3,8 @@ import type {
   Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse,
   ConnectorsConfig, JiraConfig, ConfluenceConfig, JiraIssueDTO, ImportJiraIssueRequest,
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
-  ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary
+  ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
+  UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse
 } from '../types'
 
 const BASE_URL = '/api/v1'
@@ -414,6 +415,83 @@ export const api = {
       const err = await res.json().catch(() => ({ error: 'Failed to update ping configuration' }))
       throw new Error(err.error || 'Failed to update ping configuration')
     }
+    return res.json()
+  },
+
+  // Modular Skills & Claude Hub
+  async getSkills(params?: { enabled_only?: boolean; format?: string; source_type?: string; search?: string }): Promise<UniversalSkillDTO[]> {
+    const query = new URLSearchParams()
+    if (params?.enabled_only) query.set('enabled_only', 'true')
+    if (params?.format) query.set('format', params.format)
+    if (params?.source_type) query.set('source_type', params.source_type)
+    if (params?.search) query.set('search', params.search)
+
+    const res = await fetch(`${BASE_URL}/skills?${query.toString()}`)
+    if (!res.ok) throw new Error('Failed to fetch skills')
+    return res.json()
+  },
+
+  async getSkill(name: string): Promise<UniversalSkillDTO> {
+    const res = await fetch(`${BASE_URL}/skills/${encodeURIComponent(name)}`)
+    if (!res.ok) throw new Error(`Failed to fetch skill ${name}`)
+    return res.json()
+  },
+
+  async toggleSkill(name: string, enabled: boolean): Promise<{ name: string; enabled: boolean; status: string }> {
+    const res = await fetch(`${BASE_URL}/skills/${encodeURIComponent(name)}/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled })
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to toggle skill' }))
+      throw new Error(err.error || 'Failed to toggle skill')
+    }
+    return res.json()
+  },
+
+  async getSkillSources(): Promise<SkillSourceDTO[]> {
+    const res = await fetch(`${BASE_URL}/skills/sources`)
+    if (!res.ok) throw new Error('Failed to fetch skill sources')
+    return res.json()
+  },
+
+  async registerSkillSource(payload: { name: string; path: string; format?: string }): Promise<{ source: SkillSourceDTO; discovered_count: number; skills: UniversalSkillDTO[] }> {
+    const res = await fetch(`${BASE_URL}/skills/sources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to register skill source' }))
+      throw new Error(err.error || 'Failed to register skill source')
+    }
+    return res.json()
+  },
+
+  async removeSkillSource(sourceId: string): Promise<{ status: string; source_id: string }> {
+    const res = await fetch(`${BASE_URL}/skills/sources/${encodeURIComponent(sourceId)}`, {
+      method: 'DELETE'
+    })
+    if (!res.ok) throw new Error('Failed to unregister skill source')
+    return res.json()
+  },
+
+  async checkPathCompatibility(path: string): Promise<CheckPathCompatibilityResponse> {
+    const res = await fetch(`${BASE_URL}/skills/check-compatibility`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path })
+    })
+    if (!res.ok) throw new Error('Failed to check path compatibility')
+    return res.json()
+  },
+
+  async rescanSkills(): Promise<{ status: string; total_count: number }> {
+    const res = await fetch(`${BASE_URL}/skills/rescan`, {
+      method: 'POST'
+    })
+    if (!res.ok) throw new Error('Failed to rescan skills')
     return res.json()
   }
 }

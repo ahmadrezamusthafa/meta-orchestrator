@@ -15,10 +15,16 @@ import (
 type ClaudeSkillFrontmatter struct {
 	Name            string                 `yaml:"name"`
 	Description     string                 `yaml:"description"`
+	Command         string                 `yaml:"command,omitempty"`
+	Args            []string               `yaml:"args,omitempty"`
+	Env             map[string]string      `yaml:"env,omitempty"`
 	RequiredRoles   []string               `yaml:"required_roles,omitempty"`
+	AllowedRoles    []string               `yaml:"allowed_roles,omitempty"`
 	TimeoutSeconds  int                    `yaml:"timeout_seconds,omitempty"`
 	RequiresNetwork bool                   `yaml:"requires_network,omitempty"`
 	InputSchema     map[string]interface{} `yaml:"input_schema,omitempty"`
+	Isolation       string                 `yaml:"isolation,omitempty"`
+	Metadata        map[string]interface{} `yaml:"metadata,omitempty"`
 }
 
 // ClaudeSkillAdapter ingests Anthropic SKILL.md directory bundles.
@@ -37,7 +43,29 @@ func (a *ClaudeSkillAdapter) ParseDirectory(skillDirPath string) (*types.Univers
 		return nil, fmt.Errorf("failed to read SKILL.md in %s: %w", skillDirPath, err)
 	}
 
-	return a.ParseContent(string(data), skillDirPath)
+	contract, err := a.ParseContent(string(data), skillDirPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// If no explicit command defined, auto-detect runnable entrypoint scripts in scripts/
+	if contract.Command == "" {
+		scriptsDir := filepath.Join(skillDirPath, "scripts")
+		if stat, err := os.Stat(scriptsDir); err == nil && stat.IsDir() {
+			if _, err := os.Stat(filepath.Join(scriptsDir, "run.sh")); err == nil {
+				contract.Command = "bash"
+				contract.Args = []string{filepath.Join(scriptsDir, "run.sh")}
+			} else if _, err := os.Stat(filepath.Join(scriptsDir, "main.py")); err == nil {
+				contract.Command = "python3"
+				contract.Args = []string{filepath.Join(scriptsDir, "main.py")}
+			} else if _, err := os.Stat(filepath.Join(scriptsDir, "index.js")); err == nil {
+				contract.Command = "node"
+				contract.Args = []string{filepath.Join(scriptsDir, "index.js")}
+			}
+		}
+	}
+
+	return contract, nil
 }
 
 // ParseContent parses raw SKILL.md content with optional frontmatter.
@@ -112,15 +140,45 @@ func (a *ClaudeSkillAdapter) ParseContent(content string, sourceLocation string)
 		}
 	}
 
+	roles := meta.RequiredRoles
+	if len(roles) == 0 && len(meta.AllowedRoles) > 0 {
+		roles = meta.AllowedRoles
+	}
+
+	isolation := types.IsolationSubprocess
+	if meta.Isolation == "docker" {
+		isolation = types.IsolationDocker
+	} else if meta.Isolation == "host" {
+		isolation = types.IsolationHost
+	}
+
+	metadata := meta.Metadata
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+	bodyStr := strings.TrimSpace(body.String())
+	if bodyStr != "" {
+		metadata["instructions"] = bodyStr
+	}
+	if sourceLocation != "" {
+		metadata["skill_dir"] = sourceLocation
+	}
+
 	return &types.UniversalSkillContract{
 		Name:            name,
 		Description:     description,
 		SourceFormat:    types.SkillFormatClaude,
 		SourceLocation:  sourceLocation,
-		Isolation:       types.IsolationSubprocess,
+		SourceType:      "claude",
+		Enabled:         true,
+		Isolation:       isolation,
 		InputSchema:     schema,
-		RequiredRoles:   meta.RequiredRoles,
+		RequiredRoles:   roles,
 		TimeoutSeconds:  timeout,
 		RequiresNetwork: meta.RequiresNetwork,
+		Command:         meta.Command,
+		Args:            meta.Args,
+		Environment:     meta.Env,
+		Metadata:        metadata,
 	}, nil
 }
