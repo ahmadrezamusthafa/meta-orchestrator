@@ -8,7 +8,8 @@ import { getStageGuidance } from '../../composables/useStageGuidance'
 import RoutingExplainerPill from '../common/RoutingExplainerPill.vue'
 import { 
   Layers, Flame, Clock, Lock, AlertTriangle, ArrowRight, 
-  ExternalLink, FileText, User, MoreVertical, Check, Copy, Terminal 
+  ExternalLink, FileText, User, MoreVertical, Check, Copy, Terminal,
+  GitBranch, Link2
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{
@@ -34,6 +35,16 @@ const showStageMenu = ref(false)
 
 const guidance = computed(() => getStageGuidance(props.task, props.allStages))
 const isBlocked = computed(() => props.task.state === 'BLOCKED_FRUSTRATION')
+const isWaitingDependency = computed(() => props.task.state === 'WAITING_DEPENDENCY')
+const isWorktree = computed(() => props.task.metadata?.worktree_enabled === 'true')
+const worktreeBranch = computed(() => props.task.metadata?.worktree_branch || `feat/${props.task.id.toLowerCase()}-worktree`)
+const unmetDependencies = computed(() => {
+  if (props.task.metadata?.unmet_dependencies) {
+    return props.task.metadata.unmet_dependencies.split(',').filter(Boolean)
+  }
+  return props.task.dependencies || []
+})
+
 const isWriteLocked = computed(() => {
   return props.task.current_stage_id === 'atdd_creation' || props.task.metadata?.write_lock === 'ACTIVE'
 })
@@ -134,8 +145,9 @@ function moveToStage(stageId: string, e: Event) {
       {
         'opacity-40 scale-95 border-emerald-500/80': isDragging,
         'border-l-4 !border-l-rose-500 shadow-rose-950/20 animate-pulse-subtle': isBlocked,
-        'border-l-4 !border-l-amber-500': isWriteLocked && !isBlocked,
-        'border-l-4 !border-l-emerald-500': !isWriteLocked && !isBlocked,
+        'border-l-4 !border-l-orange-500 shadow-orange-950/20': isWaitingDependency,
+        'border-l-4 !border-l-amber-500': isWriteLocked && !isBlocked && !isWaitingDependency,
+        'border-l-4 !border-l-emerald-500': !isWriteLocked && !isBlocked && !isWaitingDependency,
       }
     ]"
   >
@@ -148,8 +160,9 @@ function moveToStage(stageId: string, e: Event) {
             class="w-2 h-2 rounded-full flex-shrink-0"
             :class="{
               'bg-rose-500 animate-pulse': isBlocked,
-              'bg-amber-400': isWriteLocked && !isBlocked,
-              'bg-emerald-400': !isWriteLocked && !isBlocked
+              'bg-orange-500 animate-pulse': isWaitingDependency,
+              'bg-amber-400': isWriteLocked && !isBlocked && !isWaitingDependency,
+              'bg-emerald-400': !isWriteLocked && !isBlocked && !isWaitingDependency
             }"
           ></span>
 
@@ -205,6 +218,16 @@ function moveToStage(stageId: string, e: Event) {
             <span>Error</span>
           </button>
 
+          <!-- Contextual Dependency Waiting Action -->
+          <span
+            v-else-if="isWaitingDependency"
+            :title="`Held in queue: Awaiting prerequisite (${unmetDependencies.join(', ')}) to complete`"
+            class="h-6 px-2 rounded bg-orange-950/90 border border-orange-600/80 text-orange-300 text-[10px] font-mono font-medium flex items-center gap-1 shadow-sm"
+          >
+            <Lock class="w-2.5 h-2.5 text-orange-400" />
+            <span>Dep</span>
+          </span>
+
           <!-- 1-Click Move to Next Column (Alternative to Drag & Drop) -->
           <button
             v-else-if="nextStage"
@@ -256,6 +279,13 @@ function moveToStage(stageId: string, e: Event) {
         <div class="flex items-center gap-1.5 truncate">
           <span class="px-1.5 py-0.2 rounded bg-slate-950 border border-slate-800 text-slate-300">{{ task.selected_method }}</span>
           <span v-if="jiraKey" class="text-blue-400 truncate">{{ jiraKey }}</span>
+          <span v-if="task.dependencies && task.dependencies.length > 0" class="flex items-center gap-0.5 truncate" :class="isWaitingDependency ? 'text-orange-400 font-semibold' : 'text-slate-400'" :title="`Prerequisite: ${task.dependencies.join(', ')}`">
+            <Link2 class="w-2.5 h-2.5" />
+            <span>{{ task.dependencies.join(',') }}</span>
+          </span>
+          <span v-if="isWorktree" class="text-teal-400 flex items-center gap-0.5" :title="`Git Worktree: ${worktreeBranch}`">
+            <GitBranch class="w-2.5 h-2.5" />
+          </span>
         </div>
         <span class="text-slate-500">{{ timeElapsed }}</span>
       </div>
@@ -290,6 +320,24 @@ function moveToStage(stageId: string, e: Event) {
               class="p-1 rounded bg-rose-950/60 border border-rose-800/80 text-rose-400"
             >
               <AlertTriangle class="w-3 h-3" />
+            </span>
+
+            <span
+              v-if="isWaitingDependency"
+              :title="`Held in DAG Queue: Waiting for prerequisite (${unmetDependencies.join(', ')}) to finish`"
+              class="px-1.5 py-0.5 rounded bg-orange-950/80 border border-orange-700/80 text-orange-300 text-[10px] font-mono flex items-center gap-1"
+            >
+              <Lock class="w-3 h-3 text-orange-400" />
+              <span>Dep Held</span>
+            </span>
+
+            <span
+              v-if="isWorktree"
+              :title="`Isolated Git Worktree: ${worktreeBranch}`"
+              class="px-1.5 py-0.5 rounded bg-teal-950/80 border border-teal-700/80 text-teal-300 text-[10px] font-mono flex items-center gap-1"
+            >
+              <GitBranch class="w-3 h-3 text-teal-400" />
+              <span>Worktree</span>
             </span>
 
             <RoutingExplainerPill
@@ -406,12 +454,13 @@ function moveToStage(stageId: string, e: Event) {
                 'bg-emerald-400 animate-pulse': task.state === 'RUNNING',
                 'bg-rose-500 animate-pulse': isBlocked,
                 'bg-amber-400': task.state === 'WAITING_GATE_APPROVAL',
-                'bg-slate-500': task.state !== 'RUNNING' && !isBlocked && task.state !== 'WAITING_GATE_APPROVAL'
+                'bg-orange-500 animate-pulse': isWaitingDependency,
+                'bg-slate-500': task.state !== 'RUNNING' && !isBlocked && task.state !== 'WAITING_GATE_APPROVAL' && !isWaitingDependency
               }"
             ></span>
             <span class="text-slate-400">Process:</span>
             <span class="font-medium text-slate-200 truncate group-hover/proc:text-white">
-              {{ task.state === 'RUNNING' ? 'Background Execution Active' : isBlocked ? 'Execution Blocked (Trace Ready)' : task.state === 'WAITING_GATE_APPROVAL' ? 'Process Paused at Gate' : 'Process Idle / Completed' }}
+              {{ task.state === 'RUNNING' ? 'Background Execution Active' : isBlocked ? 'Execution Blocked (Trace Ready)' : task.state === 'WAITING_GATE_APPROVAL' ? 'Process Paused at Gate' : isWaitingDependency ? `Process Held: Waiting on DAG (${unmetDependencies.join(', ')})` : 'Process Idle / Completed' }}
             </span>
           </div>
 
@@ -425,7 +474,13 @@ function moveToStage(stageId: string, e: Event) {
           <div class="flex items-center justify-between">
             <span class="text-slate-400 font-medium">Step {{ guidance.stageNumber }}/{{ guidance.totalStages }}</span>
             <span
-              v-if="guidance.actionType === 'blocked_steer'"
+              v-if="isWaitingDependency || guidance.actionType === 'dependency_waiting'"
+              class="text-orange-400 font-semibold"
+            >
+              ● Dep Waiting
+            </span>
+            <span
+              v-else-if="guidance.actionType === 'blocked_steer'"
               class="text-rose-400 font-semibold"
             >
               ● Steer Needed
@@ -447,7 +502,11 @@ function moveToStage(stageId: string, e: Event) {
           <div class="flex items-center justify-between gap-2 pt-1 border-t border-slate-800/60">
             <!-- Contextual Stage / Column Target Description -->
             <div class="text-slate-400 truncate flex items-center gap-1 flex-1 min-w-0">
-              <template v-if="guidance.actionType === 'gate_approval'">
+              <template v-if="isWaitingDependency || guidance.actionType === 'dependency_waiting'">
+                <span class="text-orange-400 font-medium">Prereq:</span>
+                <span class="text-slate-300 truncate" :title="`Awaiting completion of ${unmetDependencies.join(', ')}`">Waiting on {{ unmetDependencies.join(', ') }}</span>
+              </template>
+              <template v-else-if="guidance.actionType === 'gate_approval'">
                 <span class="text-amber-400 font-medium">Gate:</span>
                 <span class="text-slate-300 truncate" title="Human approval required before advancing">Requires Approval</span>
               </template>
@@ -470,9 +529,20 @@ function moveToStage(stageId: string, e: Event) {
             </div>
 
             <!-- Contextual Quick Action Buttons -->
-            <!-- 1. Review Gate when approval is pending -->
+            <!-- 1. Dependency Held Action -->
             <button
-              v-if="guidance.actionType === 'gate_approval'"
+              v-if="isWaitingDependency || guidance.actionType === 'dependency_waiting'"
+              type="button"
+              :title="`Task held until prerequisite ${unmetDependencies.join(', ')} is COMPLETED`"
+              class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-orange-950/90 border border-orange-600/80 text-orange-200 text-[10px] font-mono font-medium flex-shrink-0 cursor-not-allowed"
+            >
+              <Lock class="w-3 h-3 text-orange-400" />
+              <span>Held (Dep)</span>
+            </button>
+
+            <!-- 2. Review Gate when approval is pending -->
+            <button
+              v-else-if="guidance.actionType === 'gate_approval'"
               @click.stop="navigateToTask"
               type="button"
               title="Pipeline paused: Review gate decision and authorize next stage"
@@ -482,7 +552,7 @@ function moveToStage(stageId: string, e: Event) {
               <ArrowRight class="w-3 h-3 text-amber-400 group-hover/gate:translate-x-0.5 transition-transform" />
             </button>
 
-            <!-- 2. Inspect Error when blocked -->
+            <!-- 3. Inspect Error when blocked -->
             <button
               v-else-if="guidance.actionType === 'blocked_steer'"
               @click.stop="emit('open-console', task.id)"
@@ -494,7 +564,7 @@ function moveToStage(stageId: string, e: Event) {
               <span>Inspect Error</span>
             </button>
 
-            <!-- 3. Completed State -->
+            <!-- 4. Completed State -->
             <span
               v-else-if="guidance.actionType === 'completed_review'"
               class="inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400 font-medium px-1.5 py-0.5 rounded bg-emerald-950/40 border border-emerald-800/40"
@@ -503,7 +573,7 @@ function moveToStage(stageId: string, e: Event) {
               <span>Done</span>
             </span>
 
-            <!-- 4. 1-Click Move Column (Drag & Drop Alternative) -->
+            <!-- 5. 1-Click Move Column (Drag & Drop Alternative) -->
             <button
               v-else-if="nextStage"
               @click="moveToNextStage"
@@ -536,6 +606,16 @@ function moveToStage(stageId: string, e: Event) {
           <div class="flex items-center gap-1 text-[10px] font-mono text-slate-400">
             <Layers class="w-3 h-3" />
             <span>{{ task.assigned_repos?.length || 1 }}</span>
+          </div>
+
+          <div
+            v-if="task.dependencies && task.dependencies.length > 0"
+            class="flex items-center gap-1 text-[10px] font-mono"
+            :class="isWaitingDependency ? 'text-orange-400 font-medium' : 'text-slate-400'"
+            :title="`Prerequisites: ${task.dependencies.join(', ')}`"
+          >
+            <Link2 class="w-3 h-3 text-orange-400" />
+            <span>{{ task.dependencies.join(', ') }}</span>
           </div>
         </div>
 

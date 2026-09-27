@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -90,3 +91,54 @@ func TestWorkspaceProvisionerCopySource(t *testing.T) {
 		t.Errorf("source file was not copied into workspace sandbox")
 	}
 }
+
+func TestWorkspaceProvisionerWorktree(t *testing.T) {
+	tmpWorkspaces := t.TempDir()
+	tmpGitRepo := t.TempDir()
+
+	// Initialize git repository with initial commit
+	runCmd := func(dir string, name string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(name, args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("command failed: %s %v: %v\noutput: %s", name, args, err, string(out))
+		}
+	}
+
+	runCmd(tmpGitRepo, "git", "init")
+	runCmd(tmpGitRepo, "git", "config", "user.name", "Test Agent")
+	runCmd(tmpGitRepo, "git", "config", "user.email", "test@orchestrator.local")
+	_ = os.WriteFile(filepath.Join(tmpGitRepo, "README.md"), []byte("# Test Repo"), 0644)
+	runCmd(tmpGitRepo, "git", "add", "README.md")
+	runCmd(tmpGitRepo, "git", "commit", "-m", "Initial commit")
+
+	provisioner := NewWorkspaceProvisioner(tmpWorkspaces, nil)
+	ctx := context.Background()
+
+	taskID := "task-wt-001"
+	repoMap := map[string]string{
+		"repo-a": tmpGitRepo,
+	}
+
+	ws, err := provisioner.Provision(ctx, taskID, []string{"repo-a"}, repoMap)
+	if err != nil {
+		t.Fatalf("Provision failed: %v", err)
+	}
+
+	if !ws.IsWorktree {
+		t.Errorf("expected ws.IsWorktree to be true")
+	}
+
+	wtPath := ws.RepoPaths["repo-a"]
+	if _, err := os.Stat(filepath.Join(wtPath, "README.md")); os.IsNotExist(err) {
+		t.Errorf("README.md not found in worktree path: %s", wtPath)
+	}
+
+	// Teardown should remove worktree cleanly
+	err = provisioner.Teardown(ctx, taskID)
+	if err != nil {
+		t.Fatalf("Teardown failed: %v", err)
+	}
+}
+

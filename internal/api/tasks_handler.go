@@ -17,6 +17,7 @@ type CreateTaskRequest struct {
 	Description      string            `json:"description"`
 	WorkflowID       string            `json:"workflow_id"`
 	AssignedRepos    []string          `json:"assigned_repos"`
+	Dependencies     []string          `json:"dependencies,omitempty"`
 	SelectedMethod   string            `json:"selected_method"`
 	RouterStrategy   string            `json:"router_strategy"`
 	ActiveSlice      *types.StageSlice `json:"active_slice,omitempty"`
@@ -25,6 +26,7 @@ type CreateTaskRequest struct {
 	ExternalPRD      string            `json:"external_prd,omitempty"`
 	MaxTokenBudget   int64             `json:"max_token_budget,omitempty"`
 	Complexity       string            `json:"complexity,omitempty"`
+	UseWorktree      bool              `json:"use_worktree,omitempty"`
 }
 
 type InjectContextRequest struct {
@@ -34,6 +36,26 @@ type InjectContextRequest struct {
 type GateApprovalRequest struct {
 	Approved bool   `json:"approved"`
 	Feedback string `json:"feedback,omitempty"`
+}
+
+func cloneTask(t *types.Task) *types.Task {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	if t.Metadata != nil {
+		cp.Metadata = make(map[string]string, len(t.Metadata))
+		for k, v := range t.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	if t.Dependencies != nil {
+		cp.Dependencies = append([]string(nil), t.Dependencies...)
+	}
+	if t.AssignedRepos != nil {
+		cp.AssignedRepos = append([]string(nil), t.AssignedRepos...)
+	}
+	return &cp
 }
 
 func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
@@ -127,6 +149,20 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 			maxBudget = 50000
 		}
 
+		initialState := types.TaskStateRunning
+		var unmetDeps []string
+		if len(body.Dependencies) > 0 {
+			for _, depID := range body.Dependencies {
+				dep, exists := r.tasks[depID]
+				if !exists || dep.State != types.TaskStateCompleted {
+					unmetDeps = append(unmetDeps, depID)
+				}
+			}
+			if len(unmetDeps) > 0 {
+				initialState = types.TaskStateWaitingDependency
+			}
+		}
+
 		newTask := &types.Task{
 			ID:                taskID,
 			WorkflowID:        workflowID,
@@ -134,9 +170,10 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 			Description:       body.Description,
 			CurrentStageID:    startStage,
 			CurrentStageIndex: startIndex,
-			State:             types.TaskStateRunning,
+			State:             initialState,
 			ActiveSlice:       body.ActiveSlice,
 			AssignedRepos:     body.AssignedRepos,
+			Dependencies:      body.Dependencies,
 			ProfileName:       "orchestrator_agent",
 			SelectedMethod:    selectedMethod,
 			TokenUsage: types.TokenUsage{
@@ -153,9 +190,15 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 				"source_branch":    body.SourceBranch,
 				"router_source":    "BP",
 				"router_rationale": fmt.Sprintf("Routed via %s to %s method", body.RouterStrategy, selectedMethod),
+				"worktree_enabled": "true",
+				"worktree_branch":  fmt.Sprintf("feat/%s-worktree", strings.ToLower(taskID)),
 			},
 			CreatedAt: now,
 			UpdatedAt: now,
+		}
+
+		if len(unmetDeps) > 0 {
+			newTask.Metadata["unmet_dependencies"] = strings.Join(unmetDeps, ",")
 		}
 
 		// Automatically detect JIRA key in title or description if connector is active
@@ -181,6 +224,7 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 		}
 
 		r.tasks[taskID] = newTask
+		createdCopy := cloneTask(newTask)
 		r.mu.Unlock()
 
 		// Broadcast new task event over WebSocket
@@ -190,11 +234,11 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 				TaskID:    taskID,
 				StageID:   startStage,
 				Timestamp: now,
-				Payload:   newTask,
+				Payload:   createdCopy,
 			})
 		}
 
-		r.writeJSON(w, http.StatusCreated, newTask)
+		r.writeJSON(w, http.StatusCreated, createdCopy)
 
 	default:
 		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -211,9 +255,13 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.mu.Lock()
+	r.mu.RLock()
 	task, exists := r.tasks[taskID]
-	r.mu.Unlock()
+	var taskSnapshot *types.Task
+	if exists {
+		taskSnapshot = cloneTask(task)
+	}
+	r.mu.RUnlock()
 
 	if !exists {
 		r.writeError(w, http.StatusNotFound, fmt.Sprintf("Task %s not found", taskID))
@@ -451,6 +499,69 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			})
 			return
 
+		case "worktree":
+			if req.Method != http.MethodGet {
+				r.writeError(w, http.StatusMethodNotAllowed, "GET required for worktree")
+				return
+			}
+			branch := task.Metadata["worktree_branch"]
+			if branch == "" {
+				branch = fmt.Sprintf("feat/%s-worktree", strings.ToLower(taskID))
+			}
+			r.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"task_id":            taskID,
+				"is_worktree":        true,
+				"use_worktree":       true,
+				"worktree_path":      fmt.Sprintf(".worktrees/%s", strings.ToLower(taskID)),
+				"branch":             branch,
+				"base_ref":           "main",
+				"parallel_isolation": true,
+				"status":             "ACTIVE",
+				"assigned_repos":     task.AssignedRepos,
+			})
+			return
+
+		case "dependencies":
+			if req.Method != http.MethodGet {
+				r.writeError(w, http.StatusMethodNotAllowed, "GET required for dependencies")
+				return
+			}
+			r.mu.Lock()
+			var unmet []string
+			type depDetail struct {
+				ID             string          `json:"id"`
+				Title          string          `json:"title"`
+				State          types.TaskState `json:"state"`
+				CurrentStageID string          `json:"current_stage_id"`
+			}
+			var details []depDetail
+			for _, depID := range task.Dependencies {
+				dep, exists := r.tasks[depID]
+				if exists {
+					details = append(details, depDetail{
+						ID:             dep.ID,
+						Title:          dep.Title,
+						State:          dep.State,
+						CurrentStageID: dep.CurrentStageID,
+					})
+					if dep.State != types.TaskStateCompleted {
+						unmet = append(unmet, depID)
+					}
+				} else {
+					unmet = append(unmet, depID)
+				}
+			}
+			r.mu.Unlock()
+
+			r.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"task_id":            taskID,
+				"dependencies":       task.Dependencies,
+				"all_satisfied":      len(unmet) == 0,
+				"unmet_dependencies": unmet,
+				"details":            details,
+			})
+			return
+
 		default:
 			r.writeError(w, http.StatusNotFound, "Unknown sub-action")
 			return
@@ -459,7 +570,94 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 
 	switch req.Method {
 	case http.MethodGet:
-		r.writeJSON(w, http.StatusOK, task)
+		r.writeJSON(w, http.StatusOK, taskSnapshot)
+	case http.MethodPatch, http.MethodPut:
+		var body struct {
+			CurrentStageID string          `json:"current_stage_id,omitempty"`
+			Stage          string          `json:"stage,omitempty"`
+			State          types.TaskState `json:"state,omitempty"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			r.writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+			return
+		}
+		if body.CurrentStageID == "" && body.Stage != "" {
+			body.CurrentStageID = body.Stage
+		}
+
+		r.mu.Lock()
+
+		// Enforce dependency validation if moving to implementation/execution
+		if body.CurrentStageID == "task_implementation" || body.CurrentStageID == "e2e_validation" {
+			var unmet []string
+			for _, depID := range task.Dependencies {
+				dep, exists := r.tasks[depID]
+				if !exists || dep.State != types.TaskStateCompleted {
+					unmet = append(unmet, depID)
+				}
+			}
+			if len(unmet) > 0 {
+				task.State = types.TaskStateWaitingDependency
+				if task.Metadata == nil {
+					task.Metadata = make(map[string]string)
+				}
+				task.Metadata["unmet_dependencies"] = strings.Join(unmet, ",")
+				r.mu.Unlock()
+				r.writeError(w, http.StatusBadRequest, fmt.Sprintf("cannot advance task while dependencies are unmet: %s", strings.Join(unmet, ", ")))
+				return
+			}
+		}
+
+		if body.CurrentStageID != "" {
+			task.CurrentStageID = body.CurrentStageID
+		}
+		if body.State != "" {
+			task.State = body.State
+		}
+
+		// If task completed, check if any dependent tasks can now be unblocked
+		if task.State == types.TaskStateCompleted {
+			for _, other := range r.tasks {
+				if other.State == types.TaskStateWaitingDependency {
+					allDone := true
+					for _, d := range other.Dependencies {
+						if dTask, ok := r.tasks[d]; !ok || dTask.State != types.TaskStateCompleted {
+							allDone = false
+							break
+						}
+					}
+					if allDone {
+						other.State = types.TaskStateRunning
+						delete(other.Metadata, "unmet_dependencies")
+						if r.cfg.WSHub != nil {
+							r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+								Type:      types.EventTaskStatus,
+								TaskID:    other.ID,
+								StageID:   other.CurrentStageID,
+								Timestamp: time.Now(),
+								Payload:   cloneTask(other),
+							})
+						}
+					}
+				}
+			}
+		}
+
+		task.UpdatedAt = time.Now()
+		taskCopy := cloneTask(task)
+		r.mu.Unlock()
+
+		if r.cfg.WSHub != nil {
+			r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+				Type:      types.EventTaskStatus,
+				TaskID:    taskID,
+				StageID:   taskCopy.CurrentStageID,
+				Timestamp: time.Now(),
+				Payload:   taskCopy,
+			})
+		}
+
+		r.writeJSON(w, http.StatusOK, taskCopy)
 	default:
 		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}

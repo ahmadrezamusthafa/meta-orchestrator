@@ -3,15 +3,17 @@ import { ref, computed } from 'vue'
 import type { Task, TaskState } from '../types'
 import { api } from '../services/api'
 import { wsService } from '../services/websocket'
+import { useToastStore } from './toast'
 
 export const useTaskStore = defineStore('tasks', () => {
+  const toastStore = useToastStore()
   const tasks = ref<Task[]>([])
   const activeTaskId = ref<string | null>(null)
   const isLoading = ref(false)
   const searchQuery = ref('')
   const selectedMethod = ref('All')
   const selectedRepo = ref('All')
-  const selectedStatus = ref<'all' | 'running' | 'gate' | 'blocked' | 'completed'>('all')
+  const selectedStatus = ref<'all' | 'running' | 'gate' | 'blocked' | 'completed' | 'waiting_dep'>('all')
   const onlyMyTasks = ref(false)
 
   // Available methods & repos for toolbar
@@ -37,6 +39,7 @@ export const useTaskStore = defineStore('tasks', () => {
         if (selectedStatus.value === 'running' && t.state !== 'RUNNING') return false
         if (selectedStatus.value === 'gate' && t.state !== 'WAITING_GATE_APPROVAL') return false
         if (selectedStatus.value === 'blocked' && t.state !== 'BLOCKED_FRUSTRATION') return false
+        if (selectedStatus.value === 'waiting_dep' && t.state !== 'WAITING_DEPENDENCY') return false
         if (selectedStatus.value === 'completed' && t.state !== 'COMPLETED') return false
       }
       if (onlyMyTasks.value) {
@@ -53,16 +56,18 @@ export const useTaskStore = defineStore('tasks', () => {
     let running = 0
     let gate = 0
     let blocked = 0
+    let waiting_dep = 0
     let completed = 0
 
     tasks.value.forEach((t) => {
       if (t.state === 'RUNNING') running++
       else if (t.state === 'WAITING_GATE_APPROVAL') gate++
       else if (t.state === 'BLOCKED_FRUSTRATION') blocked++
+      else if (t.state === 'WAITING_DEPENDENCY') waiting_dep++
       else if (t.state === 'COMPLETED') completed++
     })
 
-    return { all, running, gate, blocked, completed }
+    return { all, running, gate, blocked, waiting_dep, completed }
   })
 
   // Grouped tasks by stage
@@ -171,9 +176,51 @@ export const useTaskStore = defineStore('tasks', () => {
     const gateStages = ['techdoc_rfc', 'signoff_merge', 'hotfix_validation']
     if (gateStages.includes(targetStageId)) {
       task.state = 'WAITING_GATE_APPROVAL'
-    } else if (task.state === 'WAITING_GATE_APPROVAL') {
+    } else if (task.state === 'WAITING_GATE_APPROVAL' || task.state === 'WAITING_DEPENDENCY') {
       task.state = 'RUNNING'
     }
+
+    // Check task dependencies if advancing to implementation or execution
+    if (['task_implementation', 'e2e_validation', 'uat_verification', 'signoff_merge'].includes(targetStageId)) {
+      const unmet = (task.dependencies || []).filter(depId => {
+        const dep = tasks.value.find(t => t.id === depId)
+        return !dep || dep.state !== 'COMPLETED'
+      })
+      if (unmet.length > 0) {
+        task.state = 'WAITING_DEPENDENCY'
+        if (!task.metadata) task.metadata = {}
+        task.metadata.unmet_dependencies = unmet.join(',')
+        toastStore.warning(
+          'Dependency Prerequisite Required',
+          `Task ${task.id} is held in WAITING_DEPENDENCY until prerequisite ${unmet.join(', ')} is COMPLETED.`
+        )
+      }
+    }
+
+    // If task is completed, check if any dependent tasks can now be unblocked
+    if (task.state === 'COMPLETED' || targetStageId === 'signoff_merge') {
+      tasks.value.forEach(other => {
+        if (other.dependencies?.includes(task.id) && other.state === 'WAITING_DEPENDENCY') {
+          const remainingUnmet = other.dependencies.filter(dId => {
+            const d = tasks.value.find(t => t.id === dId)
+            return !d || d.state !== 'COMPLETED'
+          })
+          if (remainingUnmet.length === 0) {
+            other.state = 'RUNNING'
+            if (other.metadata) delete other.metadata.unmet_dependencies
+            toastStore.success(
+              'Dependency Resolved',
+              `Prerequisites for ${other.id} are now complete! Worktree unblocked and ready for execution.`
+            )
+          }
+        }
+      })
+    }
+
+    // Persist to backend
+    api.patchTask(taskId, { current_stage_id: targetStageId, state: task.state }).catch((err) => {
+      console.debug('Failed to sync stage change with backend', err)
+    })
   }
 
   // Subscribe to live WebSocket events

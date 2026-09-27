@@ -5,7 +5,7 @@ import type {
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
   UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse,
-  PromptItemDTO, PromptSourceDTO
+  PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO
 } from '../types'
 
 
@@ -43,6 +43,28 @@ export const api = {
       body: JSON.stringify({ command })
     })
     if (!res.ok) throw new Error('Failed to execute command in background process')
+    return res.json()
+  },
+
+  async getTaskWorktree(taskId: string): Promise<TaskWorktreeDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/worktree`)
+    if (!res.ok) throw new Error(`Failed to fetch worktree for task ${taskId}`)
+    return res.json()
+  },
+
+  async getTaskDependencies(taskId: string): Promise<TaskDependencyInfoDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/dependencies`)
+    if (!res.ok) throw new Error(`Failed to fetch dependencies for task ${taskId}`)
+    return res.json()
+  },
+
+  async patchTask(taskId: string, payload: { current_stage_id?: string; state?: string }): Promise<Task> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!res.ok) throw new Error(`Failed to update task ${taskId}`)
     return res.json()
   },
 

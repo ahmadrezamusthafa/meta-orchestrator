@@ -10,6 +10,7 @@ const (
 	TaskStateRunning             TaskState = "RUNNING"
 	TaskStateWaitingGateApproval TaskState = "WAITING_GATE_APPROVAL"
 	TaskStateBlockedFrustration  TaskState = "BLOCKED_FRUSTRATION"
+	TaskStateWaitingDependency   TaskState = "WAITING_DEPENDENCY"
 	TaskStateCompleted           TaskState = "COMPLETED"
 	TaskStateFailed              TaskState = "FAILED"
 	TaskStateSuspended           TaskState = "SUSPENDED"
@@ -26,6 +27,7 @@ type Task struct {
 	State             TaskState         `json:"state"`
 	ActiveSlice       *StageSlice       `json:"active_slice,omitempty"`
 	AssignedRepos     []string          `json:"assigned_repos"`
+	Dependencies      []string          `json:"dependencies,omitempty"`
 	ProfileName       string            `json:"profile_name"`
 	SelectedMethod    string            `json:"selected_method"`
 	TokenUsage        TokenUsage        `json:"token_usage"`

@@ -8,7 +8,7 @@ export interface StageGuidance {
   statusDescription: string
   nextStepDescription: string
   suggestion: string
-  actionType: 'gate_approval' | 'blocked_steer' | 'autonomous_observe' | 'completed_review'
+  actionType: 'gate_approval' | 'blocked_steer' | 'autonomous_observe' | 'completed_review' | 'dependency_waiting'
   isGateRequired: boolean
   isWriteLocked: boolean
 }
@@ -51,8 +51,24 @@ export function getStageGuidance(task: Task | null | undefined, customStages?: W
   const isBlocked = task.state === 'BLOCKED_FRUSTRATION'
   const isGate = task.state === 'WAITING_GATE_APPROVAL'
   const isCompleted = task.state === 'COMPLETED'
+  const isDependencyWaiting = task.state === 'WAITING_DEPENDENCY'
 
   // Handling special task states first
+  if (isDependencyWaiting) {
+    const unmet = task.metadata?.unmet_dependencies || (task.dependencies || []).join(', ')
+    return {
+      stageNumber: safeIdx + 1,
+      totalStages: stages.length,
+      stageName: stage.name,
+      nextStageName: stage.name,
+      statusDescription: `🔒 Dependency Prerequisite: Pipeline held waiting for prerequisite task(s) [${unmet || 'upstream'}] to be COMPLETED.`,
+      nextStepDescription: `Pipeline will automatically branch its git worktree once [${unmet || 'prerequisites'}] complete verification.`,
+      suggestion: `Waiting for upstream task execution. The task will unblock automatically when dependencies finish.`,
+      actionType: 'dependency_waiting',
+      isGateRequired: false,
+      isWriteLocked,
+    }
+  }
   if (isBlocked) {
     return {
       stageNumber: safeIdx + 1,

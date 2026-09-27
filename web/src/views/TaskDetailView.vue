@@ -18,7 +18,7 @@ import GateApprovalBar from '../components/hitl/GateApprovalBar.vue'
 import PhaseStatusBadge from '../components/common/PhaseStatusBadge.vue'
 import RoutingExplainerPill from '../components/common/RoutingExplainerPill.vue'
 import OperatorGuidanceCard from '../components/common/OperatorGuidanceCard.vue'
-import type { TaskProcessDTO } from '../types'
+import type { TaskProcessDTO, TaskWorktreeDTO, TaskDependencyInfoDTO } from '../types'
 import { api } from '../services/api'
 import {
   ChevronLeft,
@@ -34,7 +34,11 @@ import {
   Clock,
   Copy,
   Check,
-  Folder
+  Folder,
+  GitBranch,
+  Link2,
+  ShieldCheck,
+  Lock
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -49,6 +53,8 @@ const leftTab = ref<'terminal' | 'thoughts' | 'graph'>('terminal')
 const rightTab = ref<'artifacts' | 'video' | 'screenshots'>('artifacts')
 const showResetModal = ref(false)
 const taskProcess = ref<TaskProcessDTO | null>(null)
+const worktreeInfo = ref<TaskWorktreeDTO | null>(null)
+const dependencyInfo = ref<TaskDependencyInfoDTO | null>(null)
 const copiedProcessCommand = ref(false)
 
 let unsubscribeWS: (() => void) | null = null
@@ -64,6 +70,16 @@ onMounted(async () => {
     }
   } catch (err) {
     console.debug('Failed to load process info:', err)
+  }
+  try {
+    worktreeInfo.value = await api.getTaskWorktree(taskId.value)
+  } catch (err) {
+    console.debug('Failed to load worktree info:', err)
+  }
+  try {
+    dependencyInfo.value = await api.getTaskDependencies(taskId.value)
+  } catch (err) {
+    console.debug('Failed to load dependency info:', err)
   }
   unsubscribeWS = terminalStore.initTaskListeners(taskId.value)
 })
@@ -179,6 +195,58 @@ async function handleGateReject() {
         @reject-gate="handleGateReject"
         @steer-click="leftTab = 'terminal'"
       />
+    </div>
+
+    <!-- Git Worktree & Dependency DAG Telemetry Bar -->
+    <div v-if="currentTask" class="px-4 py-2 bg-slate-900/60 border-b border-slate-800 flex items-center justify-between gap-4 text-xs font-mono">
+      <div class="flex items-center gap-3 truncate">
+        <!-- Worktree Telemetry -->
+        <div class="flex items-center gap-1.5 text-teal-300">
+          <GitBranch class="w-3.5 h-3.5 text-teal-400" />
+          <span class="text-slate-400">Worktree:</span>
+          <span class="font-semibold">{{ worktreeInfo?.branch || currentTask.metadata?.worktree_branch || `feat/${currentTask.id.toLowerCase()}-worktree` }}</span>
+          <span class="text-[10px] px-1.5 py-0.2 rounded bg-teal-950/80 border border-teal-700/80 text-teal-300">Parallel Isolated</span>
+        </div>
+
+        <span class="text-slate-700">|</span>
+
+        <!-- Dependency DAG Status -->
+        <div class="flex items-center gap-1.5 truncate">
+          <Link2 class="w-3.5 h-3.5 flex-shrink-0" :class="dependencyInfo?.all_satisfied !== false ? 'text-emerald-400' : 'text-orange-400'" />
+          <span class="text-slate-400 flex-shrink-0">Prerequisites:</span>
+          <template v-if="currentTask.dependencies && currentTask.dependencies.length > 0">
+            <span
+              v-for="dep in dependencyInfo?.details || currentTask.dependencies.map(d => ({ id: d, title: d, state: 'RUNNING', current_stage_id: 'task_implementation' }))"
+              :key="dep.id"
+              class="px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 border flex-shrink-0"
+              :class="dep.state === 'COMPLETED' ? 'bg-emerald-950/70 border-emerald-700 text-emerald-300' : 'bg-orange-950/70 border-orange-700 text-orange-300'"
+            >
+              <span>{{ dep.id }}</span>
+              <span class="text-[9px] opacity-80">({{ dep.state }})</span>
+            </span>
+          </template>
+          <template v-else>
+            <span class="text-slate-400 text-[11px]">None (Root Node — Ready for Parallel Execution)</span>
+          </template>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <span
+          v-if="currentTask.state === 'WAITING_DEPENDENCY'"
+          class="px-2 py-0.5 rounded bg-orange-950/90 border border-orange-600/80 text-orange-300 text-[10px] flex items-center gap-1"
+        >
+          <Lock class="w-3 h-3 text-orange-400" />
+          <span>Held: Waiting for Prerequisite</span>
+        </span>
+        <span
+          v-else-if="currentTask.dependencies && currentTask.dependencies.length > 0"
+          class="px-2 py-0.5 rounded bg-emerald-950/90 border border-emerald-600/80 text-emerald-300 text-[10px] flex items-center gap-1"
+        >
+          <ShieldCheck class="w-3 h-3 text-emerald-400" />
+          <span>Prerequisites Satisfied</span>
+        </span>
+      </div>
     </div>
 
     <!-- Main Resizable Execution Workspace (60/40 Split) -->

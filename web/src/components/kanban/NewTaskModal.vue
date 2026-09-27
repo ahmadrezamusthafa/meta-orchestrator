@@ -7,7 +7,7 @@ import { useToastStore } from '../../stores/toast'
 import BtnPrimary from '../common/BtnPrimary.vue'
 import StageRangeSelector from './StageRangeSelector.vue'
 import ArtifactUploadDropzone from './ArtifactUploadDropzone.vue'
-import { X, Sparkles, Layers, GitFork, Zap, FolderGit2 } from 'lucide-vue-next'
+import { X, Sparkles, Layers, GitFork, Zap, FolderGit2, Link2, GitBranch } from 'lucide-vue-next'
 
 const props = defineProps<{
   initialStageId?: string
@@ -28,6 +28,8 @@ const description = ref('')
 const selectedProjectId = ref(projectStore.activeProjectId || 'proj-core-platform')
 const selectedWorkflowId = ref(workflowStore.activeWorkflowId || 'general_ai_sdlc')
 const selectedRepos = ref<string[]>([])
+const selectedDependencies = ref<string[]>([])
+const useWorktree = ref(true)
 const executionScope = ref<'full' | 'slice'>('full')
 const startStage = ref(props.initialStageId || 'task_implementation')
 const haltStage = ref('e2e_validation')
@@ -149,6 +151,24 @@ watch(stagesForSelector, (stages) => {
   }
 }, { immediate: true })
 
+const availableDependencyTasks = computed(() => {
+  return taskStore.tasks.map(t => ({
+    id: t.id,
+    title: t.title,
+    state: t.state,
+    stage: t.current_stage_id,
+  }))
+})
+
+function toggleDependency(taskId: string) {
+  const idx = selectedDependencies.value.indexOf(taskId)
+  if (idx >= 0) {
+    selectedDependencies.value.splice(idx, 1)
+  } else {
+    selectedDependencies.value.push(taskId)
+  }
+}
+
 async function handleSubmit() {
   if (!title.value.trim()) return
 
@@ -163,6 +183,8 @@ async function handleSubmit() {
       selected_method: selectedMethod.value === 'Auto' ? 'BMAD' : selectedMethod.value,
       complexity: 'HIGH',
       max_token_budget: 50000,
+      dependencies: selectedDependencies.value,
+      use_worktree: useWorktree.value,
     }
 
     if (executionScope.value === 'slice') {
@@ -377,6 +399,66 @@ async function handleSubmit() {
               <option value="ReAct">ReAct</option>
               <option value="Superpower">Superpower</option>
             </select>
+          </div>
+        </div>
+
+        <!-- Git Worktree & Dependency DAG Execution Options -->
+        <div class="p-3.5 rounded-lg bg-slate-950 border border-slate-800 space-y-3">
+          <!-- Worktree parallel execution toggle -->
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-start gap-2">
+              <GitBranch class="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
+              <div>
+                <span class="text-xs font-medium text-slate-200">Git Worktree Parallel Isolation</span>
+                <p class="text-[11px] text-slate-500 leading-relaxed">
+                  Provisions dedicated zero-copy git worktree branches (<code class="text-emerald-400">feat/TASK-xxx</code>) allowing parallel agent development without repo checkout conflicts.
+                </p>
+              </div>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
+              <input type="checkbox" v-model="useWorktree" class="sr-only peer" />
+              <div class="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-600"></div>
+            </label>
+          </div>
+
+          <div class="border-t border-slate-800 pt-2.5">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-xs font-medium text-slate-200 flex items-center gap-1.5">
+                <Link2 class="w-3.5 h-3.5 text-amber-400" />
+                Prerequisite Tasks (DAG Scheduling)
+              </span>
+              <span class="text-[10px] text-slate-500 font-mono">
+                {{ selectedDependencies.length }} prerequisite{{ selectedDependencies.length === 1 ? '' : 's' }}
+              </span>
+            </div>
+            <p class="text-[11px] text-slate-500 mb-2">
+              If selected tasks are not yet completed, this task will wait in <span class="text-amber-400 font-mono text-[10px]">WAITING_DEPENDENCY</span> and auto-unblock once prerequisites finish.
+            </p>
+
+            <div v-if="availableDependencyTasks.length === 0" class="text-xs text-slate-600 italic py-1">
+              No previous tasks available to link as dependencies.
+            </div>
+            <div v-else class="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto pr-1">
+              <button
+                v-for="task in availableDependencyTasks"
+                :key="task.id"
+                type="button"
+                @click="toggleDependency(task.id)"
+                class="px-2 py-1 rounded text-[11px] border font-mono transition-colors flex items-center gap-1.5"
+                :class="selectedDependencies.includes(task.id)
+                  ? 'bg-amber-950/50 border-amber-600/70 text-amber-300'
+                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-300'"
+              >
+                <span class="font-bold">{{ task.id }}</span>
+                <span class="text-slate-500 max-w-[140px] truncate">{{ task.title }}</span>
+                <span
+                  class="text-[9px] px-1 py-0.2 rounded font-sans uppercase"
+                  :class="task.state === 'COMPLETED' ? 'bg-emerald-950 text-emerald-400' : 'bg-slate-800 text-slate-400'"
+                >
+                  {{ task.state }}
+                </span>
+              </button>
+            </div>
           </div>
         </div>
       </div>

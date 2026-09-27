@@ -14,11 +14,13 @@ const (
 
 // Workspace encapsulates the isolated directory environment for a task.
 type Workspace struct {
-	TaskID      string            `json:"task_id"`
-	BasePath    string            `json:"base_path"`
-	RepoPaths   map[string]string `json:"repo_paths"` // repo_name -> absolute path inside workspace
-	ScratchDir  string            `json:"scratch_dir"`
-	Status      WorkspaceStatus   `json:"status"`
-	CreatedAt   time.Time         `json:"created_at"`
-	LastUpdated time.Time         `json:"last_updated"`
+	TaskID           string            `json:"task_id"`
+	BasePath         string            `json:"base_path"`
+	RepoPaths        map[string]string `json:"repo_paths"` // repo_name -> absolute path inside workspace
+	ScratchDir       string            `json:"scratch_dir"`
+	Status           WorkspaceStatus   `json:"status"`
+	IsWorktree       bool              `json:"is_worktree"`
+	WorktreeBranches map[string]string `json:"worktree_branches,omitempty"` // repo_name -> worktree branch name
+	CreatedAt        time.Time         `json:"created_at"`
+	LastUpdated      time.Time         `json:"last_updated"`
 }

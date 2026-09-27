@@ -290,3 +290,114 @@ func TestTasksAPI_ProcessAndTerminalLogs(t *testing.T) {
 		t.Errorf("Expected logs count to increase after execute, before=%d, after=%d", len(proc.Logs), len(termResp.Logs))
 	}
 }
+
+func TestTasksAPI_DependencyDAGAndWorktree(t *testing.T) {
+	router := setupTestRouter()
+
+	// 1. GET /api/v1/tasks/TASK-8942/dependencies
+	reqDep := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/TASK-8942/dependencies", nil)
+	wDep := httptest.NewRecorder()
+	router.ServeHTTP(wDep, reqDep)
+
+	if wDep.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for dependencies endpoint, got %d", wDep.Code)
+	}
+
+	var depInfo struct {
+		TaskID        string   `json:"task_id"`
+		Dependencies  []string `json:"dependencies"`
+		Prerequisites []struct {
+			ID    string `json:"id"`
+			State string `json:"state"`
+		} `json:"prerequisites"`
+		Blocked bool `json:"blocked"`
+	}
+	if err := json.NewDecoder(wDep.Body).Decode(&depInfo); err != nil {
+		t.Fatalf("Failed to decode dependencies response: %v", err)
+	}
+	if len(depInfo.Dependencies) == 0 {
+		t.Errorf("Expected TASK-8942 to have dependencies")
+	}
+
+	// 2. GET /api/v1/tasks/TASK-8942/worktree
+	reqWt := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/TASK-8942/worktree", nil)
+	wWt := httptest.NewRecorder()
+	router.ServeHTTP(wWt, reqWt)
+
+	if wWt.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for worktree endpoint, got %d", wWt.Code)
+	}
+
+	var wtInfo struct {
+		TaskID      string            `json:"task_id"`
+		UseWorktree bool              `json:"use_worktree"`
+		Branches    map[string]string `json:"branches"`
+	}
+	if err := json.NewDecoder(wWt.Body).Decode(&wtInfo); err != nil {
+		t.Fatalf("Failed to decode worktree response: %v", err)
+	}
+	if !wtInfo.UseWorktree {
+		t.Errorf("Expected UseWorktree to be true")
+	}
+
+	// 3. Create a task that depends on TASK-8942 (which is currently RUNNING)
+	body := CreateTaskRequest{
+		Title:         "Downstream Microservice Worker",
+		Description:   "Depends on TASK-8942",
+		WorkflowID:    "general_ai_sdlc",
+		AssignedRepos: []string{"backend-core"},
+		Dependencies:  []string{"TASK-8942"},
+		UseWorktree:   true,
+	}
+	payload, _ := json.Marshal(body)
+	reqCreate := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewReader(payload))
+	reqCreate.Header.Set("Content-Type", "application/json")
+	wCreate := httptest.NewRecorder()
+	router.ServeHTTP(wCreate, reqCreate)
+
+	if wCreate.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 Created, got %d", wCreate.Code)
+	}
+	var createdTask types.Task
+	_ = json.NewDecoder(wCreate.Body).Decode(&createdTask)
+
+	if createdTask.State != types.TaskStateWaitingDependency {
+		t.Errorf("Expected task state WAITING_DEPENDENCY, got %s", createdTask.State)
+	}
+
+	// 4. Attempting to advance createdTask while dependencies are unmet should fail
+	advanceBody := map[string]string{"stage": "task_implementation"}
+	advPayload, _ := json.Marshal(advanceBody)
+	reqAdv := httptest.NewRequest(http.MethodPatch, "/api/v1/tasks/"+createdTask.ID, bytes.NewReader(advPayload))
+	reqAdv.Header.Set("Content-Type", "application/json")
+	wAdv := httptest.NewRecorder()
+	router.ServeHTTP(wAdv, reqAdv)
+
+	if wAdv.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 Bad Request when advancing blocked task, got %d", wAdv.Code)
+	}
+
+	// 5. Complete TASK-8942 -> createdTask should auto-unblock
+	completeBody := map[string]string{"state": "COMPLETED"}
+	compPayload, _ := json.Marshal(completeBody)
+	reqComp := httptest.NewRequest(http.MethodPatch, "/api/v1/tasks/TASK-8942", bytes.NewReader(compPayload))
+	reqComp.Header.Set("Content-Type", "application/json")
+	wComp := httptest.NewRecorder()
+	router.ServeHTTP(wComp, reqComp)
+
+	if wComp.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK when completing TASK-8942, got %d", wComp.Code)
+	}
+
+	// Verify createdTask is now RUNNING
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+createdTask.ID, nil)
+	wGet := httptest.NewRecorder()
+	router.ServeHTTP(wGet, reqGet)
+	var reloadedTask types.Task
+	_ = json.NewDecoder(wGet.Body).Decode(&reloadedTask)
+
+	if reloadedTask.State != types.TaskStateRunning {
+		t.Errorf("Expected unblocked task state RUNNING, got %s", reloadedTask.State)
+	}
+}
+

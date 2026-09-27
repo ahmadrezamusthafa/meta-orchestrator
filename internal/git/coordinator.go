@@ -136,3 +136,58 @@ func (c *MultiRepoGitCoordinator) GeneratePRDraft(taskID string, title string, b
 		TargetRepos: repos,
 	}
 }
+
+// WorktreeEntry describes an isolated git worktree attached to a repository.
+type WorktreeEntry struct {
+	RepoName    string `json:"repo_name"`
+	RepoPath    string `json:"repo_path"`
+	WorktreeDir string `json:"worktree_dir"`
+	Branch      string `json:"branch"`
+	BaseRef     string `json:"base_ref"`
+	IsClean     bool   `json:"is_clean"`
+}
+
+// CreateTaskWorktree creates a lightweight isolated worktree for parallel execution.
+func (c *MultiRepoGitCoordinator) CreateTaskWorktree(srcRepoPath, targetWorktreeDir, branchName, baseRef string) (*WorktreeEntry, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if baseRef == "" {
+		baseRef = "HEAD"
+	}
+
+	// Try creating worktree with new branch (-b)
+	cmd := exec.Command("git", "-C", srcRepoPath, "worktree", "add", "-b", branchName, targetWorktreeDir, baseRef)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// If branch already exists, attach to existing branch without -b
+		cmdRetry := exec.Command("git", "-C", srcRepoPath, "worktree", "add", targetWorktreeDir, branchName)
+		outRetry, errRetry := cmdRetry.CombinedOutput()
+		if errRetry != nil {
+			return nil, fmt.Errorf("failed to create git worktree: %s / %s (%w)", strings.TrimSpace(string(out)), strings.TrimSpace(string(outRetry)), errRetry)
+		}
+	}
+
+	return &WorktreeEntry{
+		RepoPath:    srcRepoPath,
+		WorktreeDir: targetWorktreeDir,
+		Branch:      branchName,
+		BaseRef:     baseRef,
+		IsClean:     true,
+	}, nil
+}
+
+// RemoveTaskWorktree safely detaches and removes an ephemeral worktree.
+func (c *MultiRepoGitCoordinator) RemoveTaskWorktree(srcRepoPath, targetWorktreeDir string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cmd := exec.Command("git", "-C", srcRepoPath, "worktree", "remove", "--force", targetWorktreeDir)
+	_ = cmd.Run()
+
+	cmdPrune := exec.Command("git", "-C", srcRepoPath, "worktree", "prune")
+	_ = cmdPrune.Run()
+
+	return nil
+}
+

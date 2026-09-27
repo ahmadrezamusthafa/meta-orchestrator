@@ -3,6 +3,7 @@ export type TaskState =
   | 'RUNNING'
   | 'WAITING_GATE_APPROVAL'
   | 'BLOCKED_FRUSTRATION'
+  | 'WAITING_DEPENDENCY'
   | 'COMPLETED'
   | 'FAILED'
   | 'SUSPENDED'
@@ -30,6 +31,7 @@ export interface Task {
   state: TaskState
   active_slice?: StageSlice
   assigned_repos: string[]
+  dependencies?: string[]
   profile_name: string
   selected_method: string
   token_usage: TokenUsage
@@ -38,6 +40,30 @@ export interface Task {
   metadata?: Record<string, string>
   created_at: string
   updated_at: string
+}
+
+export interface TaskWorktreeDTO {
+  task_id: string
+  is_worktree: boolean
+  worktree_path: string
+  branch: string
+  base_ref: string
+  parallel_isolation: boolean
+  status: string
+  assigned_repos?: string[]
+}
+
+export interface TaskDependencyInfoDTO {
+  task_id: string
+  dependencies: string[]
+  all_satisfied: boolean
+  unmet_dependencies: string[]
+  details: Array<{
+    id: string
+    title: string
+    state: TaskState
+    current_stage_id: string
+  }>
 }
 
 export interface TaskSubProcessDTO {
