@@ -152,7 +152,8 @@ function moveToStage(stageId: string, e: Event) {
     ]"
   >
     <!-- ================= COMPACT VIEW ================= -->
-    <div v-if="density === 'compact'" class="space-y-2">
+    <div v-if="density === 'compact'" class="space-y-1.5">
+      <!-- Row 1: ID, Title & Quick Actions -->
       <div class="flex items-center justify-between gap-1.5">
         <div class="flex items-center gap-1.5 truncate flex-1 min-w-0">
           <!-- Status dot -->
@@ -166,7 +167,7 @@ function moveToStage(stageId: string, e: Event) {
             }"
           ></span>
 
-          <!-- Task ID with copy button -->
+          <!-- Task ID -->
           <button
             @click="copyTaskId"
             type="button"
@@ -176,14 +177,14 @@ function moveToStage(stageId: string, e: Event) {
             {{ copiedId ? '✓ Copied' : task.id }}
           </button>
 
-          <h4 class="text-xs font-medium text-slate-200 truncate group-hover:text-white transition-colors">
+          <h4 class="text-xs font-medium text-slate-200 truncate group-hover:text-white transition-colors" :title="task.title">
             {{ task.title }}
           </h4>
         </div>
 
-        <!-- Column Actions: Console & Move / Gate Actions -->
+        <!-- Row 1 Right: Single Console Button, Action & Menu -->
         <div class="flex items-center gap-1 flex-shrink-0" @click.stop>
-          <!-- Console Terminal Button -->
+          <!-- Single Canonical Console Button -->
           <button
             @click="emit('open-console', task.id)"
             type="button"
@@ -194,7 +195,7 @@ function moveToStage(stageId: string, e: Event) {
             <span v-if="task.state === 'RUNNING'" class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
           </button>
 
-          <!-- Contextual Gate Review Action -->
+          <!-- Contextual Action Button (Single non-duplicate) -->
           <button
             v-if="guidance.actionType === 'gate_approval'"
             @click.stop="navigateToTask"
@@ -206,19 +207,17 @@ function moveToStage(stageId: string, e: Event) {
             <ArrowRight class="w-2.5 h-2.5" />
           </button>
 
-          <!-- Contextual Error Inspection Action -->
           <button
             v-else-if="guidance.actionType === 'blocked_steer'"
-            @click.stop="emit('open-console', task.id)"
+            @click.stop="navigateToTask"
             type="button"
-            title="Execution blocked: click to inspect terminal & steer"
+            title="Execution blocked: click to steer task"
             class="h-6 px-2 rounded bg-rose-950 hover:bg-rose-800 border border-rose-600/80 text-rose-200 text-[10px] font-mono font-medium flex items-center gap-1 transition-all shadow-sm"
           >
             <AlertTriangle class="w-2.5 h-2.5" />
-            <span>Error</span>
+            <span>Steer</span>
           </button>
 
-          <!-- Contextual Dependency Waiting Action -->
           <span
             v-else-if="isWaitingDependency"
             :title="`Held in queue: Awaiting prerequisite (${unmetDependencies.join(', ')}) to complete`"
@@ -228,12 +227,11 @@ function moveToStage(stageId: string, e: Event) {
             <span>Dep</span>
           </span>
 
-          <!-- 1-Click Move to Next Column (Alternative to Drag & Drop) -->
           <button
             v-else-if="nextStage"
             @click="moveToNextStage"
             type="button"
-            :title="`Move card to next column: ${nextStage.name} (1-click move)`"
+            :title="`Move card to next column: ${nextStage.name}`"
             class="h-6 px-1.5 rounded bg-emerald-950/80 hover:bg-emerald-800 border border-emerald-700/80 text-emerald-300 text-[10px] font-mono flex items-center gap-1 transition-all shadow-sm"
           >
             <span>Move</span>
@@ -275,16 +273,18 @@ function moveToStage(stageId: string, e: Event) {
         </div>
       </div>
 
-      <div class="flex items-center justify-between text-[10px] font-mono text-slate-400 pt-1.5 border-t border-slate-800/60">
+      <!-- Row 2: Metadata chips -->
+      <div class="flex items-center justify-between text-[10px] font-mono text-slate-400 pt-1 border-t border-slate-800/60">
         <div class="flex items-center gap-1.5 truncate">
           <span class="px-1.5 py-0.2 rounded bg-slate-950 border border-slate-800 text-slate-300">{{ task.selected_method }}</span>
           <span v-if="jiraKey" class="text-blue-400 truncate">{{ jiraKey }}</span>
-          <span v-if="task.dependencies && task.dependencies.length > 0" class="flex items-center gap-0.5 truncate" :class="isWaitingDependency ? 'text-orange-400 font-semibold' : 'text-slate-400'" :title="`Prerequisite: ${task.dependencies.join(', ')}`">
-            <Link2 class="w-2.5 h-2.5" />
-            <span>{{ task.dependencies.join(',') }}</span>
-          </span>
           <span v-if="isWorktree" class="text-teal-400 flex items-center gap-0.5" :title="`Git Worktree: ${worktreeBranch}`">
             <GitBranch class="w-2.5 h-2.5" />
+            <span class="text-[9px]">wt</span>
+          </span>
+          <span v-if="task.dependencies && task.dependencies.length > 0" class="flex items-center gap-0.5 truncate" :class="isWaitingDependency ? 'text-orange-400 font-semibold' : 'text-slate-400'" :title="`Prerequisites: ${task.dependencies.join(', ')}`">
+            <Link2 class="w-2.5 h-2.5" />
+            <span>{{ task.dependencies.length }}</span>
           </span>
         </div>
         <span class="text-slate-500">{{ timeElapsed }}</span>
@@ -294,60 +294,62 @@ function moveToStage(stageId: string, e: Event) {
     <!-- ================= COMFORTABLE VIEW ================= -->
     <div v-else>
       <div>
+        <!-- Card Header: Task ID, Tag & Single Canonical Console + Move Menu -->
         <div class="flex items-center justify-between gap-2 mb-2">
-          <!-- Copy Task ID on Click -->
-          <button
-            @click="copyTaskId"
-            type="button"
-            title="Click to copy task ID"
-            class="font-mono text-xs font-semibold text-slate-400 group-hover:text-emerald-400 transition-colors flex items-center gap-1 cursor-copy"
-          >
-            <span>{{ copiedId ? '✓ Copied!' : task.id }}</span>
-          </button>
-
-          <div class="flex items-center gap-1.5">
-            <span
-              v-if="isWriteLocked"
-              title="Source write-locking active (Red Phase)"
-              class="p-1 rounded bg-amber-950/60 border border-amber-800/80 text-amber-400"
+          <!-- Left: Task ID & Primary status badge -->
+          <div class="flex items-center gap-1.5 min-w-0 flex-wrap">
+            <button
+              @click="copyTaskId"
+              type="button"
+              title="Click to copy task ID"
+              class="font-mono text-xs font-semibold text-slate-400 group-hover:text-emerald-400 transition-colors flex items-center gap-1 cursor-copy"
             >
-              <Lock class="w-3 h-3" />
-            </span>
+              <span>{{ copiedId ? '✓ Copied!' : task.id }}</span>
+            </button>
 
-            <span
-              v-if="isBlocked"
-              title="Blocked in frustration loop"
-              class="p-1 rounded bg-rose-950/60 border border-rose-800/80 text-rose-400"
-            >
-              <AlertTriangle class="w-3 h-3" />
-            </span>
-
+            <!-- Key status badge (Dep Held, Worktree, Blocked, or Locked) -->
             <span
               v-if="isWaitingDependency"
               :title="`Held in DAG Queue: Waiting for prerequisite (${unmetDependencies.join(', ')}) to finish`"
               class="px-1.5 py-0.5 rounded bg-orange-950/80 border border-orange-700/80 text-orange-300 text-[10px] font-mono flex items-center gap-1"
             >
-              <Lock class="w-3 h-3 text-orange-400" />
+              <Lock class="w-2.5 h-2.5 text-orange-400" />
               <span>Dep Held</span>
             </span>
 
             <span
-              v-if="isWorktree"
+              v-else-if="isWorktree"
               :title="`Isolated Git Worktree: ${worktreeBranch}`"
               class="px-1.5 py-0.5 rounded bg-teal-950/80 border border-teal-700/80 text-teal-300 text-[10px] font-mono flex items-center gap-1"
             >
-              <GitBranch class="w-3 h-3 text-teal-400" />
+              <GitBranch class="w-2.5 h-2.5 text-teal-400" />
               <span>Worktree</span>
             </span>
 
-            <RoutingExplainerPill
-              :source="task.metadata?.router_source"
-              :rationale="task.metadata?.router_rationale"
-            />
+            <span
+              v-else-if="isBlocked"
+              title="Blocked in circuit breaker frustration loop"
+              class="px-1.5 py-0.5 rounded bg-rose-950/80 border border-rose-700/80 text-rose-300 text-[10px] font-mono flex items-center gap-1"
+            >
+              <AlertTriangle class="w-2.5 h-2.5 text-rose-400" />
+              <span>Blocked</span>
+            </span>
 
-            <!-- Dedicated 1-Click Console Terminal Button -->
+            <span
+              v-else-if="isWriteLocked"
+              title="Source write-locking active (Red Phase)"
+              class="px-1.5 py-0.5 rounded bg-amber-950/80 border border-amber-800/80 text-amber-300 text-[10px] font-mono flex items-center gap-1"
+            >
+              <Lock class="w-2.5 h-2.5 text-amber-400" />
+              <span>Locked</span>
+            </span>
+          </div>
+
+          <!-- Right: Canonical Console Button & Quick Move Menu -->
+          <div class="flex items-center gap-1.5 flex-shrink-0" @click.stop>
+            <!-- Single, Canonical 1-Click Console Terminal Button -->
             <button
-              @click.stop="emit('open-console', task.id)"
+              @click="emit('open-console', task.id)"
               type="button"
               title="View background process & console terminal"
               class="h-6 px-2 rounded bg-slate-950 border border-slate-800 hover:border-emerald-500/80 hover:bg-slate-900 text-slate-300 hover:text-emerald-300 text-[10px] font-mono flex items-center gap-1.5 transition-all shadow-sm group/console"
@@ -358,12 +360,12 @@ function moveToStage(stageId: string, e: Event) {
             </button>
 
             <!-- Quick Stage Move Dropdown Menu -->
-            <div class="relative" @click.stop>
+            <div class="relative">
               <button
                 @click="showStageMenu = !showStageMenu"
                 type="button"
                 title="Move card to column..."
-                class="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+                class="h-6 w-6 rounded flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
               >
                 <MoreVertical class="w-3.5 h-3.5" />
               </button>
@@ -393,11 +395,12 @@ function moveToStage(stageId: string, e: Event) {
           </div>
         </div>
 
-        <h4 class="text-xs font-medium text-slate-200 line-clamp-2 leading-relaxed mb-2">
+        <!-- Task Title -->
+        <h4 class="text-xs font-medium text-slate-200 line-clamp-2 leading-relaxed mb-2.5 group-hover:text-white transition-colors">
           {{ task.title }}
         </h4>
 
-        <!-- External Connector Badges (JIRA, Confluence & Assignee) -->
+        <!-- External Connector Badges & Router Info (Wrapped without clipping) -->
         <div class="flex flex-wrap items-center gap-1.5 mb-2.5">
           <a
             v-if="jiraKey"
@@ -433,105 +436,108 @@ function moveToStage(stageId: string, e: Event) {
             <User class="w-2.5 h-2.5 text-blue-400" />
             <span>{{ task.metadata.assignee }}</span>
           </span>
-        </div>
 
-        <!-- Live Background Process Telemetry Pill -->
-        <div
-          @click.stop="emit('open-console', task.id)"
-          class="mb-2.5 px-2.5 py-1.5 rounded-lg border transition-all cursor-pointer flex items-center justify-between text-[10px] font-mono group/proc shadow-sm"
-          :class="{
-            'bg-emerald-950/30 border-emerald-800/60 hover:border-emerald-500 text-emerald-300': task.state === 'RUNNING',
-            'bg-rose-950/30 border-rose-800/60 hover:border-rose-500 text-rose-300': isBlocked,
-            'bg-amber-950/30 border-amber-800/60 hover:border-amber-500 text-amber-300': task.state === 'WAITING_GATE_APPROVAL',
-            'bg-slate-950/60 border-slate-800 hover:border-slate-700 text-slate-400': task.state !== 'RUNNING' && !isBlocked && task.state !== 'WAITING_GATE_APPROVAL'
-          }"
-          title="Click to view live background process terminal"
-        >
-          <div class="flex items-center gap-2 truncate flex-1 min-w-0">
-            <span
-              class="w-2 h-2 rounded-full flex-shrink-0"
-              :class="{
-                'bg-emerald-400 animate-pulse': task.state === 'RUNNING',
-                'bg-rose-500 animate-pulse': isBlocked,
-                'bg-amber-400': task.state === 'WAITING_GATE_APPROVAL',
-                'bg-orange-500 animate-pulse': isWaitingDependency,
-                'bg-slate-500': task.state !== 'RUNNING' && !isBlocked && task.state !== 'WAITING_GATE_APPROVAL' && !isWaitingDependency
-              }"
-            ></span>
-            <span class="text-slate-400">Process:</span>
-            <span class="font-medium text-slate-200 truncate group-hover/proc:text-white">
-              {{ task.state === 'RUNNING' ? 'Background Execution Active' : isBlocked ? 'Execution Blocked (Trace Ready)' : task.state === 'WAITING_GATE_APPROVAL' ? 'Process Paused at Gate' : isWaitingDependency ? `Process Held: Waiting on DAG (${unmetDependencies.join(', ')})` : 'Process Idle / Completed' }}
-            </span>
-          </div>
+          <RoutingExplainerPill
+            :source="task.metadata?.router_source"
+            :rationale="task.metadata?.router_rationale"
+          />
 
-          <span class="flex items-center gap-1 text-[10px] font-semibold text-emerald-400 group-hover/proc:underline flex-shrink-0 ml-2">
-            <span>&gt;_ Console</span>
+          <!-- Worktree branch chip if both worktree & dependency hold are active -->
+          <span
+            v-if="isWorktree && isWaitingDependency"
+            :title="`Isolated Git Worktree: ${worktreeBranch}`"
+            class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-teal-950/60 border border-teal-800/60 text-teal-300 text-[10px] font-mono"
+          >
+            <GitBranch class="w-2.5 h-2.5 text-teal-400" />
+            <span class="truncate max-w-[120px]">{{ worktreeBranch }}</span>
           </span>
         </div>
 
-        <!-- Real Status & Step Information Pill -->
-        <div class="mb-3 p-2 rounded bg-slate-950/90 border border-slate-800/80 space-y-1.5 text-[10px] font-mono">
-          <div class="flex items-center justify-between">
-            <span class="text-slate-400 font-medium">Step {{ guidance.stageNumber }}/{{ guidance.totalStages }}</span>
+        <!-- Single Unified Execution & Progress Status Bar -->
+        <div class="mb-3 p-2.5 rounded-lg bg-slate-950/90 border border-slate-800/80 space-y-2 text-[10px] font-mono">
+          <!-- Top Row: Stage Step & State Indicator -->
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-1.5 truncate flex-1 min-w-0">
+              <span
+                class="w-2 h-2 rounded-full flex-shrink-0"
+                :class="{
+                  'bg-emerald-400 animate-pulse': task.state === 'RUNNING',
+                  'bg-rose-500 animate-pulse': isBlocked,
+                  'bg-amber-400': task.state === 'WAITING_GATE_APPROVAL',
+                  'bg-orange-500 animate-pulse': isWaitingDependency,
+                  'bg-emerald-400': task.state === 'COMPLETED',
+                  'bg-slate-500': task.state !== 'RUNNING' && !isBlocked && task.state !== 'WAITING_GATE_APPROVAL' && !isWaitingDependency && task.state !== 'COMPLETED'
+                }"
+              ></span>
+              <span class="text-slate-400 font-medium">Step {{ guidance.stageNumber }}/{{ guidance.totalStages }}:</span>
+              <span class="text-slate-200 font-semibold truncate">{{ guidance.stageName }}</span>
+            </div>
+
             <span
-              v-if="isWaitingDependency || guidance.actionType === 'dependency_waiting'"
-              class="text-orange-400 font-semibold"
+              v-if="isWaitingDependency"
+              class="text-orange-400 font-medium flex-shrink-0"
             >
               ● Dep Waiting
             </span>
             <span
               v-else-if="guidance.actionType === 'blocked_steer'"
-              class="text-rose-400 font-semibold"
+              class="text-rose-400 font-medium flex-shrink-0"
             >
               ● Steer Needed
             </span>
             <span
               v-else-if="guidance.actionType === 'gate_approval'"
-              class="text-amber-400 font-semibold"
+              class="text-amber-400 font-medium flex-shrink-0"
             >
               ● Gate Review
             </span>
             <span
+              v-else-if="guidance.actionType === 'completed_review'"
+              class="text-emerald-400 font-medium flex-shrink-0"
+            >
+              ● Done
+            </span>
+            <span
               v-else
-              class="text-emerald-400"
+              class="text-emerald-400 font-medium flex-shrink-0"
             >
               ● {{ guidance.isWriteLocked ? 'Locked (Red)' : 'Active' }}
             </span>
           </div>
 
-          <div class="flex items-center justify-between gap-2 pt-1 border-t border-slate-800/60">
-            <!-- Contextual Stage / Column Target Description -->
+          <!-- Bottom Row: Context Hint & Single Contextual Action Button -->
+          <div class="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-800/60">
             <div class="text-slate-400 truncate flex items-center gap-1 flex-1 min-w-0">
-              <template v-if="isWaitingDependency || guidance.actionType === 'dependency_waiting'">
+              <template v-if="isWaitingDependency">
                 <span class="text-orange-400 font-medium">Prereq:</span>
-                <span class="text-slate-300 truncate" :title="`Awaiting completion of ${unmetDependencies.join(', ')}`">Waiting on {{ unmetDependencies.join(', ') }}</span>
+                <span class="text-slate-300 truncate" :title="`Awaiting prerequisite (${unmetDependencies.join(', ')}) to complete`">Waiting on {{ unmetDependencies.join(', ') }}</span>
               </template>
               <template v-else-if="guidance.actionType === 'gate_approval'">
                 <span class="text-amber-400 font-medium">Gate:</span>
-                <span class="text-slate-300 truncate" title="Human approval required before advancing">Requires Approval</span>
+                <span class="text-slate-300 truncate">Requires human review</span>
               </template>
               <template v-else-if="guidance.actionType === 'blocked_steer'">
                 <span class="text-rose-400 font-medium">Status:</span>
-                <span class="text-slate-300 truncate" title="Execution halted due to error loop">Circuit Breaker Halted</span>
+                <span class="text-slate-300 truncate">Circuit breaker halted</span>
               </template>
               <template v-else-if="guidance.actionType === 'completed_review'">
                 <span class="text-emerald-400 font-medium">Status:</span>
-                <span class="text-slate-300 truncate">All Stages Verified</span>
+                <span class="text-slate-300 truncate">All stages verified</span>
               </template>
               <template v-else-if="nextStage">
                 <span class="text-slate-500">Next Col:</span>
                 <span class="text-slate-300 truncate" :title="nextStage.name">{{ nextStage.name }}</span>
               </template>
               <template v-else>
-                <span class="text-slate-500">Current:</span>
-                <span class="text-slate-300 truncate">{{ guidance.stageName }}</span>
+                <span class="text-slate-500">Process:</span>
+                <span class="text-slate-300 truncate">{{ task.state === 'RUNNING' ? 'Background active' : 'Ready' }}</span>
               </template>
             </div>
 
-            <!-- Contextual Quick Action Buttons -->
-            <!-- 1. Dependency Held Action -->
+            <!-- Single Action Button (Never duplicated with Console) -->
+            <!-- 1. Dependency Held -->
             <button
-              v-if="isWaitingDependency || guidance.actionType === 'dependency_waiting'"
+              v-if="isWaitingDependency"
               type="button"
               :title="`Task held until prerequisite ${unmetDependencies.join(', ')} is COMPLETED`"
               class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-orange-950/90 border border-orange-600/80 text-orange-200 text-[10px] font-mono font-medium flex-shrink-0 cursor-not-allowed"
@@ -540,7 +546,7 @@ function moveToStage(stageId: string, e: Event) {
               <span>Held (Dep)</span>
             </button>
 
-            <!-- 2. Review Gate when approval is pending -->
+            <!-- 2. Review Gate -->
             <button
               v-else-if="guidance.actionType === 'gate_approval'"
               @click.stop="navigateToTask"
@@ -552,28 +558,29 @@ function moveToStage(stageId: string, e: Event) {
               <ArrowRight class="w-3 h-3 text-amber-400 group-hover/gate:translate-x-0.5 transition-transform" />
             </button>
 
-            <!-- 3. Inspect Error when blocked -->
+            <!-- 3. Steer Task (when blocked) -->
             <button
               v-else-if="guidance.actionType === 'blocked_steer'"
-              @click.stop="emit('open-console', task.id)"
+              @click.stop="navigateToTask"
               type="button"
-              title="Click to inspect console terminal error logs and steer the agent"
+              title="Click to view task details, logs and inject operator instructions"
               class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-950/90 hover:bg-rose-800 border border-rose-600/80 text-rose-200 hover:text-white text-[10px] font-mono font-medium transition-all shadow-sm flex-shrink-0 group/steer"
             >
               <AlertTriangle class="w-3 h-3 text-rose-400" />
-              <span>Inspect Error</span>
+              <span>Steer Task</span>
+              <ArrowRight class="w-3 h-3 text-rose-400 group-hover/steer:translate-x-0.5 transition-transform" />
             </button>
 
-            <!-- 4. Completed State -->
+            <!-- 4. Done -->
             <span
               v-else-if="guidance.actionType === 'completed_review'"
-              class="inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400 font-medium px-1.5 py-0.5 rounded bg-emerald-950/40 border border-emerald-800/40"
+              class="inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400 font-medium px-1.5 py-0.5 rounded bg-emerald-950/40 border border-emerald-800/40 flex-shrink-0"
             >
               <Check class="w-3 h-3 text-emerald-400" />
               <span>Done</span>
             </span>
 
-            <!-- 5. 1-Click Move Column (Drag & Drop Alternative) -->
+            <!-- 5. 1-Click Move Column -->
             <button
               v-else-if="nextStage"
               @click="moveToNextStage"
@@ -603,7 +610,7 @@ function moveToStage(stageId: string, e: Event) {
             {{ task.selected_method }}
           </span>
 
-          <div class="flex items-center gap-1 text-[10px] font-mono text-slate-400">
+          <div class="flex items-center gap-1 text-[10px] font-mono text-slate-400" title="Assigned repositories">
             <Layers class="w-3 h-3" />
             <span>{{ task.assigned_repos?.length || 1 }}</span>
           </div>
@@ -615,17 +622,17 @@ function moveToStage(stageId: string, e: Event) {
             :title="`Prerequisites: ${task.dependencies.join(', ')}`"
           >
             <Link2 class="w-3 h-3 text-orange-400" />
-            <span>{{ task.dependencies.join(', ') }}</span>
+            <span>{{ task.dependencies.length }}</span>
           </div>
         </div>
 
         <div class="flex items-center gap-2.5">
-          <div class="flex items-center gap-1 text-[10px] font-mono text-slate-400">
+          <div class="flex items-center gap-1 text-[10px] font-mono text-slate-400" title="Token consumption">
             <Flame class="w-3 h-3 text-amber-500" />
             <span>{{ Math.round((task.token_usage?.total_tokens || 0) / 1000) }}k</span>
           </div>
 
-          <div class="flex items-center gap-1 text-[10px] font-mono text-slate-400">
+          <div class="flex items-center gap-1 text-[10px] font-mono text-slate-400" title="Time elapsed">
             <Clock class="w-3 h-3" />
             <span>{{ timeElapsed }}</span>
           </div>
