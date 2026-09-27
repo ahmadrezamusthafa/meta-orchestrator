@@ -22,7 +22,9 @@ import {
   Server,
   FlaskConical,
   FileCode2,
-  FolderArchive
+  FolderArchive,
+  Eye,
+  EyeOff
 } from 'lucide-vue-next'
 
 const props = withDefaults(
@@ -33,6 +35,7 @@ const props = withDefaults(
     helperText?: string
     canCreateFolder?: boolean
     initialCreateFolder?: boolean
+    initialShowHidden?: boolean
   }>(),
   {
     isOpen: false,
@@ -40,7 +43,8 @@ const props = withDefaults(
     title: 'Select Directory',
     helperText: 'Navigate your host filesystem and choose a directory',
     canCreateFolder: true,
-    initialCreateFolder: false
+    initialCreateFolder: false,
+    initialShowHidden: true
   }
 )
 
@@ -57,6 +61,12 @@ const selectedPath = ref('')
 const selectedItem = ref<DirectoryItem | null>(null)
 const isManualEditing = ref(false)
 const manualInputPath = ref('')
+const showHidden = ref(props.initialShowHidden)
+
+function toggleShowHidden() {
+  showHidden.value = !showHidden.value
+  loadDirectory(fsData.value?.current_path)
+}
 
 // New folder creation state
 const isCreatingFolder = ref(false)
@@ -70,7 +80,7 @@ async function loadDirectory(path?: string) {
   isLoading.value = true
   errorMsg.value = ''
   try {
-    const data = await api.browseDirectory(path)
+    const data = await api.browseDirectory(path, showHidden.value)
     fsData.value = data
     selectedPath.value = data.current_path
     selectedItem.value = null
@@ -92,6 +102,7 @@ watch(
       newFolderName.value = ''
       createFolderError.value = ''
       createFolderSuccess.value = ''
+      showHidden.value = props.initialShowHidden
       loadDirectory(props.initialPath || undefined)
       if (props.initialCreateFolder) {
         openCreateFolder()
@@ -165,10 +176,14 @@ async function handleCreateFolder() {
 
 const filteredDirectories = computed(() => {
   if (!fsData.value?.directories) return []
-  if (!filterQuery.value.trim()) return fsData.value.directories
+  let list = fsData.value.directories
+  if (!showHidden.value) {
+    list = list.filter((d) => !d.is_hidden && !d.name.startsWith('.'))
+  }
+  if (!filterQuery.value.trim()) return list
 
   const q = filterQuery.value.toLowerCase().trim()
-  return fsData.value.directories.filter(
+  return list.filter(
     (d) =>
       d.name.toLowerCase().includes(q) ||
       (d.manifest && d.manifest.toLowerCase().includes(q)) ||
@@ -484,17 +499,33 @@ function getRoleBadgeClass(role: string) {
         </button>
       </div>
 
-      <!-- Filter Bar -->
+      <!-- Filter Bar & View Options -->
       <div class="px-4 py-2 bg-slate-900/60 border-b border-slate-800/80 flex items-center justify-between gap-3">
         <div class="relative flex-1">
           <Search class="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
           <input
             v-model="filterQuery"
             type="text"
-            placeholder="Filter folders or manifests (e.g. go.mod, package.json)..."
-            class="w-full pl-8 pr-3 py-1 rounded-md bg-slate-950 border border-slate-800 text-slate-200 text-xs placeholder-slate-400 focus:outline-none focus:border-emerald-500/60"
+            placeholder="Filter folders or manifests (e.g. .github, .claude, go.mod)..."
+            class="w-full pl-8 pr-3 py-1 rounded-md bg-slate-950 border border-slate-800 text-slate-200 text-xs placeholder-slate-400 focus:outline-none focus:border-emerald-500/60 font-mono"
           />
         </div>
+
+        <!-- Show/Hide Hidden Folders Toggle Button -->
+        <button
+          type="button"
+          @click="toggleShowHidden"
+          class="px-2.5 py-1 rounded-md text-xs font-mono flex items-center gap-1.5 transition border flex-shrink-0"
+          :class="showHidden
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
+            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800'"
+          title="Toggle view of hidden directories (e.g. .github, .claude, .sdlc)"
+        >
+          <Eye v-if="showHidden" class="w-3.5 h-3.5 text-emerald-400" />
+          <EyeOff v-else class="w-3.5 h-3.5 text-slate-400" />
+          <span>{{ showHidden ? 'Hidden Shown' : 'Show Hidden' }}</span>
+        </button>
+
         <span class="text-[11px] font-mono text-slate-400 flex-shrink-0">
           {{ filteredDirectories.length }} folders
         </span>
@@ -569,6 +600,8 @@ function getRoleBadgeClass(role: string) {
               :class="
                 item.is_repo
                   ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                  : item.is_hidden || item.name.startsWith('.')
+                  ? 'bg-slate-800/70 text-slate-400 border border-dashed border-slate-700'
                   : 'bg-slate-800 text-slate-400'
               "
             >
@@ -579,6 +612,13 @@ function getRoleBadgeClass(role: string) {
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
                 <span class="font-mono font-medium text-xs truncate">{{ item.name }}</span>
+                <span
+                  v-if="item.is_hidden || item.name.startsWith('.')"
+                  class="px-1.5 py-0.2 rounded text-[10px] font-mono text-slate-400 bg-slate-800/80 border border-slate-700/60 flex items-center gap-1"
+                >
+                  <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                  hidden
+                </span>
                 <span
                   v-if="item.manifest"
                   class="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase font-bold"

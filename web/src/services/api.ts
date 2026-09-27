@@ -215,9 +215,10 @@ export const api = {
     return res.json()
   },
 
-  async browseDirectory(path?: string): Promise<BrowseFSResponse> {
+  async browseDirectory(path?: string, showHidden: boolean = true): Promise<BrowseFSResponse> {
     const query = new URLSearchParams()
     if (path) query.set('path', path)
+    query.set('show_hidden', showHidden ? 'true' : 'false')
     const res = await fetch(`${BASE_URL}/fs/browse?${query.toString()}`)
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Failed to browse directory' }))

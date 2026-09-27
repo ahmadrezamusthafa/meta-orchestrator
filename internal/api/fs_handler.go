@@ -25,6 +25,7 @@ type DirectoryItem struct {
 	Manifest      string            `json:"manifest"`
 	SuggestedRole types.ProjectRole `json:"suggested_role"`
 	HasChildren   bool              `json:"has_children"`
+	IsHidden      bool              `json:"is_hidden"`
 }
 
 // QuickBookmark represents a shortcut bookmark to common project folders.
@@ -75,6 +76,13 @@ func (r *Router) handleFSBrowse(w http.ResponseWriter, req *http.Request) {
 	// Generate Breadcrumbs
 	breadcrumbs := generateBreadcrumbs(targetPath)
 
+	// Check whether hidden directories should be visible (default: true)
+	showHiddenParam := req.URL.Query().Get("show_hidden")
+	if showHiddenParam == "" {
+		showHiddenParam = req.URL.Query().Get("hidden")
+	}
+	showHidden := showHiddenParam != "false" && showHiddenParam != "0"
+
 	// Read child directories
 	entries, err := os.ReadDir(targetPath)
 	var dirs []DirectoryItem
@@ -84,7 +92,15 @@ func (r *Router) handleFSBrowse(w http.ResponseWriter, req *http.Request) {
 				continue
 			}
 			name := entry.Name()
-			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "bin" || name == "dist" {
+			isHidden := strings.HasPrefix(name, ".")
+
+			// Filter out hidden folders if show_hidden is explicitly disabled
+			if isHidden && !showHidden {
+				continue
+			}
+
+			// Always skip internal git repository database and large package caches
+			if name == ".git" || name == "node_modules" || name == "vendor" || name == "bin" || name == "dist" {
 				continue
 			}
 
@@ -96,10 +112,18 @@ func (r *Router) handleFSBrowse(w http.ResponseWriter, req *http.Request) {
 			hasChildren := false
 			if subEntries, subErr := os.ReadDir(childPath); subErr == nil {
 				for _, sub := range subEntries {
-					if sub.IsDir() && !strings.HasPrefix(sub.Name(), ".") && sub.Name() != "node_modules" {
-						hasChildren = true
-						break
+					if !sub.IsDir() {
+						continue
 					}
+					subName := sub.Name()
+					if subName == ".git" || subName == "node_modules" || subName == "vendor" {
+						continue
+					}
+					if strings.HasPrefix(subName, ".") && !showHidden {
+						continue
+					}
+					hasChildren = true
+					break
 				}
 			}
 
@@ -110,6 +134,7 @@ func (r *Router) handleFSBrowse(w http.ResponseWriter, req *http.Request) {
 				Manifest:      manifest,
 				SuggestedRole: suggestedRole,
 				HasChildren:   hasChildren,
+				IsHidden:      isHidden,
 			})
 		}
 	}

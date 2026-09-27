@@ -22,11 +22,14 @@ func TestFSBrowseAPI(t *testing.T) {
 	_ = os.MkdirAll(beDir, 0755)
 	_ = os.WriteFile(filepath.Join(beDir, "go.mod"), []byte(`module be`), 0644)
 
+	hiddenDir := filepath.Join(tempDir, ".github")
+	_ = os.MkdirAll(hiddenDir, 0755)
+
 	router := NewRouter(RouterConfig{
 		RootDir: tempDir,
 	})
 
-	// 1. GET /api/v1/fs/browse without path (defaults to RootDir)
+	// 1. GET /api/v1/fs/browse without path (defaults to RootDir and shows hidden dirs by default)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/fs/browse", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -44,8 +47,43 @@ func TestFSBrowseAPI(t *testing.T) {
 		t.Errorf("Expected current_path to be %s, got %s", tempDir, resp.CurrentPath)
 	}
 
-	if len(resp.Directories) != 2 {
-		t.Fatalf("Expected 2 directories, got %d", len(resp.Directories))
+	for _, d := range resp.Directories {
+		t.Logf("Found dir: %s (hidden=%v)", d.Name, d.IsHidden)
+	}
+
+	if len(resp.Directories) != 4 {
+		t.Fatalf("Expected 4 directories with hidden included, got %d", len(resp.Directories))
+	}
+
+	var foundHidden bool
+	for _, d := range resp.Directories {
+		if d.Name == ".github" {
+			foundHidden = true
+			if !d.IsHidden {
+				t.Errorf("Expected .github to have IsHidden=true")
+			}
+		}
+	}
+	if !foundHidden {
+		t.Errorf("Expected .github directory to be present")
+	}
+
+	// 1b. GET /api/v1/fs/browse?show_hidden=false
+	reqHiddenOff := httptest.NewRequest(http.MethodGet, "/api/v1/fs/browse?show_hidden=false", nil)
+	wHiddenOff := httptest.NewRecorder()
+	router.ServeHTTP(wHiddenOff, reqHiddenOff)
+
+	if wHiddenOff.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", wHiddenOff.Code)
+	}
+
+	var respHiddenOff BrowseFSResponse
+	if err := json.NewDecoder(wHiddenOff.Body).Decode(&respHiddenOff); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if len(respHiddenOff.Directories) != 2 {
+		t.Fatalf("Expected 2 directories when show_hidden=false, got %d", len(respHiddenOff.Directories))
 	}
 
 	// 2. Test breadcrumbs

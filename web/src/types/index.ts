@@ -204,6 +204,7 @@ export interface DirectoryItem {
   manifest: string
   suggested_role: ProjectRole
   has_children: boolean
+  is_hidden?: boolean
 }
 
 export interface QuickBookmark {
