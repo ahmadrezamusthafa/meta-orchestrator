@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useTaskStore } from '../stores/tasks'
 import { useWorkflowStore } from '../stores/workflows'
 import KanbanToolbar from '../components/kanban/KanbanToolbar.vue'
@@ -12,6 +12,45 @@ const workflowStore = useWorkflowStore()
 
 const showNewTaskModal = ref(false)
 const showJiraImportModal = ref(false)
+const initialStageForNewTask = ref<string | undefined>(undefined)
+const density = ref<'comfortable' | 'compact'>('comfortable')
+const collapsedStages = ref<Record<string, boolean>>({})
+
+function toggleColumnCollapse(stageId: string) {
+  collapsedStages.value = {
+    ...collapsedStages.value,
+    [stageId]: !collapsedStages.value[stageId]
+  }
+}
+
+const hasCollapsedEmpty = computed(() => {
+  return workflowStore.projectedColumns.some(stage => {
+    const taskCount = (taskStore.tasksByStage[stage.id] || []).length
+    return taskCount === 0 && !!collapsedStages.value[stage.id]
+  })
+})
+
+function toggleCollapseEmpty() {
+  if (hasCollapsedEmpty.value) {
+    // Expand all
+    collapsedStages.value = {}
+  } else {
+    // Collapse all stages with 0 tasks
+    const next: Record<string, boolean> = {}
+    workflowStore.projectedColumns.forEach(stage => {
+      const taskCount = (taskStore.tasksByStage[stage.id] || []).length
+      if (taskCount === 0) {
+        next[stage.id] = true
+      }
+    })
+    collapsedStages.value = next
+  }
+}
+
+function openNewTaskForStage(stageId?: string) {
+  initialStageForNewTask.value = stageId
+  showNewTaskModal.value = true
+}
 
 onMounted(async () => {
   taskStore.initWebSocketSync()
@@ -25,8 +64,12 @@ onMounted(async () => {
 <template>
   <div class="h-full flex flex-col overflow-hidden bg-slate-950">
     <!-- Filter Sub-header Toolbar -->
-    <KanbanToolbar 
-      @open-new-task="showNewTaskModal = true" 
+    <KanbanToolbar
+      :density="density"
+      :has-collapsed-empty="hasCollapsedEmpty"
+      @update:density="(d) => density = d"
+      @toggle-collapse-empty="toggleCollapseEmpty"
+      @open-new-task="openNewTaskForStage(undefined)"
       @open-jira-import="showJiraImportModal = true"
     />
 
@@ -39,6 +82,11 @@ onMounted(async () => {
           :stage="stage"
           :tasks="taskStore.tasksByStage[stage.id] || []"
           :is-loading="taskStore.isLoading"
+          :is-collapsed="!!collapsedStages[stage.id]"
+          :density="density"
+          :all-stages="workflowStore.projectedColumns"
+          @toggle-collapse="toggleColumnCollapse"
+          @quick-add="openNewTaskForStage"
         />
       </div>
     </main>
@@ -46,7 +94,8 @@ onMounted(async () => {
     <!-- New Task Modal Dialog -->
     <NewTaskModal
       v-if="showNewTaskModal"
-      @close="showNewTaskModal = false"
+      :initial-stage-id="initialStageForNewTask"
+      @close="showNewTaskModal = false; initialStageForNewTask = undefined"
       @created="() => {}"
     />
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1602,12 +1603,24 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 
 	// Live API search if live credentials exist
 	if cfg.APIToken != "" && cfg.Username != "" && !strings.Contains(baseURL, "mock") {
-		jql := fmt.Sprintf("project = %s AND text ~ \"%s\"", proj, query)
-		if query == "" {
-			jql = fmt.Sprintf("project = %s ORDER BY created DESC", proj)
+		var jqlParts []string
+		if proj != "" {
+			jqlParts = append(jqlParts, fmt.Sprintf("project = %s", proj))
 		}
-		url := fmt.Sprintf("%s/rest/api/2/search?jql=%s&maxResults=10", baseURL, jql)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		// Strictly scope to tickets assigned to the logged user / credentials used
+		jqlParts = append(jqlParts, "assignee = currentUser()")
+
+		cleanQuery := strings.TrimSpace(query)
+		if cleanQuery != "" {
+			if m.DetectJiraKey(cleanQuery) != "" {
+				jqlParts = append(jqlParts, fmt.Sprintf("(key = \"%s\" OR text ~ \"%s\")", cleanQuery, cleanQuery))
+			} else {
+				jqlParts = append(jqlParts, fmt.Sprintf("text ~ \"%s\"", cleanQuery))
+			}
+		}
+		jql := strings.Join(jqlParts, " AND ") + " ORDER BY updated DESC"
+		searchEndpoint := fmt.Sprintf("%s/rest/api/2/search?jql=%s&maxResults=20", baseURL, url.QueryEscape(jql))
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchEndpoint, nil)
 		if err == nil {
 			req.SetBasicAuth(cfg.Username, cfg.APIToken)
 			req.Header.Set("Accept", "application/json")
@@ -1629,12 +1642,40 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 							IssueType struct {
 								Name string `json:"name"`
 							} `json:"issuetype"`
+							Assignee *struct {
+								DisplayName  string `json:"displayName"`
+								EmailAddress string `json:"emailAddress"`
+								Name         string `json:"name"`
+							} `json:"assignee"`
+							Reporter *struct {
+								DisplayName  string `json:"displayName"`
+								EmailAddress string `json:"emailAddress"`
+							} `json:"reporter"`
+							Created string `json:"created"`
 						} `json:"fields"`
 					} `json:"issues"`
 				}
 				if json.NewDecoder(resp.Body).Decode(&searchResult) == nil && len(searchResult.Issues) > 0 {
 					var list []types.JiraIssueDTO
 					for _, it := range searchResult.Issues {
+						assigneeName := cfg.Username
+						if it.Fields.Assignee != nil {
+							if it.Fields.Assignee.DisplayName != "" {
+								assigneeName = it.Fields.Assignee.DisplayName
+							} else if it.Fields.Assignee.EmailAddress != "" {
+								assigneeName = it.Fields.Assignee.EmailAddress
+							} else if it.Fields.Assignee.Name != "" {
+								assigneeName = it.Fields.Assignee.Name
+							}
+						}
+						reporterName := ""
+						if it.Fields.Reporter != nil {
+							if it.Fields.Reporter.DisplayName != "" {
+								reporterName = it.Fields.Reporter.DisplayName
+							} else if it.Fields.Reporter.EmailAddress != "" {
+								reporterName = it.Fields.Reporter.EmailAddress
+							}
+						}
 						list = append(list, types.JiraIssueDTO{
 							Key:         it.Key,
 							Summary:     it.Fields.Summary,
@@ -1643,6 +1684,9 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 							Priority:    it.Fields.Priority.Name,
 							IssueType:   it.Fields.IssueType.Name,
 							URL:         fmt.Sprintf("%s/browse/%s", baseURL, it.Key),
+							Assignee:    assigneeName,
+							Reporter:    reporterName,
+							Created:     it.Fields.Created,
 						})
 					}
 					return list, nil
@@ -1651,7 +1695,12 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 		}
 	}
 
-	// Curated enterprise mock tickets for instant operator readiness
+	userAssignee := cfg.Username
+	if userAssignee == "" {
+		userAssignee = "currentUser()"
+	}
+
+	// Curated enterprise mock tickets for instant operator readiness (assigned to active user)
 	mockIssues := []types.JiraIssueDTO{
 		{
 			Key:         fmt.Sprintf("%s-1044", proj),
@@ -1662,7 +1711,7 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 			IssueType:   "Story",
 			URL:         fmt.Sprintf("%s/browse/%s-1044", baseURL, proj),
 			Reporter:    "sarah.product@acme.corp",
-			Assignee:    "ai-agent-orchestrator",
+			Assignee:    userAssignee,
 			Created:     "2026-09-25",
 		},
 		{
@@ -1674,7 +1723,7 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 			IssueType:   "Bug",
 			URL:         fmt.Sprintf("%s/browse/%s-1045", baseURL, proj),
 			Reporter:    "alex.eng@acme.corp",
-			Assignee:    "ai-agent-orchestrator",
+			Assignee:    userAssignee,
 			Created:     "2026-09-26",
 		},
 		{
@@ -1686,7 +1735,7 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 			IssueType:   "Task",
 			URL:         fmt.Sprintf("%s/browse/%s-1046", baseURL, proj),
 			Reporter:    "security-lead@acme.corp",
-			Assignee:    "ai-agent-orchestrator",
+			Assignee:    userAssignee,
 			Created:     "2026-09-26",
 		},
 		{
@@ -1698,10 +1747,11 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 			IssueType:   "Bug",
 			URL:         fmt.Sprintf("%s/browse/%s-1047", baseURL, proj),
 			Reporter:    "david.sre@acme.corp",
-			Assignee:    "ai-agent-orchestrator",
+			Assignee:    userAssignee,
 			Created:     "2026-09-27",
 		},
 	}
+
 
 	if query == "" {
 		return mockIssues, nil

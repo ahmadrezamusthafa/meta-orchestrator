@@ -9,6 +9,10 @@ import StageRangeSelector from './StageRangeSelector.vue'
 import ArtifactUploadDropzone from './ArtifactUploadDropzone.vue'
 import { X, Sparkles, Layers, GitFork, Zap, FolderGit2 } from 'lucide-vue-next'
 
+const props = defineProps<{
+  initialStageId?: string
+}>()
+
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'created', task: any): void
@@ -25,7 +29,7 @@ const selectedProjectId = ref(projectStore.activeProjectId || 'proj-core-platfor
 const selectedWorkflowId = ref(workflowStore.activeWorkflowId || 'general_ai_sdlc')
 const selectedRepos = ref<string[]>([])
 const executionScope = ref<'full' | 'slice'>('full')
-const startStage = ref('task_implementation')
+const startStage = ref(props.initialStageId || 'task_implementation')
 const haltStage = ref('e2e_validation')
 const produceVideo = ref(true)
 const sourceBranch = ref('')
@@ -134,7 +138,9 @@ const stagesForSelector = computed(() => {
 
 watch(stagesForSelector, (stages) => {
   if (stages.length > 0) {
-    if (!stages.some(s => s.id === startStage.value)) {
+    if (props.initialStageId && stages.some(s => s.id === props.initialStageId)) {
+      startStage.value = props.initialStageId
+    } else if (!stages.some(s => s.id === startStage.value)) {
       startStage.value = stages[0].id
     }
     if (!stages.some(s => s.id === haltStage.value)) {

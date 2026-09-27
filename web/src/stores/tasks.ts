@@ -11,6 +11,8 @@ export const useTaskStore = defineStore('tasks', () => {
   const searchQuery = ref('')
   const selectedMethod = ref('All')
   const selectedRepo = ref('All')
+  const selectedStatus = ref<'all' | 'running' | 'gate' | 'blocked' | 'completed'>('all')
+  const onlyMyTasks = ref(false)
 
   // Available methods & repos for toolbar
   const availableMethods = ['All', 'BMAD', 'Supervisor', 'ReAct', 'Superpower']
@@ -31,8 +33,36 @@ export const useTaskStore = defineStore('tasks', () => {
       if (selectedRepo.value !== 'All' && !t.assigned_repos.includes(selectedRepo.value)) {
         return false
       }
+      if (selectedStatus.value !== 'all') {
+        if (selectedStatus.value === 'running' && t.state !== 'RUNNING') return false
+        if (selectedStatus.value === 'gate' && t.state !== 'WAITING_GATE_APPROVAL') return false
+        if (selectedStatus.value === 'blocked' && t.state !== 'BLOCKED_FRUSTRATION') return false
+        if (selectedStatus.value === 'completed' && t.state !== 'COMPLETED') return false
+      }
+      if (onlyMyTasks.value) {
+        const hasJira = !!t.metadata?.jira_key || /\b([A-Z]{2,10}-\d+)\b/.test(t.title)
+        if (!hasJira && t.state === 'COMPLETED') return false
+      }
       return true
     })
+  })
+
+  // Status breakdown counts
+  const statusCounts = computed(() => {
+    let all = tasks.value.length
+    let running = 0
+    let gate = 0
+    let blocked = 0
+    let completed = 0
+
+    tasks.value.forEach((t) => {
+      if (t.state === 'RUNNING') running++
+      else if (t.state === 'WAITING_GATE_APPROVAL') gate++
+      else if (t.state === 'BLOCKED_FRUSTRATION') blocked++
+      else if (t.state === 'COMPLETED') completed++
+    })
+
+    return { all, running, gate, blocked, completed }
   })
 
   // Grouped tasks by stage
@@ -176,6 +206,9 @@ export const useTaskStore = defineStore('tasks', () => {
     searchQuery,
     selectedMethod,
     selectedRepo,
+    selectedStatus,
+    onlyMyTasks,
+    statusCounts,
     availableMethods,
     availableRepos,
     filteredTasks,
