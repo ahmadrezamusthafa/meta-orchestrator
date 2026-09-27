@@ -105,18 +105,19 @@ async function copyTaskId(e: Event) {
   }
 }
 
-function advanceStage(e: Event) {
+function moveToNextStage(e: Event) {
   e.stopPropagation()
   if (!nextStage.value) return
   taskStore.moveTaskToStage(props.task.id, nextStage.value.id)
-  toastStore.success('Task Advanced', `Moved ${props.task.id} → ${nextStage.value.name}`)
+  toastStore.success('Card Moved', `Moved ${props.task.id} to "${nextStage.value.name}" column`)
 }
+const advanceStage = moveToNextStage
 
 function moveToStage(stageId: string, e: Event) {
   e.stopPropagation()
   const target = props.allStages?.find(s => s.id === stageId)
   taskStore.moveTaskToStage(props.task.id, stageId)
-  toastStore.info('Stage Updated', `Moved ${props.task.id} → ${target?.name || stageId}`)
+  toastStore.info('Stage Updated', `Moved ${props.task.id} to "${target?.name || stageId}" column`)
   showStageMenu.value = false
 }
 </script>
@@ -167,7 +168,7 @@ function moveToStage(stageId: string, e: Event) {
           </h4>
         </div>
 
-        <!-- 1-Click Advance Button & Move Menu -->
+        <!-- Column Actions: Console & Move / Gate Actions -->
         <div class="flex items-center gap-1 flex-shrink-0" @click.stop>
           <!-- Console Terminal Button -->
           <button
@@ -180,14 +181,39 @@ function moveToStage(stageId: string, e: Event) {
             <span v-if="task.state === 'RUNNING'" class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
           </button>
 
+          <!-- Contextual Gate Review Action -->
           <button
-            v-if="nextStage"
-            @click="advanceStage"
+            v-if="guidance.actionType === 'gate_approval'"
+            @click.stop="navigateToTask"
             type="button"
-            :title="`Advance to ${nextStage.name}`"
+            title="Pipeline paused: Review gate approval"
+            class="h-6 px-2 rounded bg-amber-950 hover:bg-amber-800 border border-amber-600/80 text-amber-200 text-[10px] font-mono font-medium flex items-center gap-1 transition-all shadow-sm"
+          >
+            <span>Gate</span>
+            <ArrowRight class="w-2.5 h-2.5" />
+          </button>
+
+          <!-- Contextual Error Inspection Action -->
+          <button
+            v-else-if="guidance.actionType === 'blocked_steer'"
+            @click.stop="emit('open-console', task.id)"
+            type="button"
+            title="Execution blocked: click to inspect terminal & steer"
+            class="h-6 px-2 rounded bg-rose-950 hover:bg-rose-800 border border-rose-600/80 text-rose-200 text-[10px] font-mono font-medium flex items-center gap-1 transition-all shadow-sm"
+          >
+            <AlertTriangle class="w-2.5 h-2.5" />
+            <span>Error</span>
+          </button>
+
+          <!-- 1-Click Move to Next Column (Alternative to Drag & Drop) -->
+          <button
+            v-else-if="nextStage"
+            @click="moveToNextStage"
+            type="button"
+            :title="`Move card to next column: ${nextStage.name} (1-click move)`"
             class="h-6 px-1.5 rounded bg-emerald-950/80 hover:bg-emerald-800 border border-emerald-700/80 text-emerald-300 text-[10px] font-mono flex items-center gap-1 transition-all shadow-sm"
           >
-            <span>Next</span>
+            <span>Move</span>
             <ArrowRight class="w-2.5 h-2.5" />
           </button>
 
@@ -195,7 +221,7 @@ function moveToStage(stageId: string, e: Event) {
             <button
               @click="showStageMenu = !showStageMenu"
               type="button"
-              title="Move to specific stage"
+              title="Move card to any column..."
               class="h-6 w-6 rounded flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
             >
               <MoreVertical class="w-3 h-3" />
@@ -206,7 +232,7 @@ function moveToStage(stageId: string, e: Event) {
               class="absolute right-0 top-full mt-1 w-44 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-30 py-1 text-xs"
             >
               <div class="px-2.5 py-1 text-[10px] font-mono text-slate-400 uppercase tracking-wider border-b border-slate-800">
-                Move to stage
+                Move to column
               </div>
               <div class="max-h-44 overflow-y-auto">
                 <button
@@ -288,7 +314,7 @@ function moveToStage(stageId: string, e: Event) {
               <button
                 @click="showStageMenu = !showStageMenu"
                 type="button"
-                title="Jump to stage..."
+                title="Move card to column..."
                 class="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
               >
                 <MoreVertical class="w-3.5 h-3.5" />
@@ -299,7 +325,7 @@ function moveToStage(stageId: string, e: Event) {
                 class="absolute right-0 top-full mt-1 w-48 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-30 py-1 text-xs"
               >
                 <div class="px-3 py-1 text-[10px] font-mono text-slate-400 uppercase tracking-wider border-b border-slate-800">
-                  Jump to stage
+                  Move to column
                 </div>
                 <div class="max-h-48 overflow-y-auto">
                   <button
@@ -418,22 +444,75 @@ function moveToStage(stageId: string, e: Event) {
             </span>
           </div>
 
-          <div class="flex items-center justify-between gap-1 pt-1 border-t border-slate-800/60">
+          <div class="flex items-center justify-between gap-2 pt-1 border-t border-slate-800/60">
+            <!-- Contextual Stage / Column Target Description -->
             <div class="text-slate-400 truncate flex items-center gap-1 flex-1 min-w-0">
-              <span class="text-slate-500">Next:</span>
-              <span class="text-slate-300 truncate">{{ guidance.nextStageName }}</span>
+              <template v-if="guidance.actionType === 'gate_approval'">
+                <span class="text-amber-400 font-medium">Gate:</span>
+                <span class="text-slate-300 truncate" title="Human approval required before advancing">Requires Approval</span>
+              </template>
+              <template v-else-if="guidance.actionType === 'blocked_steer'">
+                <span class="text-rose-400 font-medium">Status:</span>
+                <span class="text-slate-300 truncate" title="Execution halted due to error loop">Circuit Breaker Halted</span>
+              </template>
+              <template v-else-if="guidance.actionType === 'completed_review'">
+                <span class="text-emerald-400 font-medium">Status:</span>
+                <span class="text-slate-300 truncate">All Stages Verified</span>
+              </template>
+              <template v-else-if="nextStage">
+                <span class="text-slate-500">Next Col:</span>
+                <span class="text-slate-300 truncate" :title="nextStage.name">{{ nextStage.name }}</span>
+              </template>
+              <template v-else>
+                <span class="text-slate-500">Current:</span>
+                <span class="text-slate-300 truncate">{{ guidance.stageName }}</span>
+              </template>
             </div>
 
-            <!-- 1-Click Advance to Next Stage Button -->
+            <!-- Contextual Quick Action Buttons -->
+            <!-- 1. Review Gate when approval is pending -->
             <button
-              v-if="nextStage"
-              @click="advanceStage"
+              v-if="guidance.actionType === 'gate_approval'"
+              @click.stop="navigateToTask"
               type="button"
-              :title="`Advance directly to ${nextStage.name}`"
-              class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-950/90 hover:bg-emerald-800 border border-emerald-700/80 text-emerald-300 hover:text-white text-[10px] font-mono font-medium transition-all shadow-sm flex-shrink-0 group/adv"
+              title="Pipeline paused: Review gate decision and authorize next stage"
+              class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-950/90 hover:bg-amber-800 border border-amber-600/80 text-amber-200 hover:text-white text-[10px] font-mono font-medium transition-all shadow-sm flex-shrink-0 group/gate"
             >
-              <span>Advance</span>
-              <ArrowRight class="w-3 h-3 text-emerald-400 group-hover/adv:translate-x-0.5 transition-transform" />
+              <span>Review Gate</span>
+              <ArrowRight class="w-3 h-3 text-amber-400 group-hover/gate:translate-x-0.5 transition-transform" />
+            </button>
+
+            <!-- 2. Inspect Error when blocked -->
+            <button
+              v-else-if="guidance.actionType === 'blocked_steer'"
+              @click.stop="emit('open-console', task.id)"
+              type="button"
+              title="Click to inspect console terminal error logs and steer the agent"
+              class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-950/90 hover:bg-rose-800 border border-rose-600/80 text-rose-200 hover:text-white text-[10px] font-mono font-medium transition-all shadow-sm flex-shrink-0 group/steer"
+            >
+              <AlertTriangle class="w-3 h-3 text-rose-400" />
+              <span>Inspect Error</span>
+            </button>
+
+            <!-- 3. Completed State -->
+            <span
+              v-else-if="guidance.actionType === 'completed_review'"
+              class="inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400 font-medium px-1.5 py-0.5 rounded bg-emerald-950/40 border border-emerald-800/40"
+            >
+              <Check class="w-3 h-3 text-emerald-400" />
+              <span>Done</span>
+            </span>
+
+            <!-- 4. 1-Click Move Column (Drag & Drop Alternative) -->
+            <button
+              v-else-if="nextStage"
+              @click="moveToNextStage"
+              type="button"
+              :title="`Move card to next Kanban column: ${nextStage.name} (1-click alternative to dragging)`"
+              class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-950/90 hover:bg-emerald-800 border border-emerald-700/80 text-emerald-300 hover:text-white text-[10px] font-mono font-medium transition-all shadow-sm flex-shrink-0 group/move"
+            >
+              <span>Move Column</span>
+              <ArrowRight class="w-3 h-3 text-emerald-400 group-hover/move:translate-x-0.5 transition-transform" />
             </button>
           </div>
         </div>
