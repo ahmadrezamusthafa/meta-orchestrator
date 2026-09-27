@@ -289,6 +289,19 @@ async function saveConnector() {
   if (!selectedConnector.value) return
   isSaving.value = true
   try {
+    if (selectedConnector.value.id === 'bitbucket') {
+      const mcpToken = selectedConnector.value.mcp?.env?.['ATLASSIAN_API_TOKEN']
+      const mcpEmail = selectedConnector.value.mcp?.env?.['ATLASSIAN_USER_EMAIL']
+      if (mcpToken && (!selectedConnector.value.api_token || selectedConnector.value.api_token.includes('••••'))) {
+        selectedConnector.value.api_token = mcpToken
+      }
+      if (mcpEmail && !selectedConnector.value.username) {
+        selectedConnector.value.username = mcpEmail
+      }
+      if (!selectedConnector.value.target_entity) {
+        selectedConnector.value.target_entity = 'mid-kelola-indonesia'
+      }
+    }
     const updated = await api.updateConnector(selectedConnector.value.id, selectedConnector.value)
     selectedConnector.value = { ...updated }
     
@@ -359,7 +372,7 @@ async function testMCP() {
     const res = await api.testMCPConnector(selectedConnector.value.id, selectedConnector.value.mcp)
     mcpTestResult.value = res
     if (res.success) {
-      if (selectedConnector.value.config_mode === 'mcp') {
+      if (selectedConnector.value.config_mode === 'mcp' || selectedConnector.value.config_mode === 'hybrid') {
         selectedConnector.value.status = 'connected'
         selectedConnector.value.latency_ms = res.latency_ms
         selectedConnector.value.last_tested_at = new Date().toISOString()
@@ -367,7 +380,7 @@ async function testMCP() {
       }
       toastStore.success('MCP Verified', `${res.message} (${res.latency_ms}ms)`)
     } else {
-      if (selectedConnector.value.config_mode === 'mcp') {
+      if (selectedConnector.value.config_mode === 'mcp' || selectedConnector.value.config_mode === 'hybrid') {
         selectedConnector.value.status = 'error'
         selectedConnector.value.latency_ms = res.latency_ms
         selectedConnector.value.last_tested_at = new Date().toISOString()
@@ -381,7 +394,7 @@ async function testMCP() {
       latency_ms: 0,
       message: err.message || 'MCP test failed'
     }
-    if (selectedConnector.value.config_mode === 'mcp') {
+    if (selectedConnector.value.config_mode === 'mcp' || selectedConnector.value.config_mode === 'hybrid') {
       selectedConnector.value.status = 'error'
       selectedConnector.value.error_message = err.message || 'MCP test failed'
       selectedConnector.value.last_tested_at = new Date().toISOString()
@@ -1333,6 +1346,9 @@ onUnmounted(() => {
                       :placeholder="selectedConnector.id === 'bitbucket' ? 'workspace-name/repo-slug' : selectedConnector.id === 'slack' ? '#alerts' : 'Target Key'"
                       class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
                     />
+                    <p v-if="selectedConnector.id === 'bitbucket'" class="text-[11px] text-slate-400 mt-1">
+                      Bitbucket Cloud workspace slug (e.g. <span class="font-mono text-cyan-400">mid-kelola-indonesia</span>) or repository slug (<span class="font-mono text-cyan-400">workspace/repo</span>).
+                    </p>
                   </div>
                 </div>
               </div>

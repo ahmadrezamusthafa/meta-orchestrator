@@ -166,6 +166,16 @@ func NewManager(rootDir string) *Manager {
 func (m *Manager) resolveTokenLocked(id, candidate string) (string, string) {
 	candidate = strings.TrimSpace(candidate)
 	if candidate != "" && !strings.Contains(candidate, "••••") {
+		// For bitbucket, if candidate is the shared/copied Confluence or Jira token and MCP has a dedicated ATLASSIAN_API_TOKEN, prefer MCP
+		if id == "bitbucket" {
+			existing := m.items[id]
+			if existing != nil && existing.MCP != nil && existing.MCP.Env != nil {
+				mcpTok := strings.TrimSpace(existing.MCP.Env["ATLASSIAN_API_TOKEN"])
+				if mcpTok != "" && !strings.Contains(mcpTok, "••••") && (candidate == m.config.Confluence.APIToken || candidate == m.config.Jira.APIToken) {
+					return mcpTok, "mcp_env"
+				}
+			}
+		}
 		return candidate, "direct_input"
 	}
 
@@ -178,9 +188,15 @@ func (m *Manager) resolveTokenLocked(id, candidate string) (string, string) {
 		case "confluence":
 			mcpEnvToken = existing.MCP.Env["CONFLUENCE_API_TOKEN"]
 		case "bitbucket":
-			mcpEnvToken = existing.MCP.Env["BITBUCKET_APP_PASSWORD"]
+			mcpEnvToken = existing.MCP.Env["ATLASSIAN_API_TOKEN"]
+			if mcpEnvToken == "" {
+				mcpEnvToken = existing.MCP.Env["BITBUCKET_APP_PASSWORD"]
+			}
 			if mcpEnvToken == "" {
 				mcpEnvToken = existing.MCP.Env["BITBUCKET_TOKEN"]
+			}
+			if mcpEnvToken == "" {
+				mcpEnvToken = existing.MCP.Env["BITBUCKET_API_TOKEN"]
 			}
 		case "github":
 			mcpEnvToken = existing.MCP.Env["GITHUB_PERSONAL_ACCESS_TOKEN"]
@@ -204,6 +220,15 @@ func (m *Manager) resolveTokenLocked(id, candidate string) (string, string) {
 	}
 	if id == "confluence" && existingToken == "" && m.config.Confluence.APIToken != "" && !strings.Contains(m.config.Confluence.APIToken, "••••") {
 		existingToken = m.config.Confluence.APIToken
+	}
+
+	// Prioritize valid MCP env token if candidate is empty/masked and existingToken is old/different for bitbucket
+	if strings.TrimSpace(mcpEnvToken) != "" && !strings.Contains(mcpEnvToken, "••••") {
+		if candidate == "" || strings.Contains(candidate, "••••") {
+			if id == "bitbucket" || existingToken == "" || existingToken == m.config.Confluence.APIToken || existingToken == m.config.Jira.APIToken {
+				return strings.TrimSpace(mcpEnvToken), "mcp_env"
+			}
+		}
 	}
 
 	if existingToken != "" {
@@ -230,7 +255,7 @@ func (m *Manager) resolveTokenLocked(id, candidate string) (string, string) {
 			return m.config.Jira.APIToken, "jira_config (shared)"
 		}
 	case "bitbucket":
-		if v, src := resolveEnvValue("BITBUCKET_APP_PASSWORD", "BITBUCKET_TOKEN", "BITBUCKET_API_TOKEN", "BITBUCKET_PASSWORD"); v != "" {
+		if v, src := resolveEnvValue("BITBUCKET_APP_PASSWORD", "BITBUCKET_TOKEN", "BITBUCKET_API_TOKEN", "BITBUCKET_PASSWORD", "ATLASSIAN_API_TOKEN"); v != "" {
 			return v, src
 		}
 	case "github":
@@ -284,7 +309,15 @@ func (m *Manager) resolveUsernameLocked(id, candidate string) (string, string) {
 			return v, src + " (shared)"
 		}
 	case "bitbucket":
-		if v, src := resolveEnvValue("BITBUCKET_USERNAME", "BITBUCKET_USER"); v != "" {
+		if existing := m.items["bitbucket"]; existing != nil && existing.MCP != nil && existing.MCP.Env != nil {
+			if u := strings.TrimSpace(existing.MCP.Env["ATLASSIAN_USER_EMAIL"]); u != "" {
+				return u, "mcp_env"
+			}
+			if u := strings.TrimSpace(existing.MCP.Env["BITBUCKET_USERNAME"]); u != "" {
+				return u, "mcp_env"
+			}
+		}
+		if v, src := resolveEnvValue("BITBUCKET_USERNAME", "BITBUCKET_USER", "ATLASSIAN_USER_EMAIL", "ATLASSIAN_EMAIL"); v != "" {
 			return v, src
 		}
 	}
@@ -751,23 +784,23 @@ func (m *Manager) ensureCatalogLocked() {
 			Description:   "Integrates with Bitbucket Cloud and Server repositories, pull request reviews, and Bitbucket Pipelines CI/CD automation.",
 			Icon:          "bitbucket",
 			Color:         "cyan",
-			Enabled:       false,
+			Enabled:       true,
 			ConfigMode:    "hybrid",
 			Status:        status,
 			BaseURL:       "https://api.bitbucket.org/2.0",
 			Username:      bbUser,
 			APIToken:      bbToken,
-			TargetEntity:  "",
+			TargetEntity:  "mid-kelola-indonesia",
 			TargetLabel:   "Workspace / Repository Slug",
 			Capabilities:  []string{"Pull Request Automation", "Branch Permissions", "Bitbucket Pipelines CI", "Commit Status Checks"},
 			MCP: &types.MCPConfig{
 				Enabled:   true,
 				Command:   "npx",
-				Args:      []string{"-y", "@atlassian/mcp-server-bitbucket"},
+				Args:      []string{"-y", "@aashari/mcp-server-atlassian-bitbucket"},
 				Transport: "stdio",
 				Env: map[string]string{
-					"BITBUCKET_USERNAME":     bbUser,
-					"BITBUCKET_APP_PASSWORD": bbToken,
+					"ATLASSIAN_USER_EMAIL": bbUser,
+					"ATLASSIAN_API_TOKEN":  bbToken,
 				},
 			},
 			LatencyMs: 0,
@@ -778,11 +811,14 @@ func (m *Manager) ensureCatalogLocked() {
 		}
 		m.items["bitbucket"] = it
 	} else {
-		if (it.APIToken == "" || strings.Contains(it.APIToken, "••••")) && bbToken != "" {
+		if bbToken != "" {
 			it.APIToken = bbToken
 		}
-		if it.Username == "" && bbUser != "" {
+		if bbUser != "" {
 			it.Username = bbUser
+		}
+		if strings.TrimSpace(it.TargetEntity) == "" {
+			it.TargetEntity = "mid-kelola-indonesia"
 		}
 		if bbSrc != "" && bbSrc != "direct_input" && bbSrc != "saved_config" {
 			it.HasEnvAuth = true
@@ -796,16 +832,24 @@ func (m *Manager) ensureCatalogLocked() {
 			it.MCP = &types.MCPConfig{
 				Enabled:   true,
 				Command:   "npx",
-				Args:      []string{"-y", "@atlassian/mcp-server-bitbucket"},
+				Args:      []string{"-y", "@aashari/mcp-server-atlassian-bitbucket"},
 				Transport: "stdio",
 				Env: map[string]string{
-					"BITBUCKET_USERNAME":     it.Username,
-					"BITBUCKET_APP_PASSWORD": it.APIToken,
+					"ATLASSIAN_USER_EMAIL": it.Username,
+					"ATLASSIAN_API_TOKEN":  it.APIToken,
 				},
 			}
-		} else if it.MCP.Env != nil && it.APIToken != "" {
-			it.MCP.Env["BITBUCKET_USERNAME"] = it.Username
-			it.MCP.Env["BITBUCKET_APP_PASSWORD"] = it.APIToken
+		} else if it.MCP.Env != nil {
+			if t, ok := it.MCP.Env["ATLASSIAN_API_TOKEN"]; ok && strings.TrimSpace(t) != "" && !strings.Contains(t, "••••") {
+				it.APIToken = strings.TrimSpace(t)
+			} else if it.APIToken != "" && !strings.Contains(it.APIToken, "••••") {
+				it.MCP.Env["ATLASSIAN_API_TOKEN"] = it.APIToken
+			}
+			if u, ok := it.MCP.Env["ATLASSIAN_USER_EMAIL"]; ok && strings.TrimSpace(u) != "" {
+				it.Username = strings.TrimSpace(u)
+			} else if it.Username != "" {
+				it.MCP.Env["ATLASSIAN_USER_EMAIL"] = it.Username
+			}
 		}
 	}
 
@@ -1232,6 +1276,24 @@ func (m *Manager) UpdateConnector(item types.ConnectorItem) (*types.ConnectorIte
 		}
 	}
 
+	if item.ID == "bitbucket" {
+		if item.MCP != nil && item.MCP.Env != nil {
+			if t, ok := item.MCP.Env["ATLASSIAN_API_TOKEN"]; ok && strings.TrimSpace(t) != "" && !strings.Contains(t, "••••") {
+				item.APIToken = strings.TrimSpace(t)
+			} else if item.APIToken != "" && !strings.Contains(item.APIToken, "••••") {
+				item.MCP.Env["ATLASSIAN_API_TOKEN"] = item.APIToken
+			}
+			if u, ok := item.MCP.Env["ATLASSIAN_USER_EMAIL"]; ok && strings.TrimSpace(u) != "" {
+				item.Username = strings.TrimSpace(u)
+			} else if item.Username != "" {
+				item.MCP.Env["ATLASSIAN_USER_EMAIL"] = item.Username
+			}
+		}
+		if strings.TrimSpace(item.TargetEntity) == "" {
+			item.TargetEntity = "mid-kelola-indonesia"
+		}
+	}
+
 	m.items[item.ID] = &item
 
 	if item.ID == "jira" {
@@ -1465,25 +1527,36 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 		}
 
 	case "bitbucket":
-		if strings.TrimSpace(activeItem.APIToken) == "" && strings.TrimSpace(activeItem.Username) == "" {
+		token := strings.TrimSpace(activeItem.APIToken)
+		user := strings.TrimSpace(activeItem.Username)
+		if token == "" && user == "" {
 			res := types.TestConnectorResponse{
 				Success:   false,
 				LatencyMs: 0,
-				Message:   "Bitbucket Username and App Password are required to authenticate (set via UI, BITBUCKET_APP_PASSWORD, or BITBUCKET_TOKEN)",
+				Message:   "Bitbucket Username and API Token or App Password are required to authenticate (set via UI, MCP, or BITBUCKET_TOKEN / ATLASSIAN_API_TOKEN)",
 			}
 			m.updateItemStatus(id, false, 0, res.Message)
 			return res
 		}
-		reqURL := "https://api.bitbucket.org/2.0/user"
-		if activeItem.TargetEntity != "" && strings.Contains(activeItem.TargetEntity, "/") {
-			reqURL = fmt.Sprintf("https://api.bitbucket.org/2.0/repositories/%s", activeItem.TargetEntity)
+
+		target := strings.TrimSpace(activeItem.TargetEntity)
+		if target == "" {
+			target = "mid-kelola-indonesia"
 		}
+
+		var reqURL string
+		if strings.Contains(target, "/") {
+			reqURL = fmt.Sprintf("https://api.bitbucket.org/2.0/repositories/%s", target)
+		} else {
+			reqURL = fmt.Sprintf("https://api.bitbucket.org/2.0/workspaces/%s", target)
+		}
+
 		req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, reqURL, nil)
 		if err == nil {
 			req.Header.Set("User-Agent", "Meta-Orchestrator")
 			req.Header.Set("Accept", "application/json")
-			if activeItem.Username != "" && activeItem.APIToken != "" {
-				req.SetBasicAuth(activeItem.Username, activeItem.APIToken)
+			if user != "" && token != "" {
+				req.SetBasicAuth(user, token)
 			}
 		}
 
@@ -1587,9 +1660,14 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 					userStr = fmt.Sprintf("%v", rawMap["full_name"])
 				}
 			} else if id == "bitbucket" {
-				userStr = fmt.Sprintf("%v", rawMap["display_name"])
-				if userStr == "<nil>" || userStr == "" {
-					userStr = fmt.Sprintf("%v", rawMap["username"])
+				if slug, ok := rawMap["slug"].(string); ok && slug != "" {
+					userStr = fmt.Sprintf("%v (Workspace: %v)", activeItem.Username, slug)
+				} else if name, ok := rawMap["name"].(string); ok && name != "" {
+					userStr = fmt.Sprintf("%v (%v)", activeItem.Username, name)
+				} else if disp, ok := rawMap["display_name"].(string); ok && disp != "" {
+					userStr = disp
+				} else if full, ok := rawMap["full_name"].(string); ok && full != "" {
+					userStr = full
 				}
 			} else if id == "gitlab" {
 				userStr = fmt.Sprintf("%v", rawMap["username"])
