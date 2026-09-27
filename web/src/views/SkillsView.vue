@@ -12,6 +12,7 @@ import RegisterPromptModal from '../components/registries/RegisterPromptModal.vu
 import PromptTemplatesTab from '../components/registries/PromptTemplatesTab.vue'
 import LifecycleHooksTab from '../components/registries/LifecycleHooksTab.vue'
 import AddRemoteSkillModal from '../components/registries/AddRemoteSkillModal.vue'
+import ConfirmDeleteModal from '../components/common/ConfirmDeleteModal.vue'
 import {
   Search,
   X,
@@ -74,6 +75,46 @@ const activeSkillModal = ref<UniversalSkillDTO | null>(null)
 const showRegisterModal = ref(false)
 const showRegisterPromptModal = ref(false)
 const showAddRemoteModal = ref(false)
+
+// Confirm Delete Modal State
+const isConfirmDeleteOpen = ref(false)
+const confirmDeleteTitle = ref('Confirm Deletion')
+const confirmDeleteMessage = ref('Are you sure you want to proceed? This action cannot be undone.')
+const confirmDeleteItemName = ref('')
+const confirmDeleteNote = ref('Your physical host source code remains completely safe on disk.')
+const confirmDeleteBtnText = ref('Delete')
+const isConfirmDeleteLoading = ref(false)
+let onConfirmDeleteCallback: (() => Promise<void>) | null = null
+
+function triggerConfirmDelete(options: {
+  title: string
+  message: string
+  itemName: string
+  note?: string
+  confirmText?: string
+  onConfirm: () => Promise<void>
+}) {
+  confirmDeleteTitle.value = options.title
+  confirmDeleteMessage.value = options.message
+  confirmDeleteItemName.value = options.itemName
+  confirmDeleteNote.value = options.note || 'Your physical files on host disk remain completely untouched.'
+  confirmDeleteBtnText.value = options.confirmText || 'Delete'
+  onConfirmDeleteCallback = options.onConfirm
+  isConfirmDeleteOpen.value = true
+}
+
+async function handleExecuteConfirmDelete() {
+  if (!onConfirmDeleteCallback) return
+  isConfirmDeleteLoading.value = true
+  try {
+    await onConfirmDeleteCallback()
+    isConfirmDeleteOpen.value = false
+  } catch (err: any) {
+    // Handled in callback
+  } finally {
+    isConfirmDeleteLoading.value = false
+  }
+}
 
 // Sync tab with URL query (?tab=prompts | hooks | sources | skills)
 watch(
@@ -190,6 +231,60 @@ async function handleRemoveSource(sourceId: string, sourceName: string) {
   } catch (err: any) {
     toastStore.error('Removal Failed', err.message || 'Could not unregister source')
   }
+}
+
+function promptRemoveSource(sourceId: string, sourceName: string) {
+  triggerConfirmDelete({
+    title: 'Unregister Skill Source',
+    message: `Are you sure you want to unregister skill directory "${sourceName}"? Its skills will be excluded from the AI orchestrator registry.`,
+    itemName: sourceName,
+    note: 'The directory and skill files on your host disk will NOT be deleted.',
+    confirmText: 'Unregister Directory',
+    onConfirm: async () => {
+      await handleRemoveSource(sourceId, sourceName)
+    }
+  })
+}
+
+function promptDisconnectRemoteRepo(repo: any) {
+  triggerConfirmDelete({
+    title: 'Disconnect Remote Skill Repository',
+    message: `Are you sure you want to disconnect remote repository "${repo.name}" (${repo.url})?`,
+    itemName: repo.name,
+    note: 'Remote Git repositories are external and will remain intact upstream.',
+    confirmText: 'Disconnect Repository',
+    onConfirm: async () => {
+      remoteGitRepos.value = remoteGitRepos.value.filter((r) => r.id !== repo.id)
+      toastStore.info('Repository Disconnected', `${repo.name} was removed from active skill sources`)
+    }
+  })
+}
+
+function promptRemovePromptSource(sourceId: string, sourceName: string) {
+  triggerConfirmDelete({
+    title: 'Unregister Prompt Directory',
+    message: `Are you sure you want to unregister prompt template directory "${sourceName}"? Its templates will no longer be available in prompt selection.`,
+    itemName: sourceName,
+    note: 'Your physical prompt files (*.prompt.md) on host disk remain completely untouched.',
+    confirmText: 'Unregister Directory',
+    onConfirm: async () => {
+      await handleRemovePromptSource(sourceId, sourceName)
+    }
+  })
+}
+
+function promptRemoveHook(hook: any) {
+  triggerConfirmDelete({
+    title: 'Remove Lifecycle Interceptor Hook',
+    message: `Are you sure you want to remove lifecycle hook "${hook.id}"? It will no longer intercept event "${hook.event}".`,
+    itemName: hook.id,
+    note: 'The underlying command script or webhook endpoint is not deleted.',
+    confirmText: 'Remove Hook',
+    onConfirm: async () => {
+      hooks.value = hooks.value.filter((h) => h.id !== hook.id)
+      toastStore.info('Hook Removed', `Lifecycle hook ${hook.id} removed from active interceptors`)
+    }
+  })
 }
 
 function handleAddRemoteRepo(newRepo: any) {
@@ -511,7 +606,11 @@ async function handleRescan() {
 
     <!-- TAB 3: LIFECYCLE HOOKS -->
     <div v-else-if="activeTab === 'hooks'" class="flex-1 p-6 overflow-y-auto">
-      <LifecycleHooksTab :hooks="hooks" @add-hook="handleAddHook" />
+      <LifecycleHooksTab
+        :hooks="hooks"
+        @add-hook="handleAddHook"
+        @delete-hook="promptRemoveHook"
+      />
     </div>
 
     <!-- TAB 4: SOURCES & GIT REPOSITORIES -->
@@ -569,7 +668,7 @@ async function handleRescan() {
 
             <button
               type="button"
-              @click="handleRemoveSource(src.id, src.name)"
+              @click="promptRemoveSource(src.id, src.name)"
               class="p-2 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-950 transition-colors"
               title="Unregister source"
             >
@@ -625,7 +724,7 @@ async function handleRescan() {
 
             <button
               type="button"
-              @click="remoteGitRepos = remoteGitRepos.filter(r => r.id !== repo.id)"
+              @click="promptDisconnectRemoteRepo(repo)"
               class="p-2 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-950 transition-colors"
               title="Disconnect repository"
             >
@@ -688,7 +787,7 @@ async function handleRescan() {
 
             <button
               type="button"
-              @click="handleRemovePromptSource(src.id, src.name)"
+              @click="promptRemovePromptSource(src.id, src.name)"
               class="p-2 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-950 transition-colors"
               title="Unregister prompt directory"
             >
@@ -724,6 +823,20 @@ async function handleRescan() {
       @close="showAddRemoteModal = false"
       @add="handleAddRemoteRepo"
     />
+
+    <!-- Confirmation Dialog Modal -->
+    <ConfirmDeleteModal
+      :is-open="isConfirmDeleteOpen"
+      :title="confirmDeleteTitle"
+      :message="confirmDeleteMessage"
+      :item-name="confirmDeleteItemName"
+      :note="confirmDeleteNote"
+      :confirm-text="confirmDeleteBtnText"
+      :loading="isConfirmDeleteLoading"
+      @confirm="handleExecuteConfirmDelete"
+      @close="isConfirmDeleteOpen = false"
+    />
   </div>
 </template>
+
 

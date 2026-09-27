@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Plus } from 'lucide-vue-next'
+import { Plus, Trash2 } from 'lucide-vue-next'
 import HookEditorDrawer from './HookEditorDrawer.vue'
 
 const props = withDefaults(
@@ -20,6 +20,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'add-hook', hook: any): void
+  (e: 'delete-hook', hook: any): void
 }>()
 
 const showDrawer = ref(false)
@@ -67,11 +68,12 @@ function handleSaveHook(newHook: any) {
             <th class="p-3">Execution Engine</th>
             <th class="p-3">Command / URL</th>
             <th class="p-3">Policy</th>
+            <th class="p-3 text-right">Actions</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-800/80 text-slate-300">
           <tr v-if="(props.hooks || []).length === 0">
-            <td colspan="5" class="p-8 text-center text-slate-500 font-sans">
+            <td colspan="6" class="p-8 text-center text-slate-500 font-sans">
               No lifecycle hooks registered yet.
             </td>
           </tr>
@@ -87,6 +89,16 @@ function handleSaveHook(newHook: any) {
               >
                 {{ h.policy }}
               </span>
+            </td>
+            <td class="p-3 text-right">
+              <button
+                type="button"
+                @click="emit('delete-hook', h)"
+                class="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-950 transition-colors"
+                title="Remove lifecycle hook"
+              >
+                <Trash2 class="w-3.5 h-3.5" />
+              </button>
             </td>
           </tr>
         </tbody>

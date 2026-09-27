@@ -6,6 +6,7 @@ import WorkflowCatalog from '../components/workflows/WorkflowCatalog.vue'
 import WorkflowStageBuilder from '../components/workflows/WorkflowStageBuilder.vue'
 import KanbanProjectionPreview from '../components/workflows/KanbanProjectionPreview.vue'
 import BtnPrimary from '../components/common/BtnPrimary.vue'
+import ConfirmDeleteModal from '../components/common/ConfirmDeleteModal.vue'
 import { GitFork, Plus, Trash2, Download, Save, Check } from 'lucide-vue-next'
 
 const workflowStore = useWorkflowStore()
@@ -44,6 +45,61 @@ function addStage() {
 function removeStage(index: number) {
   const removed = currentStages.value.splice(index, 1)
   toastStore.warning(`Removed Stage: ${removed[0]?.name || 'Stage'}`)
+}
+
+// Confirmation modal state
+const isConfirmDeleteOpen = ref(false)
+const confirmDeleteTitle = ref('Confirm Deletion')
+const confirmDeleteMessage = ref('Are you sure you want to proceed?')
+const confirmDeleteItemName = ref('')
+const confirmDeleteNote = ref('')
+const confirmDeleteBtnText = ref('Delete')
+const isConfirmDeleteLoading = ref(false)
+let onConfirmDeleteCallback: (() => Promise<void>) | null = null
+
+function triggerConfirmDelete(options: {
+  title: string
+  message: string
+  itemName: string
+  note?: string
+  confirmText?: string
+  onConfirm: () => Promise<void>
+}) {
+  confirmDeleteTitle.value = options.title
+  confirmDeleteMessage.value = options.message
+  confirmDeleteItemName.value = options.itemName
+  confirmDeleteNote.value = options.note || ''
+  confirmDeleteBtnText.value = options.confirmText || 'Delete'
+  onConfirmDeleteCallback = options.onConfirm
+  isConfirmDeleteOpen.value = true
+}
+
+async function handleExecuteConfirmDelete() {
+  if (!onConfirmDeleteCallback) return
+  isConfirmDeleteLoading.value = true
+  try {
+    await onConfirmDeleteCallback()
+    isConfirmDeleteOpen.value = false
+  } catch (err: any) {
+    // Handled in callback
+  } finally {
+    isConfirmDeleteLoading.value = false
+  }
+}
+
+function promptRemoveStage(index: number) {
+  const stage = currentStages.value[index]
+  const stageName = stage?.name || `Stage ${index + 1}`
+  triggerConfirmDelete({
+    title: 'Remove Workflow Stage',
+    message: `Are you sure you want to remove stage "${stageName}" from this workflow?`,
+    itemName: stageName,
+    note: 'The stage will be removed from the pipeline. Click "Save Workflow" to persist.',
+    confirmText: 'Remove Stage',
+    onConfirm: async () => {
+      removeStage(index)
+    }
+  })
 }
 
 const isSaving = ref(false)
@@ -165,9 +221,23 @@ function exportYaml() {
       <WorkflowStageBuilder
         :stages="currentStages"
         @add="addStage"
-        @remove="removeStage"
+        @remove="promptRemoveStage"
         @update="currentStages = $event"
       />
     </main>
+
+    <!-- Confirmation Modal -->
+    <ConfirmDeleteModal
+      :is-open="isConfirmDeleteOpen"
+      :title="confirmDeleteTitle"
+      :message="confirmDeleteMessage"
+      :item-name="confirmDeleteItemName"
+      :note="confirmDeleteNote"
+      :confirm-text="confirmDeleteBtnText"
+      :loading="isConfirmDeleteLoading"
+      @confirm="handleExecuteConfirmDelete"
+      @close="isConfirmDeleteOpen = false"
+    />
   </div>
 </template>
+

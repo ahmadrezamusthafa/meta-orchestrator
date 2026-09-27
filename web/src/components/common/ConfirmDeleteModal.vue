@@ -33,7 +33,7 @@ const emit = defineEmits<{
 <template>
   <div
     v-if="isOpen"
-    class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+    class="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
     @click.self="emit('close')"
   >
     <div

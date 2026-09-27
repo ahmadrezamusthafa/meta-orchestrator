@@ -8,6 +8,7 @@ import type {
   JiraIssueDTO, MCPConfig, ConnectorPingConfig, PingAllSummary 
 } from '../types'
 import JiraImportModal from '../components/kanban/JiraImportModal.vue'
+import ConfirmDeleteModal from '../components/common/ConfirmDeleteModal.vue'
 import { 
   Plug, CheckCircle2, AlertCircle, RefreshCw, Wifi, Save, ExternalLink, 
   Eye, EyeOff, Search, Download, FileText, Check, ShieldCheck, ArrowRight, 
@@ -414,6 +415,60 @@ function addEnvVar() {
 function removeEnvVar(k: string) {
   if (!selectedConnector.value?.mcp?.env) return
   delete selectedConnector.value.mcp.env[k]
+}
+
+// Confirmation modal state
+const isConfirmDeleteOpen = ref(false)
+const confirmDeleteTitle = ref('Confirm Deletion')
+const confirmDeleteMessage = ref('Are you sure you want to proceed?')
+const confirmDeleteItemName = ref('')
+const confirmDeleteNote = ref('')
+const confirmDeleteBtnText = ref('Delete')
+const isConfirmDeleteLoading = ref(false)
+let onConfirmDeleteCallback: (() => Promise<void>) | null = null
+
+function triggerConfirmDelete(options: {
+  title: string
+  message: string
+  itemName: string
+  note?: string
+  confirmText?: string
+  onConfirm: () => Promise<void>
+}) {
+  confirmDeleteTitle.value = options.title
+  confirmDeleteMessage.value = options.message
+  confirmDeleteItemName.value = options.itemName
+  confirmDeleteNote.value = options.note || ''
+  confirmDeleteBtnText.value = options.confirmText || 'Delete'
+  onConfirmDeleteCallback = options.onConfirm
+  isConfirmDeleteOpen.value = true
+}
+
+async function handleExecuteConfirmDelete() {
+  if (!onConfirmDeleteCallback) return
+  isConfirmDeleteLoading.value = true
+  try {
+    await onConfirmDeleteCallback()
+    isConfirmDeleteOpen.value = false
+  } catch (err: any) {
+    // Handled in callback
+  } finally {
+    isConfirmDeleteLoading.value = false
+  }
+}
+
+function promptRemoveEnvVar(k: string) {
+  triggerConfirmDelete({
+    title: 'Delete Environment Variable',
+    message: `Are you sure you want to delete environment variable "${k}" from connector "${selectedConnector.value?.name || 'MCP'}"?`,
+    itemName: k,
+    note: 'The variable can be re-added at any time.',
+    confirmText: 'Delete Variable',
+    onConfirm: async () => {
+      removeEnvVar(k)
+      toastStore.info('Variable Removed', `Deleted environment variable ${k}`)
+    }
+  })
 }
 
 // Open Global MCP Export Modal
@@ -1605,7 +1660,7 @@ onUnmounted(() => {
                         class="flex-1 h-7 px-2.5 bg-slate-900 border border-slate-750 rounded text-slate-200 font-mono text-[11px] focus:outline-none focus:border-purple-500"
                       />
                       <button
-                        @click="removeEnvVar(key as string)"
+                        @click="promptRemoveEnvVar(key as string)"
                         class="p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-rose-400 transition"
                         title="Delete variable"
                       >
@@ -1839,5 +1894,19 @@ onUnmounted(() => {
       @close="showImportModal = false"
       @imported="searchExplorer"
     />
+
+    <!-- Confirmation Modal -->
+    <ConfirmDeleteModal
+      :is-open="isConfirmDeleteOpen"
+      :title="confirmDeleteTitle"
+      :message="confirmDeleteMessage"
+      :item-name="confirmDeleteItemName"
+      :note="confirmDeleteNote"
+      :confirm-text="confirmDeleteBtnText"
+      :loading="isConfirmDeleteLoading"
+      @confirm="handleExecuteConfirmDelete"
+      @close="isConfirmDeleteOpen = false"
+    />
   </div>
 </template>
+

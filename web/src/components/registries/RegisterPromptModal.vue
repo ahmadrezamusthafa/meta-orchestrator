@@ -12,8 +12,11 @@ import {
   AlertTriangle,
   XCircle,
   Folder,
+  FolderOpen,
   FileText,
 } from 'lucide-vue-next'
+import DirectoryPickerModal from '../common/DirectoryPickerModal.vue'
+
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -33,6 +36,18 @@ const testResult = ref<{
   templates: PromptItemDTO[]
   error?: string
 } | null>(null)
+
+const isDirectoryPickerOpen = ref(false)
+
+function handleDirectorySelected(path: string) {
+  sourcePath.value = path
+  isDirectoryPickerOpen.value = false
+  if (!sourceName.value.trim()) {
+    sourceName.value = path.split('/').filter(Boolean).pop() || 'Prompt Templates'
+  }
+  handleTestCompatibility()
+}
+
 
 const presets = [
   { label: 'Billing Prompts (.github/prompts)', path: '/Users/rezamekari/Projects/go/src/bitbucket.org/mid-kelola-indonesia/billing/.github/prompts' },
@@ -146,21 +161,33 @@ async function handleRegister() {
           </div>
         </div>
 
-        <!-- Directory Path Input -->
+        <!-- Directory Path Input with Browse Button -->
         <div class="space-y-1.5">
           <label class="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center justify-between">
             <span>Directory Path <span class="text-rose-400">*</span></span>
             <span class="text-[10px] text-slate-500">Path to folder containing *.prompt.md or *.md</span>
           </label>
-          <div class="relative">
-            <input
-              v-model="sourcePath"
-              type="text"
-              placeholder="/Users/.../billing/.github/prompts or .github/prompts"
-              class="w-full h-10 px-3.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-sky-500 font-mono"
-            />
+          <div class="flex items-center gap-2">
+            <div class="relative flex-1">
+              <input
+                v-model="sourcePath"
+                type="text"
+                placeholder="/Users/.../billing/.github/prompts or .github/prompts"
+                class="w-full h-10 px-3.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-sky-500 font-mono"
+              />
+            </div>
+            <button
+              type="button"
+              @click="isDirectoryPickerOpen = true"
+              class="h-10 px-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center gap-2 border border-slate-700 hover:border-sky-500/50 transition-colors whitespace-nowrap shadow-sm"
+              title="Browse host filesystem to select directory"
+            >
+              <FolderOpen class="w-4 h-4 text-sky-400" />
+              <span>Browse...</span>
+            </button>
           </div>
         </div>
+
 
         <!-- Source Label / Name -->
         <div class="space-y-1.5">
@@ -255,5 +282,17 @@ async function handleRegister() {
         </button>
       </div>
     </div>
+
+    <!-- Directory Browser Modal -->
+    <DirectoryPickerModal
+      :is-open="isDirectoryPickerOpen"
+      :initial-path="sourcePath || undefined"
+      title="Select Prompt Templates Directory"
+      helper-text="Browse your host filesystem and select the directory containing *.prompt.md or markdown prompt files"
+      :can-create-folder="false"
+      @select="handleDirectorySelected"
+      @close="isDirectoryPickerOpen = false"
+    />
   </div>
 </template>
+
