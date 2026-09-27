@@ -108,6 +108,22 @@ export interface BenchmarkCellDTO {
   avg_duration_s: number
 }
 
+export interface PromptItemDTO {
+  id: string
+  name: string
+  source: string
+  variables: string[]
+  system_override: boolean
+}
+
+export interface HookItemDTO {
+  id: string
+  event: string
+  type: string
+  command: string
+  policy: string
+}
+
 export interface RegistryDTO {
   skills: Array<{
     id: string
@@ -117,20 +133,8 @@ export interface RegistryDTO {
     description: string
     repo_url?: string
   }>
-  prompts: Array<{
-    id: string
-    name: string
-    source: string
-    variables: string[]
-    system_override: boolean
-  }>
-  hooks: Array<{
-    id: string
-    event: string
-    type: string
-    command: string
-    policy: string
-  }>
+  prompts: PromptItemDTO[]
+  hooks: HookItemDTO[]
 }
 
 export type ProjectRole = 'frontend' | 'backend' | 'automation-test' | 'contracts' | 'artifact' | 'other'

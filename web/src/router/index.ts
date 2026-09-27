@@ -55,8 +55,7 @@ const router = createRouter({
     },
     {
       path: '/settings/registries',
-      name: 'registries-settings',
-      component: RegistriesSettingsView,
+      redirect: { path: '/skills', query: { tab: 'prompts' } },
     },
   ],
 })

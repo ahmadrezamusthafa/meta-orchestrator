@@ -47,12 +47,12 @@ const layoutStore = useLayoutStore()
           <Plug class="w-5 h-5" />
         </NavRailItem>
 
-        <NavRailItem to="/tools" label="Tool Lifecycle Hub" :is-expanded="layoutStore.isNavExpanded">
-          <Wrench class="w-5 h-5" />
+        <NavRailItem to="/skills" label="Skills & Registries Hub" :is-expanded="layoutStore.isNavExpanded">
+          <Sparkles class="w-5 h-5 text-amber-400" />
         </NavRailItem>
 
-        <NavRailItem to="/skills" label="Skills & Claude Hub" :is-expanded="layoutStore.isNavExpanded">
-          <Sparkles class="w-5 h-5 text-amber-400" />
+        <NavRailItem to="/tools" label="Dev Tools & Packages" :is-expanded="layoutStore.isNavExpanded">
+          <Wrench class="w-5 h-5" />
         </NavRailItem>
 
         <NavRailItem to="/settings/providers" label="AI Providers & Matrix" :is-expanded="layoutStore.isNavExpanded">
@@ -61,10 +61,6 @@ const layoutStore = useLayoutStore()
 
         <NavRailItem to="/settings/workflows" label="Custom SDLC Builder" :is-expanded="layoutStore.isNavExpanded">
           <GitFork class="w-5 h-5" />
-        </NavRailItem>
-
-        <NavRailItem to="/settings/registries" label="Multi-Source Registries" :is-expanded="layoutStore.isNavExpanded">
-          <BookOpen class="w-5 h-5" />
         </NavRailItem>
       </nav>
     </div>
