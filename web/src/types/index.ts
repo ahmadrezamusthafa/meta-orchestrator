@@ -295,6 +295,8 @@ export interface ConnectorItem {
   last_tested_at?: string
   latency_ms?: number
   error_message?: string
+  has_env_auth?: boolean
+  env_auth_source?: string
 }
 
 export interface ToggleConnectorRequest {

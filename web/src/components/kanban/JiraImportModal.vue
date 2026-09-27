@@ -131,11 +131,11 @@ onMounted(() => {
             <Download class="w-4 h-4" />
           </div>
           <div>
-            <h3 class="text-sm font-semibold text-slate-100 flex items-center gap-2">
-              Import from JIRA
-              <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-950 text-blue-400 border border-blue-800/50">My Assigned Tickets</span>
+            <h3 class="text-sm font-semibold text-slate-100 flex flex-wrap items-center gap-2">
+              <span>Import from JIRA</span>
+              <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-950 text-blue-400 border border-blue-800/50 whitespace-nowrap">My Assigned Tickets</span>
             </h3>
-            <p class="text-xs text-slate-400">Scaped exclusively to issues assigned to your active account credentials</p>
+            <p class="text-xs text-slate-400">Scoped exclusively to issues assigned to your active account credentials</p>
           </div>
         </div>
         <button
@@ -148,7 +148,7 @@ onMounted(() => {
       </div>
 
       <!-- Credential & JQL Status Bar -->
-      <div class="px-6 py-2.5 bg-blue-950/20 border-b border-blue-900/30 flex items-center justify-between text-xs">
+      <div class="px-6 py-2.5 bg-blue-950/20 border-b border-blue-900/30 flex items-center justify-between text-xs flex-wrap gap-2">
         <div class="flex items-center gap-2 text-slate-300">
           <div class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
           <span class="text-slate-400">Assigned to:</span>

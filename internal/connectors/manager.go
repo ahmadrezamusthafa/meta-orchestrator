@@ -21,6 +21,81 @@ import (
 
 var jiraKeyRegex = regexp.MustCompile(`\b([A-Z]{2,10}-\d+)\b`)
 
+// loadDotEnv parses .env files in the provided directories and sets variables into process environment if unset.
+func loadDotEnv(dirs ...string) {
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		envPath := filepath.Join(dir, ".env")
+		data, err := os.ReadFile(envPath)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			key := strings.TrimSpace(parts[0])
+			val := strings.TrimSpace(parts[1])
+			if len(val) >= 2 {
+				if (val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'') {
+					val = val[1 : len(val)-1]
+				}
+			}
+			if key != "" && os.Getenv(key) == "" {
+				_ = os.Setenv(key, val)
+			}
+		}
+	}
+}
+
+// resolveEnvValue searches environment variables for the first non-empty match among keys.
+func resolveEnvValue(keys ...string) (string, string) {
+	for _, k := range keys {
+		if val := strings.TrimSpace(os.Getenv(k)); val != "" {
+			return val, k
+		}
+	}
+	return "", ""
+}
+
+// parseJiraDescription extracts plain text whether the description is a string, nil, or an Atlassian Document Format (ADF) map.
+func parseJiraDescription(raw interface{}) string {
+	if raw == nil {
+		return ""
+	}
+	if s, ok := raw.(string); ok {
+		return s
+	}
+	if m, ok := raw.(map[string]interface{}); ok {
+		var sb strings.Builder
+		extractADFText(m, &sb)
+		return strings.TrimSpace(sb.String())
+	}
+	return ""
+}
+
+func extractADFText(node map[string]interface{}, sb *strings.Builder) {
+	if t, ok := node["type"].(string); ok && t == "text" {
+		if text, ok := node["text"].(string); ok {
+			sb.WriteString(text)
+		}
+	}
+	if content, ok := node["content"].([]interface{}); ok {
+		for _, child := range content {
+			if childMap, ok := child.(map[string]interface{}); ok {
+				extractADFText(childMap, sb)
+			}
+		}
+	}
+}
+
 // Manager orchestrates third-party tool integrations like JIRA, Confluence, and the modular catalog.
 type Manager struct {
 	mu            sync.RWMutex
@@ -87,16 +162,253 @@ func NewManager(rootDir string) *Manager {
 	return m
 }
 
+// resolveTokenLocked finds the effective token across direct input, existing item, MCP env, and environment variables.
+func (m *Manager) resolveTokenLocked(id, candidate string) (string, string) {
+	candidate = strings.TrimSpace(candidate)
+	if candidate != "" && !strings.Contains(candidate, "••••") {
+		return candidate, "direct_input"
+	}
+
+	existing := m.items[id]
+	var mcpEnvToken string
+	if existing != nil && existing.MCP != nil && existing.MCP.Env != nil {
+		switch id {
+		case "jira":
+			mcpEnvToken = existing.MCP.Env["JIRA_API_TOKEN"]
+		case "confluence":
+			mcpEnvToken = existing.MCP.Env["CONFLUENCE_API_TOKEN"]
+		case "bitbucket":
+			mcpEnvToken = existing.MCP.Env["BITBUCKET_APP_PASSWORD"]
+			if mcpEnvToken == "" {
+				mcpEnvToken = existing.MCP.Env["BITBUCKET_TOKEN"]
+			}
+		case "github":
+			mcpEnvToken = existing.MCP.Env["GITHUB_PERSONAL_ACCESS_TOKEN"]
+		case "gitlab":
+			mcpEnvToken = existing.MCP.Env["GITLAB_PERSONAL_ACCESS_TOKEN"]
+		case "slack":
+			mcpEnvToken = existing.MCP.Env["SLACK_BOT_TOKEN"]
+		case "linear":
+			mcpEnvToken = existing.MCP.Env["LINEAR_API_KEY"]
+		case "notion":
+			mcpEnvToken = existing.MCP.Env["NOTION_API_KEY"]
+		}
+	}
+
+	var existingToken string
+	if existing != nil && existing.APIToken != "" && !strings.Contains(existing.APIToken, "••••") {
+		existingToken = existing.APIToken
+	}
+	if id == "jira" && existingToken == "" && m.config.Jira.APIToken != "" && !strings.Contains(m.config.Jira.APIToken, "••••") {
+		existingToken = m.config.Jira.APIToken
+	}
+	if id == "confluence" && existingToken == "" && m.config.Confluence.APIToken != "" && !strings.Contains(m.config.Confluence.APIToken, "••••") {
+		existingToken = m.config.Confluence.APIToken
+	}
+
+	if existingToken != "" {
+		return existingToken, "saved_config"
+	}
+	if strings.TrimSpace(mcpEnvToken) != "" && !strings.Contains(mcpEnvToken, "••••") {
+		return strings.TrimSpace(mcpEnvToken), "mcp_env"
+	}
+
+	// Environment variable checks
+	switch id {
+	case "jira":
+		if v, src := resolveEnvValue("JIRA_API_TOKEN", "JIRA_TOKEN", "ATLASSIAN_API_TOKEN"); v != "" {
+			return v, src
+		}
+	case "confluence":
+		if v, src := resolveEnvValue("CONFLUENCE_API_TOKEN", "CONFLUENCE_TOKEN"); v != "" {
+			return v, src
+		}
+		if v, src := resolveEnvValue("JIRA_API_TOKEN", "ATLASSIAN_API_TOKEN"); v != "" {
+			return v, src + " (shared)"
+		}
+		if m.config.Jira.APIToken != "" && !strings.Contains(m.config.Jira.APIToken, "••••") {
+			return m.config.Jira.APIToken, "jira_config (shared)"
+		}
+	case "bitbucket":
+		if v, src := resolveEnvValue("BITBUCKET_APP_PASSWORD", "BITBUCKET_TOKEN", "BITBUCKET_API_TOKEN", "BITBUCKET_PASSWORD"); v != "" {
+			return v, src
+		}
+	case "github":
+		if v, src := resolveEnvValue("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_API_TOKEN"); v != "" {
+			return v, src
+		}
+	case "gitlab":
+		if v, src := resolveEnvValue("GITLAB_TOKEN", "GITLAB_PERSONAL_ACCESS_TOKEN", "GITLAB_API_TOKEN", "GL_TOKEN"); v != "" {
+			return v, src
+		}
+	case "slack":
+		if v, src := resolveEnvValue("SLACK_BOT_TOKEN", "SLACK_TOKEN"); v != "" {
+			return v, src
+		}
+	case "linear":
+		if v, src := resolveEnvValue("LINEAR_API_KEY", "LINEAR_TOKEN"); v != "" {
+			return v, src
+		}
+	case "notion":
+		if v, src := resolveEnvValue("NOTION_API_KEY", "NOTION_TOKEN", "NOTION_INTEGRATION_TOKEN"); v != "" {
+			return v, src
+		}
+	}
+
+	return "", ""
+}
+
+// ResolveToken returns the active credential token for the given connector identifier.
+func (m *Manager) ResolveToken(id, candidate string) (string, string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.resolveTokenLocked(id, candidate)
+}
+
+func (m *Manager) resolveUsernameLocked(id, candidate string) (string, string) {
+	candidate = strings.TrimSpace(candidate)
+	if candidate != "" && candidate != "devops@meta-orchestrator.io" {
+		return candidate, "direct_input"
+	}
+
+	switch id {
+	case "jira":
+		if v, src := resolveEnvValue("JIRA_EMAIL", "JIRA_USERNAME", "ATLASSIAN_EMAIL"); v != "" {
+			return v, src
+		}
+	case "confluence":
+		if v, src := resolveEnvValue("CONFLUENCE_EMAIL", "CONFLUENCE_USERNAME"); v != "" {
+			return v, src
+		}
+		if v, src := resolveEnvValue("JIRA_EMAIL", "ATLASSIAN_EMAIL"); v != "" {
+			return v, src + " (shared)"
+		}
+	case "bitbucket":
+		if v, src := resolveEnvValue("BITBUCKET_USERNAME", "BITBUCKET_USER"); v != "" {
+			return v, src
+		}
+	}
+
+	if existing := m.items[id]; existing != nil && existing.Username != "" && existing.Username != "devops@meta-orchestrator.io" {
+		return existing.Username, "saved_config"
+	}
+	if id == "jira" && m.config.Jira.Username != "" && m.config.Jira.Username != "devops@meta-orchestrator.io" {
+		return m.config.Jira.Username, "jira_config"
+	}
+	if id == "confluence" && m.config.Confluence.Username != "" && m.config.Confluence.Username != "devops@meta-orchestrator.io" {
+		return m.config.Confluence.Username, "confluence_config"
+	}
+
+	if candidate != "" {
+		return candidate, "default"
+	}
+	return "", ""
+}
+
+// ResolveUsername returns the effective username or email for the given connector identifier.
+func (m *Manager) ResolveUsername(id, candidate string) (string, string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.resolveUsernameLocked(id, candidate)
+}
+
+func (m *Manager) resolveBaseURLLocked(id, candidate, userEmail string) string {
+	candidate = strings.TrimRight(strings.TrimSpace(candidate), "/")
+
+	var envURL string
+	switch id {
+	case "jira":
+		envURL, _ = resolveEnvValue("JIRA_URL", "JIRA_BASE_URL")
+	case "confluence":
+		envURL, _ = resolveEnvValue("CONFLUENCE_URL", "CONFLUENCE_BASE_URL")
+	case "bitbucket":
+		envURL, _ = resolveEnvValue("BITBUCKET_URL")
+	case "github":
+		envURL, _ = resolveEnvValue("GITHUB_URL", "GITHUB_API_URL")
+	case "gitlab":
+		envURL, _ = resolveEnvValue("GITLAB_URL", "GITLAB_API_URL")
+	case "slack":
+		envURL, _ = resolveEnvValue("SLACK_WEBHOOK_URL")
+	}
+
+	if envURL != "" {
+		return strings.TrimRight(envURL, "/")
+	}
+
+	// Mekari organization domain detection
+	if strings.Contains(strings.ToLower(userEmail), "@mekari.com") {
+		if id == "jira" && (candidate == "" || candidate == "https://jira.atlassian.net") {
+			return "https://jurnal.atlassian.net"
+		}
+		if id == "confluence" && (candidate == "" || candidate == "https://wiki.atlassian.net") {
+			return "https://jurnal.atlassian.net/wiki"
+		}
+	}
+
+	if candidate != "" {
+		return candidate
+	}
+
+	if existing := m.items[id]; existing != nil && existing.BaseURL != "" {
+		return strings.TrimRight(existing.BaseURL, "/")
+	}
+
+	switch id {
+	case "jira":
+		return "https://jira.atlassian.net"
+	case "confluence":
+		return "https://wiki.atlassian.net"
+	case "bitbucket":
+		return "https://api.bitbucket.org/2.0"
+	case "github":
+		return "https://api.github.com"
+	case "gitlab":
+		return "https://gitlab.com"
+	case "linear":
+		return "https://api.linear.app/graphql"
+	case "notion":
+		return "https://api.notion.com/v1"
+	}
+	return ""
+}
+
+// ResolveBaseURL returns the effective base URL with domain inference.
+func (m *Manager) ResolveBaseURL(id, candidate, userEmail string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.resolveBaseURLLocked(id, candidate, userEmail)
+}
+
 func (m *Manager) ensureCatalogLocked() {
 	if m.items == nil {
 		m.items = make(map[string]*types.ConnectorItem)
 	}
 
 	// 1. JIRA
+	jiraToken, jiraTokenSrc := m.resolveTokenLocked("jira", m.config.Jira.APIToken)
+	jiraUser, _ := m.resolveUsernameLocked("jira", m.config.Jira.Username)
+	jiraURL := m.resolveBaseURLLocked("jira", m.config.Jira.BaseURL, jiraUser)
+
+	if jiraToken != "" {
+		m.config.Jira.APIToken = jiraToken
+		if m.config.Jira.Status == "unconfigured" || (m.config.Jira.Status == "error" && strings.Contains(m.config.Jira.ErrorMessage, "required")) {
+			m.config.Jira.Status = "configured"
+			m.config.Jira.ErrorMessage = ""
+		}
+	}
+	if jiraUser != "" && (m.config.Jira.Username == "" || m.config.Jira.Username == "devops@meta-orchestrator.io") {
+		m.config.Jira.Username = jiraUser
+	}
+	if jiraURL != "" && (m.config.Jira.BaseURL == "" || m.config.Jira.BaseURL == "https://jira.atlassian.net") {
+		m.config.Jira.BaseURL = jiraURL
+	}
+
 	jiraItem, exists := m.items["jira"]
 	if !exists {
 		status := "unconfigured"
-		if m.config.Jira.APIToken != "" && !strings.Contains(m.config.Jira.APIToken, "••••") {
+		if m.config.Jira.Status != "" {
+			status = m.config.Jira.Status
+		} else if jiraToken != "" {
 			status = "configured"
 		}
 		jiraItem = &types.ConnectorItem{
@@ -134,9 +446,32 @@ func (m *Manager) ensureCatalogLocked() {
 			},
 			LatencyMs: 0,
 		}
+		if jiraTokenSrc != "" && jiraTokenSrc != "direct_input" && jiraTokenSrc != "saved_config" {
+			jiraItem.HasEnvAuth = true
+			jiraItem.EnvAuthSource = jiraTokenSrc
+		}
 		m.items["jira"] = jiraItem
 	} else {
 		jiraItem.Enabled = m.config.Jira.Enabled
+		if jiraItem.APIToken == "" || strings.Contains(jiraItem.APIToken, "••••") {
+			jiraItem.APIToken = jiraToken
+		}
+		if jiraItem.Username == "" || jiraItem.Username == "devops@meta-orchestrator.io" {
+			jiraItem.Username = jiraUser
+		}
+		if jiraItem.BaseURL == "" || jiraItem.BaseURL == "https://jira.atlassian.net" {
+			jiraItem.BaseURL = jiraURL
+		}
+		if jiraTokenSrc != "" && jiraTokenSrc != "direct_input" && jiraTokenSrc != "saved_config" {
+			jiraItem.HasEnvAuth = true
+			jiraItem.EnvAuthSource = jiraTokenSrc
+		}
+		if jiraItem.Status == "unconfigured" || (jiraItem.Status == "error" && strings.Contains(jiraItem.ErrorMessage, "required")) {
+			if jiraToken != "" {
+				jiraItem.Status = "configured"
+				jiraItem.ErrorMessage = ""
+			}
+		}
 		if jiraItem.MCP == nil {
 			jiraItem.MCP = &types.MCPConfig{
 				Enabled:   true,
@@ -149,14 +484,38 @@ func (m *Manager) ensureCatalogLocked() {
 					"JIRA_API_TOKEN": jiraItem.APIToken,
 				},
 			}
+		} else if jiraItem.MCP.Env != nil && jiraToken != "" {
+			jiraItem.MCP.Env["JIRA_URL"] = jiraItem.BaseURL
+			jiraItem.MCP.Env["JIRA_EMAIL"] = jiraItem.Username
+			jiraItem.MCP.Env["JIRA_API_TOKEN"] = jiraToken
 		}
 	}
 
 	// 2. Confluence
+	confToken, confTokenSrc := m.resolveTokenLocked("confluence", m.config.Confluence.APIToken)
+	confUser, _ := m.resolveUsernameLocked("confluence", m.config.Confluence.Username)
+	confURL := m.resolveBaseURLLocked("confluence", m.config.Confluence.BaseURL, confUser)
+
+	if confToken != "" {
+		m.config.Confluence.APIToken = confToken
+		if m.config.Confluence.Status == "unconfigured" || (m.config.Confluence.Status == "error" && strings.Contains(m.config.Confluence.ErrorMessage, "required")) {
+			m.config.Confluence.Status = "configured"
+			m.config.Confluence.ErrorMessage = ""
+		}
+	}
+	if confUser != "" && (m.config.Confluence.Username == "" || m.config.Confluence.Username == "devops@meta-orchestrator.io") {
+		m.config.Confluence.Username = confUser
+	}
+	if confURL != "" && (m.config.Confluence.BaseURL == "" || m.config.Confluence.BaseURL == "https://wiki.atlassian.net") {
+		m.config.Confluence.BaseURL = confURL
+	}
+
 	confItem, exists := m.items["confluence"]
 	if !exists {
 		status := "unconfigured"
-		if m.config.Confluence.APIToken != "" && !strings.Contains(m.config.Confluence.APIToken, "••••") {
+		if m.config.Confluence.Status != "" {
+			status = m.config.Confluence.Status
+		} else if confToken != "" {
 			status = "configured"
 		}
 		confItem = &types.ConnectorItem{
@@ -194,9 +553,32 @@ func (m *Manager) ensureCatalogLocked() {
 			},
 			LatencyMs: 0,
 		}
+		if confTokenSrc != "" && confTokenSrc != "direct_input" && confTokenSrc != "saved_config" {
+			confItem.HasEnvAuth = true
+			confItem.EnvAuthSource = confTokenSrc
+		}
 		m.items["confluence"] = confItem
 	} else {
 		confItem.Enabled = m.config.Confluence.Enabled
+		if confItem.APIToken == "" || strings.Contains(confItem.APIToken, "••••") {
+			confItem.APIToken = confToken
+		}
+		if confItem.Username == "" || confItem.Username == "devops@meta-orchestrator.io" {
+			confItem.Username = confUser
+		}
+		if confItem.BaseURL == "" || confItem.BaseURL == "https://wiki.atlassian.net" {
+			confItem.BaseURL = confURL
+		}
+		if confTokenSrc != "" && confTokenSrc != "direct_input" && confTokenSrc != "saved_config" {
+			confItem.HasEnvAuth = true
+			confItem.EnvAuthSource = confTokenSrc
+		}
+		if confItem.Status == "unconfigured" || (confItem.Status == "error" && strings.Contains(confItem.ErrorMessage, "required")) {
+			if confToken != "" {
+				confItem.Status = "configured"
+				confItem.ErrorMessage = ""
+			}
+		}
 		if confItem.MCP == nil {
 			confItem.MCP = &types.MCPConfig{
 				Enabled:   true,
@@ -209,12 +591,21 @@ func (m *Manager) ensureCatalogLocked() {
 					"CONFLUENCE_API_TOKEN": confItem.APIToken,
 				},
 			}
+		} else if confItem.MCP.Env != nil && confToken != "" {
+			confItem.MCP.Env["CONFLUENCE_URL"] = confItem.BaseURL
+			confItem.MCP.Env["CONFLUENCE_EMAIL"] = confItem.Username
+			confItem.MCP.Env["CONFLUENCE_API_TOKEN"] = confToken
 		}
 	}
 
 	// 3. GitHub
+	ghToken, ghSrc := m.resolveTokenLocked("github", "")
 	if it, exists := m.items["github"]; !exists {
-		m.items["github"] = &types.ConnectorItem{
+		status := "unconfigured"
+		if ghToken != "" {
+			status = "configured"
+		}
+		it = &types.ConnectorItem{
 			ID:            "github",
 			Name:          "GitHub Issues & PRs",
 			Category:      types.ConnectorCategoryVCS,
@@ -224,10 +615,10 @@ func (m *Manager) ensureCatalogLocked() {
 			Color:         "slate",
 			Enabled:       true,
 			ConfigMode:    "hybrid",
-			Status:        "unconfigured",
+			Status:        status,
 			BaseURL:       "https://api.github.com",
 			Username:      "",
-			APIToken:      "",
+			APIToken:      ghToken,
 			TargetEntity:  "",
 			TargetLabel:   "Default Organization / Repository",
 			Capabilities:  []string{"Issue #ID Detection", "Pull Request Creation", "CI Check Validation"},
@@ -237,26 +628,51 @@ func (m *Manager) ensureCatalogLocked() {
 				Args:      []string{"-y", "@modelcontextprotocol/server-github"},
 				Transport: "stdio",
 				Env: map[string]string{
-					"GITHUB_PERSONAL_ACCESS_TOKEN": "",
+					"GITHUB_PERSONAL_ACCESS_TOKEN": ghToken,
 				},
 			},
 			LatencyMs: 0,
 		}
-	} else if it.MCP == nil {
-		it.MCP = &types.MCPConfig{
-			Enabled:   true,
-			Command:   "npx",
-			Args:      []string{"-y", "@modelcontextprotocol/server-github"},
-			Transport: "stdio",
-			Env: map[string]string{
-				"GITHUB_PERSONAL_ACCESS_TOKEN": it.APIToken,
-			},
+		if ghSrc != "" && ghSrc != "direct_input" && ghSrc != "saved_config" {
+			it.HasEnvAuth = true
+			it.EnvAuthSource = ghSrc
+		}
+		m.items["github"] = it
+	} else {
+		if (it.APIToken == "" || strings.Contains(it.APIToken, "••••")) && ghToken != "" {
+			it.APIToken = ghToken
+		}
+		if ghSrc != "" && ghSrc != "direct_input" && ghSrc != "saved_config" {
+			it.HasEnvAuth = true
+			it.EnvAuthSource = ghSrc
+		}
+		if (it.Status == "unconfigured" || (it.Status == "error" && strings.Contains(it.ErrorMessage, "required"))) && it.APIToken != "" {
+			it.Status = "configured"
+			it.ErrorMessage = ""
+		}
+		if it.MCP == nil {
+			it.MCP = &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "@modelcontextprotocol/server-github"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"GITHUB_PERSONAL_ACCESS_TOKEN": it.APIToken,
+				},
+			}
+		} else if it.MCP.Env != nil && it.APIToken != "" {
+			it.MCP.Env["GITHUB_PERSONAL_ACCESS_TOKEN"] = it.APIToken
 		}
 	}
 
 	// 4. GitLab
+	glToken, glSrc := m.resolveTokenLocked("gitlab", "")
 	if it, exists := m.items["gitlab"]; !exists {
-		m.items["gitlab"] = &types.ConnectorItem{
+		status := "unconfigured"
+		if glToken != "" {
+			status = "configured"
+		}
+		it = &types.ConnectorItem{
 			ID:            "gitlab",
 			Name:          "GitLab DevOps",
 			Category:      types.ConnectorCategoryVCS,
@@ -266,10 +682,10 @@ func (m *Manager) ensureCatalogLocked() {
 			Color:         "amber",
 			Enabled:       false,
 			ConfigMode:    "hybrid",
-			Status:        "unconfigured",
+			Status:        status,
 			BaseURL:       "https://gitlab.com",
 			Username:      "",
-			APIToken:      "",
+			APIToken:      glToken,
 			TargetEntity:  "",
 			TargetLabel:   "Default Project Path",
 			Capabilities:  []string{"Merge Request Automation", "Issue Sync", "CI/CD Pipeline Triggers"},
@@ -279,28 +695,55 @@ func (m *Manager) ensureCatalogLocked() {
 				Args:      []string{"-y", "@modelcontextprotocol/server-gitlab"},
 				Transport: "stdio",
 				Env: map[string]string{
-					"GITLAB_PERSONAL_ACCESS_TOKEN": "",
+					"GITLAB_PERSONAL_ACCESS_TOKEN": glToken,
 					"GITLAB_API_URL":               "https://gitlab.com",
 				},
 			},
 			LatencyMs: 0,
 		}
-	} else if it.MCP == nil {
-		it.MCP = &types.MCPConfig{
-			Enabled:   true,
-			Command:   "npx",
-			Args:      []string{"-y", "@modelcontextprotocol/server-gitlab"},
-			Transport: "stdio",
-			Env: map[string]string{
-				"GITLAB_PERSONAL_ACCESS_TOKEN": it.APIToken,
-				"GITLAB_API_URL":               it.BaseURL,
-			},
+		if glSrc != "" && glSrc != "direct_input" && glSrc != "saved_config" {
+			it.HasEnvAuth = true
+			it.EnvAuthSource = glSrc
+		}
+		m.items["gitlab"] = it
+	} else {
+		if (it.APIToken == "" || strings.Contains(it.APIToken, "••••")) && glToken != "" {
+			it.APIToken = glToken
+		}
+		if glSrc != "" && glSrc != "direct_input" && glSrc != "saved_config" {
+			it.HasEnvAuth = true
+			it.EnvAuthSource = glSrc
+		}
+		if (it.Status == "unconfigured" || (it.Status == "error" && strings.Contains(it.ErrorMessage, "required"))) && it.APIToken != "" {
+			it.Status = "configured"
+			it.ErrorMessage = ""
+		}
+		if it.MCP == nil {
+			it.MCP = &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "@modelcontextprotocol/server-gitlab"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"GITLAB_PERSONAL_ACCESS_TOKEN": it.APIToken,
+					"GITLAB_API_URL":               it.BaseURL,
+				},
+			}
+		} else if it.MCP.Env != nil && it.APIToken != "" {
+			it.MCP.Env["GITLAB_PERSONAL_ACCESS_TOKEN"] = it.APIToken
+			it.MCP.Env["GITLAB_API_URL"] = it.BaseURL
 		}
 	}
 
-	// 5. Bitbucket (NEW)
+	// 5. Bitbucket
+	bbToken, bbSrc := m.resolveTokenLocked("bitbucket", "")
+	bbUser, _ := m.resolveUsernameLocked("bitbucket", "")
 	if it, exists := m.items["bitbucket"]; !exists {
-		m.items["bitbucket"] = &types.ConnectorItem{
+		status := "unconfigured"
+		if bbToken != "" {
+			status = "configured"
+		}
+		it = &types.ConnectorItem{
 			ID:            "bitbucket",
 			Name:          "Atlassian Bitbucket",
 			Category:      types.ConnectorCategoryVCS,
@@ -310,10 +753,10 @@ func (m *Manager) ensureCatalogLocked() {
 			Color:         "cyan",
 			Enabled:       false,
 			ConfigMode:    "hybrid",
-			Status:        "unconfigured",
+			Status:        status,
 			BaseURL:       "https://api.bitbucket.org/2.0",
-			Username:      "",
-			APIToken:      "",
+			Username:      bbUser,
+			APIToken:      bbToken,
 			TargetEntity:  "",
 			TargetLabel:   "Workspace / Repository Slug",
 			Capabilities:  []string{"Pull Request Automation", "Branch Permissions", "Bitbucket Pipelines CI", "Commit Status Checks"},
@@ -323,28 +766,57 @@ func (m *Manager) ensureCatalogLocked() {
 				Args:      []string{"-y", "@atlassian/mcp-server-bitbucket"},
 				Transport: "stdio",
 				Env: map[string]string{
-					"BITBUCKET_USERNAME":     "",
-					"BITBUCKET_APP_PASSWORD": "",
+					"BITBUCKET_USERNAME":     bbUser,
+					"BITBUCKET_APP_PASSWORD": bbToken,
 				},
 			},
 			LatencyMs: 0,
 		}
-	} else if it.MCP == nil {
-		it.MCP = &types.MCPConfig{
-			Enabled:   true,
-			Command:   "npx",
-			Args:      []string{"-y", "@atlassian/mcp-server-bitbucket"},
-			Transport: "stdio",
-			Env: map[string]string{
-				"BITBUCKET_USERNAME":     it.Username,
-				"BITBUCKET_APP_PASSWORD": it.APIToken,
-			},
+		if bbSrc != "" && bbSrc != "direct_input" && bbSrc != "saved_config" {
+			it.HasEnvAuth = true
+			it.EnvAuthSource = bbSrc
+		}
+		m.items["bitbucket"] = it
+	} else {
+		if (it.APIToken == "" || strings.Contains(it.APIToken, "••••")) && bbToken != "" {
+			it.APIToken = bbToken
+		}
+		if it.Username == "" && bbUser != "" {
+			it.Username = bbUser
+		}
+		if bbSrc != "" && bbSrc != "direct_input" && bbSrc != "saved_config" {
+			it.HasEnvAuth = true
+			it.EnvAuthSource = bbSrc
+		}
+		if (it.Status == "unconfigured" || (it.Status == "error" && strings.Contains(it.ErrorMessage, "required"))) && it.APIToken != "" {
+			it.Status = "configured"
+			it.ErrorMessage = ""
+		}
+		if it.MCP == nil {
+			it.MCP = &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "@atlassian/mcp-server-bitbucket"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"BITBUCKET_USERNAME":     it.Username,
+					"BITBUCKET_APP_PASSWORD": it.APIToken,
+				},
+			}
+		} else if it.MCP.Env != nil && it.APIToken != "" {
+			it.MCP.Env["BITBUCKET_USERNAME"] = it.Username
+			it.MCP.Env["BITBUCKET_APP_PASSWORD"] = it.APIToken
 		}
 	}
 
 	// 6. Slack
+	slackToken, slackSrc := m.resolveTokenLocked("slack", "")
 	if it, exists := m.items["slack"]; !exists {
-		m.items["slack"] = &types.ConnectorItem{
+		status := "unconfigured"
+		if slackToken != "" {
+			status = "configured"
+		}
+		it = &types.ConnectorItem{
 			ID:            "slack",
 			Name:          "Slack ChatOps",
 			Category:      types.ConnectorCategoryChatOps,
@@ -354,10 +826,10 @@ func (m *Manager) ensureCatalogLocked() {
 			Color:         "purple",
 			Enabled:       false,
 			ConfigMode:    "hybrid",
-			Status:        "unconfigured",
+			Status:        status,
 			BaseURL:       "https://hooks.slack.com/services/...",
 			Username:      "",
-			APIToken:      "",
+			APIToken:      slackToken,
 			TargetEntity:  "",
 			TargetLabel:   "Default Alert Channel",
 			Capabilities:  []string{"Gate Approval Alerts", "Frustration Escalations", "Stage Completion Pings"},
@@ -367,28 +839,53 @@ func (m *Manager) ensureCatalogLocked() {
 				Args:      []string{"-y", "@modelcontextprotocol/server-slack"},
 				Transport: "stdio",
 				Env: map[string]string{
-					"SLACK_BOT_TOKEN": "",
+					"SLACK_BOT_TOKEN": slackToken,
 					"SLACK_TEAM_ID":   "",
 				},
 			},
 			LatencyMs: 0,
 		}
-	} else if it.MCP == nil {
-		it.MCP = &types.MCPConfig{
-			Enabled:   true,
-			Command:   "npx",
-			Args:      []string{"-y", "@modelcontextprotocol/server-slack"},
-			Transport: "stdio",
-			Env: map[string]string{
-				"SLACK_BOT_TOKEN": it.APIToken,
-				"SLACK_TEAM_ID":   it.TargetEntity,
-			},
+		if slackSrc != "" && slackSrc != "direct_input" && slackSrc != "saved_config" {
+			it.HasEnvAuth = true
+			it.EnvAuthSource = slackSrc
+		}
+		m.items["slack"] = it
+	} else {
+		if (it.APIToken == "" || strings.Contains(it.APIToken, "••••")) && slackToken != "" {
+			it.APIToken = slackToken
+		}
+		if slackSrc != "" && slackSrc != "direct_input" && slackSrc != "saved_config" {
+			it.HasEnvAuth = true
+			it.EnvAuthSource = slackSrc
+		}
+		if (it.Status == "unconfigured" || (it.Status == "error" && strings.Contains(it.ErrorMessage, "required"))) && it.APIToken != "" {
+			it.Status = "configured"
+			it.ErrorMessage = ""
+		}
+		if it.MCP == nil {
+			it.MCP = &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "@modelcontextprotocol/server-slack"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"SLACK_BOT_TOKEN": it.APIToken,
+					"SLACK_TEAM_ID":   it.TargetEntity,
+				},
+			}
+		} else if it.MCP.Env != nil && it.APIToken != "" {
+			it.MCP.Env["SLACK_BOT_TOKEN"] = it.APIToken
 		}
 	}
 
 	// 7. Linear
+	linearToken, linearSrc := m.resolveTokenLocked("linear", "")
 	if it, exists := m.items["linear"]; !exists {
-		m.items["linear"] = &types.ConnectorItem{
+		status := "unconfigured"
+		if linearToken != "" {
+			status = "configured"
+		}
+		it = &types.ConnectorItem{
 			ID:            "linear",
 			Name:          "Linear App",
 			Category:      types.ConnectorCategoryIssueTracker,
@@ -398,10 +895,10 @@ func (m *Manager) ensureCatalogLocked() {
 			Color:         "violet",
 			Enabled:       false,
 			ConfigMode:    "hybrid",
-			Status:        "unconfigured",
+			Status:        status,
 			BaseURL:       "https://api.linear.app/graphql",
 			Username:      "",
-			APIToken:      "",
+			APIToken:      linearToken,
 			TargetEntity:  "",
 			TargetLabel:   "Team Prefix / Project",
 			Capabilities:  []string{"Identifier Detection", "Cycle Sync", "High-speed Import"},
@@ -411,26 +908,51 @@ func (m *Manager) ensureCatalogLocked() {
 				Args:      []string{"-y", "@modelcontextprotocol/server-linear"},
 				Transport: "stdio",
 				Env: map[string]string{
-					"LINEAR_API_KEY": "",
+					"LINEAR_API_KEY": linearToken,
 				},
 			},
 			LatencyMs: 0,
 		}
-	} else if it.MCP == nil {
-		it.MCP = &types.MCPConfig{
-			Enabled:   true,
-			Command:   "npx",
-			Args:      []string{"-y", "@modelcontextprotocol/server-linear"},
-			Transport: "stdio",
-			Env: map[string]string{
-				"LINEAR_API_KEY": it.APIToken,
-			},
+		if linearSrc != "" && linearSrc != "direct_input" && linearSrc != "saved_config" {
+			it.HasEnvAuth = true
+			it.EnvAuthSource = linearSrc
+		}
+		m.items["linear"] = it
+	} else {
+		if (it.APIToken == "" || strings.Contains(it.APIToken, "••••")) && linearToken != "" {
+			it.APIToken = linearToken
+		}
+		if linearSrc != "" && linearSrc != "direct_input" && linearSrc != "saved_config" {
+			it.HasEnvAuth = true
+			it.EnvAuthSource = linearSrc
+		}
+		if (it.Status == "unconfigured" || (it.Status == "error" && strings.Contains(it.ErrorMessage, "required"))) && it.APIToken != "" {
+			it.Status = "configured"
+			it.ErrorMessage = ""
+		}
+		if it.MCP == nil {
+			it.MCP = &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "@modelcontextprotocol/server-linear"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"LINEAR_API_KEY": it.APIToken,
+				},
+			}
+		} else if it.MCP.Env != nil && it.APIToken != "" {
+			it.MCP.Env["LINEAR_API_KEY"] = it.APIToken
 		}
 	}
 
 	// 8. Notion
+	notionToken, notionSrc := m.resolveTokenLocked("notion", "")
 	if it, exists := m.items["notion"]; !exists {
-		m.items["notion"] = &types.ConnectorItem{
+		status := "unconfigured"
+		if notionToken != "" {
+			status = "configured"
+		}
+		it = &types.ConnectorItem{
 			ID:            "notion",
 			Name:          "Notion Workspace",
 			Category:      types.ConnectorCategoryDocumentation,
@@ -440,10 +962,10 @@ func (m *Manager) ensureCatalogLocked() {
 			Color:         "stone",
 			Enabled:       false,
 			ConfigMode:    "hybrid",
-			Status:        "unconfigured",
+			Status:        status,
 			BaseURL:       "https://api.notion.com/v1",
 			Username:      "",
-			APIToken:      "",
+			APIToken:      notionToken,
 			TargetEntity:  "",
 			TargetLabel:   "Database / Parent Page",
 			Capabilities:  []string{"Page Creation", "Database Row Sync", "Rich Text Blocks"},
@@ -453,20 +975,40 @@ func (m *Manager) ensureCatalogLocked() {
 				Args:      []string{"-y", "@modelcontextprotocol/server-notion"},
 				Transport: "stdio",
 				Env: map[string]string{
-					"NOTION_API_KEY": "",
+					"NOTION_API_KEY": notionToken,
 				},
 			},
 			LatencyMs: 0,
 		}
-	} else if it.MCP == nil {
-		it.MCP = &types.MCPConfig{
-			Enabled:   true,
-			Command:   "npx",
-			Args:      []string{"-y", "@modelcontextprotocol/server-notion"},
-			Transport: "stdio",
-			Env: map[string]string{
-				"NOTION_API_KEY": it.APIToken,
-			},
+		if notionSrc != "" && notionSrc != "direct_input" && notionSrc != "saved_config" {
+			it.HasEnvAuth = true
+			it.EnvAuthSource = notionSrc
+		}
+		m.items["notion"] = it
+	} else {
+		if (it.APIToken == "" || strings.Contains(it.APIToken, "••••")) && notionToken != "" {
+			it.APIToken = notionToken
+		}
+		if notionSrc != "" && notionSrc != "direct_input" && notionSrc != "saved_config" {
+			it.HasEnvAuth = true
+			it.EnvAuthSource = notionSrc
+		}
+		if (it.Status == "unconfigured" || (it.Status == "error" && strings.Contains(it.ErrorMessage, "required"))) && it.APIToken != "" {
+			it.Status = "configured"
+			it.ErrorMessage = ""
+		}
+		if it.MCP == nil {
+			it.MCP = &types.MCPConfig{
+				Enabled:   true,
+				Command:   "npx",
+				Args:      []string{"-y", "@modelcontextprotocol/server-notion"},
+				Transport: "stdio",
+				Env: map[string]string{
+					"NOTION_API_KEY": it.APIToken,
+				},
+			}
+		} else if it.MCP.Env != nil && it.APIToken != "" {
+			it.MCP.Env["NOTION_API_KEY"] = it.APIToken
 		}
 	}
 
@@ -513,7 +1055,8 @@ func (m *Manager) ensureCatalogLocked() {
 		if !it.Enabled {
 			it.Status = "disabled"
 		} else if it.Status == "connected" && it.ConfigMode != "mcp" {
-			if strings.TrimSpace(it.APIToken) == "" && (it.ID == "jira" || it.ID == "confluence" || it.ID == "github" || it.ID == "gitlab" || it.ID == "bitbucket" || it.ID == "linear" || it.ID == "notion") {
+			tok, _ := m.resolveTokenLocked(it.ID, it.APIToken)
+			if strings.TrimSpace(tok) == "" && (it.ID == "jira" || it.ID == "confluence" || it.ID == "github" || it.ID == "gitlab" || it.ID == "bitbucket" || it.ID == "linear" || it.ID == "notion") {
 				it.Status = "unconfigured"
 			}
 		}
@@ -524,6 +1067,10 @@ func (m *Manager) load() {
 	if m.items == nil {
 		m.items = make(map[string]*types.ConnectorItem)
 	}
+
+	// Automatically ingest any .env file in project root or .sdlc
+	loadDotEnv(m.rootDir, filepath.Join(m.rootDir, ".sdlc"))
+
 	data, err := os.ReadFile(m.configPath)
 	if err == nil {
 		var cfg types.ConnectorsConfig
@@ -533,25 +1080,8 @@ func (m *Manager) load() {
 				m.config.Ping.IntervalSeconds = 30
 				m.config.Ping.Enabled = true
 			}
-			if !m.config.Jira.Enabled {
-				m.config.Jira.Status = "disabled"
-			} else if strings.TrimSpace(m.config.Jira.APIToken) == "" && m.config.Jira.Status == "connected" {
-				m.config.Jira.Status = "unconfigured"
-			}
-			if !m.config.Confluence.Enabled {
-				m.config.Confluence.Status = "disabled"
-			} else if strings.TrimSpace(m.config.Confluence.APIToken) == "" && m.config.Confluence.Status == "connected" {
-				m.config.Confluence.Status = "unconfigured"
-			}
 			for _, it := range cfg.Items {
 				if it != nil && it.ID != "" {
-					if !it.Enabled {
-						it.Status = "disabled"
-					} else if it.Status == "connected" && it.ConfigMode != "mcp" {
-						if strings.TrimSpace(it.APIToken) == "" && (it.ID == "jira" || it.ID == "confluence" || it.ID == "github" || it.ID == "gitlab" || it.ID == "bitbucket" || it.ID == "linear" || it.ID == "notion") {
-							it.Status = "unconfigured"
-						}
-					}
 					m.items[it.ID] = it
 				}
 			}
@@ -669,10 +1199,35 @@ func (m *Manager) UpdateConnector(item types.ConnectorItem) (*types.ConnectorIte
 	defer m.mu.Unlock()
 	m.ensureCatalogLocked()
 
+	existing := m.items[item.ID]
+
+	// Preserve existing credentials if submitted empty or masked
+	if strings.TrimSpace(item.APIToken) == "" || strings.Contains(item.APIToken, "••••") {
+		if existing != nil && existing.APIToken != "" && !strings.Contains(existing.APIToken, "••••") {
+			item.APIToken = existing.APIToken
+			item.HasEnvAuth = existing.HasEnvAuth
+			item.EnvAuthSource = existing.EnvAuthSource
+		} else {
+			resolved, src := m.resolveTokenLocked(item.ID, "")
+			if resolved != "" {
+				item.APIToken = resolved
+				item.HasEnvAuth = true
+				item.EnvAuthSource = src
+			}
+		}
+	}
+	if strings.TrimSpace(item.Username) == "" && existing != nil && existing.Username != "" {
+		item.Username = existing.Username
+	}
+	if strings.TrimSpace(item.BaseURL) == "" && existing != nil && existing.BaseURL != "" {
+		item.BaseURL = existing.BaseURL
+	}
+
 	if !item.Enabled {
 		item.Status = "disabled"
 	} else if item.Status == "connected" && item.ConfigMode != "mcp" {
-		if strings.TrimSpace(item.APIToken) == "" && (item.ID == "jira" || item.ID == "confluence" || item.ID == "github" || item.ID == "gitlab" || item.ID == "bitbucket" || item.ID == "linear" || item.ID == "notion") {
+		tok, _ := m.resolveTokenLocked(item.ID, item.APIToken)
+		if strings.TrimSpace(tok) == "" && (item.ID == "jira" || item.ID == "confluence" || item.ID == "github" || item.ID == "gitlab" || item.ID == "bitbucket" || item.ID == "linear" || item.ID == "notion") {
 			item.Status = "unconfigured"
 		}
 	}
@@ -768,8 +1323,31 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 	m.mu.RUnlock()
 
 	activeItem := existing
-	if item != nil && (item.BaseURL != "" || item.MCP != nil || item.TargetEntity != "") {
-		activeItem = item
+	if item != nil && (item.BaseURL != "" || item.MCP != nil || item.TargetEntity != "" || item.APIToken != "" || item.Username != "") {
+		if existing != nil {
+			clone := *existing
+			if item.BaseURL != "" {
+				clone.BaseURL = item.BaseURL
+			}
+			if item.Username != "" {
+				clone.Username = item.Username
+			}
+			if item.APIToken != "" && !strings.Contains(item.APIToken, "••••") {
+				clone.APIToken = item.APIToken
+			}
+			if item.TargetEntity != "" {
+				clone.TargetEntity = item.TargetEntity
+			}
+			if item.ConfigMode != "" {
+				clone.ConfigMode = item.ConfigMode
+			}
+			if item.MCP != nil {
+				clone.MCP = item.MCP
+			}
+			activeItem = &clone
+		} else {
+			activeItem = item
+		}
 	}
 	if activeItem == nil {
 		return types.TestConnectorResponse{
@@ -784,15 +1362,28 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 		return m.TestMCPConnector(ctx, id, activeItem.MCP)
 	}
 
+	// Resolve effective credentials
+	resolvedToken, _ := m.ResolveToken(id, activeItem.APIToken)
+	resolvedUser, _ := m.ResolveUsername(id, activeItem.Username)
+	resolvedURL := m.ResolveBaseURL(id, activeItem.BaseURL, resolvedUser)
+
+	activeItem.APIToken = resolvedToken
+	if resolvedUser != "" {
+		activeItem.Username = resolvedUser
+	}
+	if resolvedURL != "" {
+		activeItem.BaseURL = resolvedURL
+	}
+
 	// Special routing for JIRA & Confluence
 	if id == "jira" {
+		m.mu.RLock()
 		cfg := m.config.Jira
-		if activeItem != nil {
-			cfg.BaseURL = activeItem.BaseURL
-			cfg.Username = activeItem.Username
-			if activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
-				cfg.APIToken = activeItem.APIToken
-			}
+		m.mu.RUnlock()
+		cfg.BaseURL = activeItem.BaseURL
+		cfg.Username = activeItem.Username
+		cfg.APIToken = activeItem.APIToken
+		if activeItem.TargetEntity != "" {
 			cfg.ProjectKey = activeItem.TargetEntity
 		}
 		res := m.TestJira(ctx, cfg)
@@ -801,13 +1392,13 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 	}
 
 	if id == "confluence" {
+		m.mu.RLock()
 		cfg := m.config.Confluence
-		if activeItem != nil {
-			cfg.BaseURL = activeItem.BaseURL
-			cfg.Username = activeItem.Username
-			if activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
-				cfg.APIToken = activeItem.APIToken
-			}
+		m.mu.RUnlock()
+		cfg.BaseURL = activeItem.BaseURL
+		cfg.Username = activeItem.Username
+		cfg.APIToken = activeItem.APIToken
+		if activeItem.TargetEntity != "" {
 			cfg.SpaceKey = activeItem.TargetEntity
 		}
 		res := m.TestConfluence(ctx, cfg)
@@ -828,7 +1419,7 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 	}
 
 	// Real HTTP Request with timeout
-	probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
 	var req *http.Request
@@ -840,7 +1431,7 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 			res := types.TestConnectorResponse{
 				Success:   false,
 				LatencyMs: 0,
-				Message:   "GitHub Personal Access Token is required to authenticate",
+				Message:   "GitHub Personal Access Token is required to authenticate (set via UI, GITHUB_TOKEN, or GH_TOKEN)",
 			}
 			m.updateItemStatus(id, false, 0, res.Message)
 			return res
@@ -853,9 +1444,7 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 		if err == nil {
 			req.Header.Set("User-Agent", "Meta-Orchestrator")
 			req.Header.Set("Accept", "application/vnd.github.v3+json")
-			if !strings.Contains(activeItem.APIToken, "••••") {
-				req.Header.Set("Authorization", "Bearer "+activeItem.APIToken)
-			}
+			req.Header.Set("Authorization", "Bearer "+activeItem.APIToken)
 		}
 
 	case "gitlab":
@@ -863,7 +1452,7 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 			res := types.TestConnectorResponse{
 				Success:   false,
 				LatencyMs: 0,
-				Message:   "GitLab Personal Access Token is required to authenticate",
+				Message:   "GitLab Personal Access Token is required to authenticate (set via UI, GITLAB_TOKEN, or GL_TOKEN)",
 			}
 			m.updateItemStatus(id, false, 0, res.Message)
 			return res
@@ -872,9 +1461,7 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 		req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, reqURL, nil)
 		if err == nil {
 			req.Header.Set("User-Agent", "Meta-Orchestrator")
-			if !strings.Contains(activeItem.APIToken, "••••") {
-				req.Header.Set("PRIVATE-TOKEN", activeItem.APIToken)
-			}
+			req.Header.Set("PRIVATE-TOKEN", activeItem.APIToken)
 		}
 
 	case "bitbucket":
@@ -882,7 +1469,7 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 			res := types.TestConnectorResponse{
 				Success:   false,
 				LatencyMs: 0,
-				Message:   "Bitbucket Username and App Password are required to authenticate",
+				Message:   "Bitbucket Username and App Password are required to authenticate (set via UI, BITBUCKET_APP_PASSWORD, or BITBUCKET_TOKEN)",
 			}
 			m.updateItemStatus(id, false, 0, res.Message)
 			return res
@@ -895,7 +1482,7 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 		if err == nil {
 			req.Header.Set("User-Agent", "Meta-Orchestrator")
 			req.Header.Set("Accept", "application/json")
-			if activeItem.Username != "" && activeItem.APIToken != "" && !strings.Contains(activeItem.APIToken, "••••") {
+			if activeItem.Username != "" && activeItem.APIToken != "" {
 				req.SetBasicAuth(activeItem.Username, activeItem.APIToken)
 			}
 		}
@@ -906,7 +1493,7 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 			res := types.TestConnectorResponse{
 				Success:   false,
 				LatencyMs: 0,
-				Message:   "Slack Bot Token (xoxb-...) or Webhook URL is required to authenticate",
+				Message:   "Slack Bot Token (xoxb-...) or Webhook URL is required to authenticate (SLACK_BOT_TOKEN)",
 			}
 			m.updateItemStatus(id, false, 0, res.Message)
 			return res
@@ -929,7 +1516,7 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 			res := types.TestConnectorResponse{
 				Success:   false,
 				LatencyMs: 0,
-				Message:   "Linear API Key is required to authenticate",
+				Message:   "Linear API Key is required to authenticate (set via UI or LINEAR_API_KEY)",
 			}
 			m.updateItemStatus(id, false, 0, res.Message)
 			return res
@@ -938,9 +1525,7 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 		req, err = http.NewRequestWithContext(probeCtx, http.MethodPost, "https://api.linear.app/graphql", graphQLBody)
 		if err == nil {
 			req.Header.Set("Content-Type", "application/json")
-			if !strings.Contains(activeItem.APIToken, "••••") {
-				req.Header.Set("Authorization", activeItem.APIToken)
-			}
+			req.Header.Set("Authorization", activeItem.APIToken)
 		}
 
 	case "notion":
@@ -948,7 +1533,7 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 			res := types.TestConnectorResponse{
 				Success:   false,
 				LatencyMs: 0,
-				Message:   "Notion Integration Token is required to authenticate",
+				Message:   "Notion Integration Token is required to authenticate (set via UI or NOTION_API_KEY)",
 			}
 			m.updateItemStatus(id, false, 0, res.Message)
 			return res
@@ -956,9 +1541,7 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 		req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, "https://api.notion.com/v1/users/me", nil)
 		if err == nil {
 			req.Header.Set("Notion-Version", "2022-06-28")
-			if !strings.Contains(activeItem.APIToken, "••••") {
-				req.Header.Set("Authorization", "Bearer "+activeItem.APIToken)
-			}
+			req.Header.Set("Authorization", "Bearer "+activeItem.APIToken)
 		}
 
 	default:
@@ -1399,7 +1982,11 @@ func (m *Manager) PingAll(ctx context.Context) *types.PingAllSummary {
 // TestJira performs a real connectivity check against JIRA.
 func (m *Manager) TestJira(ctx context.Context, cfg types.JiraConfig) types.TestConnectorResponse {
 	start := time.Now()
-	cleanURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	token, tokenSrc := m.ResolveToken("jira", cfg.APIToken)
+	username, _ := m.ResolveUsername("jira", cfg.Username)
+	baseURL := m.ResolveBaseURL("jira", cfg.BaseURL, username)
+
+	cleanURL := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if cleanURL == "" {
 		res := types.TestConnectorResponse{
 			Success:   false,
@@ -1410,20 +1997,21 @@ func (m *Manager) TestJira(ctx context.Context, cfg types.JiraConfig) types.Test
 		return res
 	}
 
-	if strings.TrimSpace(cfg.APIToken) == "" {
+	if strings.TrimSpace(token) == "" {
 		res := types.TestConnectorResponse{
 			Success:   false,
 			LatencyMs: 0,
-			Message:   "JIRA API Token is required to authenticate",
+			Message:   "JIRA API Token is required to authenticate (set via UI, JIRA_API_TOKEN env var, or .env file)",
 		}
 		m.updateItemStatus("jira", false, 0, res.Message)
 		return res
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, cleanURL+"/rest/api/2/myself", nil)
+	// Try API v3 /rest/api/3/myself first (Atlassian Cloud standard), fallback to /rest/api/2/myself (Server/DC)
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, cleanURL+"/rest/api/3/myself", nil)
 	if err != nil {
 		res := types.TestConnectorResponse{
 			Success:   false,
@@ -1434,13 +2022,26 @@ func (m *Manager) TestJira(ctx context.Context, cfg types.JiraConfig) types.Test
 		return res
 	}
 
-	if cfg.Username != "" && cfg.APIToken != "" && !strings.Contains(cfg.APIToken, "••••") {
-		req.SetBasicAuth(cfg.Username, cfg.APIToken)
+	if username != "" && token != "" {
+		req.SetBasicAuth(username, token)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "Meta-Orchestrator")
 
 	resp, err := m.client.Do(req)
+	if err == nil && resp.StatusCode == http.StatusNotFound {
+		resp.Body.Close()
+		reqV2, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, cleanURL+"/rest/api/2/myself", nil)
+		if reqV2 != nil {
+			if username != "" && token != "" {
+				reqV2.SetBasicAuth(username, token)
+			}
+			reqV2.Header.Set("Accept", "application/json")
+			reqV2.Header.Set("User-Agent", "Meta-Orchestrator")
+			resp, err = m.client.Do(reqV2)
+		}
+	}
+
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
 		res := types.TestConnectorResponse{
@@ -1458,17 +2059,54 @@ func (m *Manager) TestJira(ctx context.Context, cfg types.JiraConfig) types.Test
 		_ = json.NewDecoder(resp.Body).Decode(&user)
 		displayName := fmt.Sprintf("%v", user["displayName"])
 		if displayName == "<nil>" || displayName == "" {
-			displayName = cfg.Username
+			displayName = fmt.Sprintf("%v", user["emailAddress"])
 		}
+		if displayName == "<nil>" || displayName == "" {
+			displayName = username
+		}
+
+		viaMsg := ""
+		if tokenSrc != "" && tokenSrc != "direct_input" && tokenSrc != "saved_config" {
+			viaMsg = fmt.Sprintf(" (via %s)", tokenSrc)
+		}
+
 		res := types.TestConnectorResponse{
 			Success:      true,
 			LatencyMs:    latency,
-			Message:      fmt.Sprintf("Successfully authenticated with JIRA as %s", displayName),
+			Message:      fmt.Sprintf("Successfully authenticated with JIRA as %s%s", displayName, viaMsg),
 			ConnectedAs:  displayName,
 			ServerInfo:   cleanURL,
 			TargetEntity: fmt.Sprintf("Project: %s", cfg.ProjectKey),
 		}
-		m.updateItemStatus("jira", true, latency, "")
+
+		m.mu.Lock()
+		m.config.Jira.Status = "connected"
+		m.config.Jira.BaseURL = cleanURL
+		m.config.Jira.Username = username
+		m.config.Jira.APIToken = token
+		m.config.Jira.LastTestedAt = time.Now()
+		m.config.Jira.ErrorMessage = ""
+		if item, ok := m.items["jira"]; ok {
+			item.Status = "connected"
+			item.BaseURL = cleanURL
+			item.Username = username
+			item.APIToken = token
+			item.LastTestedAt = time.Now()
+			item.LatencyMs = latency
+			item.ErrorMessage = ""
+			if tokenSrc != "" && tokenSrc != "direct_input" && tokenSrc != "saved_config" {
+				item.HasEnvAuth = true
+				item.EnvAuthSource = tokenSrc
+			}
+			if item.MCP != nil && item.MCP.Env != nil {
+				item.MCP.Env["JIRA_URL"] = cleanURL
+				item.MCP.Env["JIRA_EMAIL"] = username
+				item.MCP.Env["JIRA_API_TOKEN"] = token
+			}
+		}
+		_ = m.save()
+		m.mu.Unlock()
+
 		return res
 	}
 
@@ -1494,7 +2132,11 @@ func (m *Manager) TestJira(ctx context.Context, cfg types.JiraConfig) types.Test
 // TestConfluence performs a real connectivity check against Confluence.
 func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig) types.TestConnectorResponse {
 	start := time.Now()
-	cleanURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	token, tokenSrc := m.ResolveToken("confluence", cfg.APIToken)
+	username, _ := m.ResolveUsername("confluence", cfg.Username)
+	baseURL := m.ResolveBaseURL("confluence", cfg.BaseURL, username)
+
+	cleanURL := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if cleanURL == "" {
 		res := types.TestConnectorResponse{
 			Success:   false,
@@ -1505,11 +2147,16 @@ func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig
 		return res
 	}
 
-	if strings.TrimSpace(cfg.APIToken) == "" {
+	// Normalize Atlassian Cloud Confluence URL
+	if strings.Contains(cleanURL, "atlassian.net") && !strings.HasSuffix(cleanURL, "/wiki") {
+		cleanURL = cleanURL + "/wiki"
+	}
+
+	if strings.TrimSpace(token) == "" {
 		res := types.TestConnectorResponse{
 			Success:   false,
 			LatencyMs: 0,
-			Message:   "Confluence API Token is required to authenticate",
+			Message:   "Confluence API Token is required to authenticate (set via UI, CONFLUENCE_API_TOKEN / JIRA_API_TOKEN env var, or .env file)",
 		}
 		m.updateItemStatus("confluence", false, 0, res.Message)
 		return res
@@ -1520,29 +2167,38 @@ func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig
 		spaceKey = "ARCH"
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, fmt.Sprintf("%s/rest/api/space/%s", cleanURL, spaceKey), nil)
-	if err != nil {
-		res := types.TestConnectorResponse{
-			Success:   false,
-			LatencyMs: time.Since(start).Milliseconds(),
-			Message:   fmt.Sprintf("Invalid URL: %v", err),
+	probeURLs := []string{
+		cleanURL + "/rest/api/user/current",
+		fmt.Sprintf("%s/rest/api/space/%s", cleanURL, spaceKey),
+		cleanURL + "/rest/api/space?limit=1",
+	}
+
+	var resp *http.Response
+	var err error
+	for _, pURL := range probeURLs {
+		req, rErr := http.NewRequestWithContext(probeCtx, http.MethodGet, pURL, nil)
+		if rErr != nil {
+			continue
 		}
-		m.updateItemStatus("confluence", false, res.LatencyMs, res.Message)
-		return res
+		if username != "" && token != "" {
+			req.SetBasicAuth(username, token)
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "Meta-Orchestrator")
+		resp, err = m.client.Do(req)
+		if err == nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated) {
+			break
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
 	}
 
-	if cfg.Username != "" && cfg.APIToken != "" && !strings.Contains(cfg.APIToken, "••••") {
-		req.SetBasicAuth(cfg.Username, cfg.APIToken)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Meta-Orchestrator")
-
-	resp, err := m.client.Do(req)
 	latency := time.Since(start).Milliseconds()
-	if err != nil {
+	if err != nil || resp == nil {
 		res := types.TestConnectorResponse{
 			Success:   false,
 			LatencyMs: latency,
@@ -1554,15 +2210,58 @@ func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
+		var user map[string]interface{}
+		_ = json.NewDecoder(resp.Body).Decode(&user)
+		displayName := fmt.Sprintf("%v", user["displayName"])
+		if displayName == "<nil>" || displayName == "" {
+			displayName = fmt.Sprintf("%v", user["publicName"])
+		}
+		if displayName == "<nil>" || displayName == "" {
+			displayName = username
+		}
+
+		viaMsg := ""
+		if tokenSrc != "" && tokenSrc != "direct_input" && tokenSrc != "saved_config" {
+			viaMsg = fmt.Sprintf(" (via %s)", tokenSrc)
+		}
+
 		res := types.TestConnectorResponse{
 			Success:      true,
 			LatencyMs:    latency,
-			Message:      fmt.Sprintf("Successfully connected to Confluence space '%s'", spaceKey),
-			ConnectedAs:  cfg.Username,
+			Message:      fmt.Sprintf("Successfully connected to Confluence as %s%s (space: %s)", displayName, viaMsg, spaceKey),
+			ConnectedAs:  displayName,
 			ServerInfo:   cleanURL,
 			TargetEntity: fmt.Sprintf("Space: %s", spaceKey),
 		}
-		m.updateItemStatus("confluence", true, latency, "")
+
+		m.mu.Lock()
+		m.config.Confluence.Status = "connected"
+		m.config.Confluence.BaseURL = cleanURL
+		m.config.Confluence.Username = username
+		m.config.Confluence.APIToken = token
+		m.config.Confluence.LastTestedAt = time.Now()
+		m.config.Confluence.ErrorMessage = ""
+		if item, ok := m.items["confluence"]; ok {
+			item.Status = "connected"
+			item.BaseURL = cleanURL
+			item.Username = username
+			item.APIToken = token
+			item.LastTestedAt = time.Now()
+			item.LatencyMs = latency
+			item.ErrorMessage = ""
+			if tokenSrc != "" && tokenSrc != "direct_input" && tokenSrc != "saved_config" {
+				item.HasEnvAuth = true
+				item.EnvAuthSource = tokenSrc
+			}
+			if item.MCP != nil && item.MCP.Env != nil {
+				item.MCP.Env["CONFLUENCE_URL"] = cleanURL
+				item.MCP.Env["CONFLUENCE_EMAIL"] = username
+				item.MCP.Env["CONFLUENCE_API_TOKEN"] = token
+			}
+		}
+		_ = m.save()
+		m.mu.Unlock()
+
 		return res
 	}
 
@@ -1587,27 +2286,26 @@ func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig
 
 // SearchJiraIssues queries JIRA issues or returns curated project tickets matching search/project.
 func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.JiraIssueDTO, error) {
+	token, _ := m.ResolveToken("jira", "")
+	username, _ := m.ResolveUsername("jira", "")
+	baseURL := m.ResolveBaseURL("jira", "", username)
+
 	m.mu.RLock()
-	cfg := m.config.Jira
+	proj := m.config.Jira.ProjectKey
 	m.mu.RUnlock()
 
-	baseURL := strings.TrimRight(cfg.BaseURL, "/")
-	if baseURL == "" {
-		baseURL = "https://jira.atlassian.net"
-	}
-
-	proj := cfg.ProjectKey
-	if proj == "" {
-		proj = "PAY"
+	cleanBaseURL := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if cleanBaseURL == "" {
+		cleanBaseURL = "https://jira.atlassian.net"
 	}
 
 	// Live API search if live credentials exist
-	if cfg.APIToken != "" && cfg.Username != "" && !strings.Contains(baseURL, "mock") {
+	if token != "" && username != "" && !strings.Contains(cleanBaseURL, "mock") {
 		var jqlParts []string
-		if proj != "" {
+		if proj != "" && !(proj == "PAY" && strings.Contains(cleanBaseURL, "atlassian.net")) {
 			jqlParts = append(jqlParts, fmt.Sprintf("project = %s", proj))
 		}
-		// Strictly scope to tickets assigned to the logged user / credentials used
+		// Strictly scope to tickets assigned to current user
 		jqlParts = append(jqlParts, "assignee = currentUser()")
 
 		cleanQuery := strings.TrimSpace(query)
@@ -1619,20 +2317,34 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 			}
 		}
 		jql := strings.Join(jqlParts, " AND ") + " ORDER BY updated DESC"
-		searchEndpoint := fmt.Sprintf("%s/rest/api/2/search?jql=%s&maxResults=20", baseURL, url.QueryEscape(jql))
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchEndpoint, nil)
-		if err == nil {
-			req.SetBasicAuth(cfg.Username, cfg.APIToken)
+
+		fieldsParam := "fields=key,summary,description,status,priority,issuetype,assignee,reporter,created"
+		searchEndpoints := []string{
+			fmt.Sprintf("%s/rest/api/3/search/jql?jql=%s&%s&maxResults=50", cleanBaseURL, url.QueryEscape(jql), fieldsParam),
+			fmt.Sprintf("%s/rest/api/2/search?jql=%s&maxResults=50", cleanBaseURL, url.QueryEscape(jql)),
+		}
+
+		for _, endpoint := range searchEndpoints {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+			if err != nil {
+				continue
+			}
+			req.SetBasicAuth(username, token)
 			req.Header.Set("Accept", "application/json")
+			req.Header.Set("User-Agent", "Meta-Orchestrator")
+
 			resp, err := m.client.Do(req)
-			if err == nil && resp.StatusCode == http.StatusOK {
+			if err != nil {
+				continue
+			}
+			if resp.StatusCode == http.StatusOK {
 				defer resp.Body.Close()
 				var searchResult struct {
 					Issues []struct {
 						Key    string `json:"key"`
 						Fields struct {
-							Summary     string `json:"summary"`
-							Description string `json:"description"`
+							Summary     string      `json:"summary"`
+							Description interface{} `json:"description"`
 							Status      struct {
 								Name string `json:"name"`
 							} `json:"status"`
@@ -1658,7 +2370,7 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 				if json.NewDecoder(resp.Body).Decode(&searchResult) == nil && len(searchResult.Issues) > 0 {
 					var list []types.JiraIssueDTO
 					for _, it := range searchResult.Issues {
-						assigneeName := cfg.Username
+						assigneeName := username
 						if it.Fields.Assignee != nil {
 							if it.Fields.Assignee.DisplayName != "" {
 								assigneeName = it.Fields.Assignee.DisplayName
@@ -1679,11 +2391,11 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 						list = append(list, types.JiraIssueDTO{
 							Key:         it.Key,
 							Summary:     it.Fields.Summary,
-							Description: it.Fields.Description,
+							Description: parseJiraDescription(it.Fields.Description),
 							Status:      it.Fields.Status.Name,
 							Priority:    it.Fields.Priority.Name,
 							IssueType:   it.Fields.IssueType.Name,
-							URL:         fmt.Sprintf("%s/browse/%s", baseURL, it.Key),
+							URL:         fmt.Sprintf("%s/browse/%s", cleanBaseURL, it.Key),
 							Assignee:    assigneeName,
 							Reporter:    reporterName,
 							Created:     it.Fields.Created,
@@ -1691,11 +2403,13 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 					}
 					return list, nil
 				}
+			} else {
+				resp.Body.Close()
 			}
 		}
 	}
 
-	userAssignee := cfg.Username
+	userAssignee := username
 	if userAssignee == "" {
 		userAssignee = "currentUser()"
 	}
@@ -1709,7 +2423,7 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 			Status:      "To Do",
 			Priority:    "High",
 			IssueType:   "Story",
-			URL:         fmt.Sprintf("%s/browse/%s-1044", baseURL, proj),
+			URL:         fmt.Sprintf("%s/browse/%s-1044", cleanBaseURL, proj),
 			Reporter:    "sarah.product@acme.corp",
 			Assignee:    userAssignee,
 			Created:     "2026-09-25",
@@ -1721,7 +2435,7 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 			Status:      "To Do",
 			Priority:    "Highest",
 			IssueType:   "Bug",
-			URL:         fmt.Sprintf("%s/browse/%s-1045", baseURL, proj),
+			URL:         fmt.Sprintf("%s/browse/%s-1045", cleanBaseURL, proj),
 			Reporter:    "alex.eng@acme.corp",
 			Assignee:    userAssignee,
 			Created:     "2026-09-26",
@@ -1733,7 +2447,7 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 			Status:      "To Do",
 			Priority:    "Medium",
 			IssueType:   "Task",
-			URL:         fmt.Sprintf("%s/browse/%s-1046", baseURL, proj),
+			URL:         fmt.Sprintf("%s/browse/%s-1046", cleanBaseURL, proj),
 			Reporter:    "security-lead@acme.corp",
 			Assignee:    userAssignee,
 			Created:     "2026-09-26",
@@ -1745,13 +2459,12 @@ func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.J
 			Status:      "To Do",
 			Priority:    "High",
 			IssueType:   "Bug",
-			URL:         fmt.Sprintf("%s/browse/%s-1047", baseURL, proj),
+			URL:         fmt.Sprintf("%s/browse/%s-1047", cleanBaseURL, proj),
 			Reporter:    "david.sre@acme.corp",
 			Assignee:    userAssignee,
 			Created:     "2026-09-27",
 		},
 	}
-
 
 	if query == "" {
 		return mockIssues, nil
@@ -1777,24 +2490,114 @@ func (m *Manager) DetectJiraKey(text string) string {
 
 // GetJiraURL returns full URL for a JIRA ticket key.
 func (m *Manager) GetJiraURL(key string) string {
-	m.mu.RLock()
-	baseURL := strings.TrimRight(m.config.Jira.BaseURL, "/")
-	m.mu.RUnlock()
-	if baseURL == "" {
-		baseURL = "https://jira.atlassian.net"
+	token, _ := m.ResolveToken("jira", "")
+	username, _ := m.ResolveUsername("jira", "")
+	baseURL := m.ResolveBaseURL("jira", "", username)
+	cleanURL := strings.TrimRight(baseURL, "/")
+	if cleanURL == "" {
+		cleanURL = "https://jira.atlassian.net"
 	}
-	return fmt.Sprintf("%s/browse/%s", baseURL, key)
+	_ = token
+	return fmt.Sprintf("%s/browse/%s", cleanURL, key)
 }
 
 // GetJiraIssue retrieves details for a single JIRA issue by key.
 func (m *Manager) GetJiraIssue(ctx context.Context, key string) (*types.JiraIssueDTO, error) {
-	issues, err := m.SearchJiraIssues(ctx, key)
-	if err != nil {
-		return nil, err
+	key = strings.ToUpper(strings.TrimSpace(key))
+	token, _ := m.ResolveToken("jira", "")
+	username, _ := m.ResolveUsername("jira", "")
+	baseURL := m.ResolveBaseURL("jira", "", username)
+	cleanBaseURL := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+
+	if token != "" && username != "" && cleanBaseURL != "" && !strings.Contains(cleanBaseURL, "mock") {
+		fieldsParam := "fields=key,summary,description,status,priority,issuetype,assignee,reporter,created"
+		issueEndpoints := []string{
+			fmt.Sprintf("%s/rest/api/3/issue/%s?%s", cleanBaseURL, key, fieldsParam),
+			fmt.Sprintf("%s/rest/api/2/issue/%s?%s", cleanBaseURL, key, fieldsParam),
+		}
+		for _, endpoint := range issueEndpoints {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+			if err != nil {
+				continue
+			}
+			req.SetBasicAuth(username, token)
+			req.Header.Set("Accept", "application/json")
+			req.Header.Set("User-Agent", "Meta-Orchestrator")
+
+			resp, err := m.client.Do(req)
+			if err == nil && resp.StatusCode == http.StatusOK {
+				defer resp.Body.Close()
+				var it struct {
+					Key    string `json:"key"`
+					Fields struct {
+						Summary     string      `json:"summary"`
+						Description interface{} `json:"description"`
+						Status      struct {
+							Name string `json:"name"`
+						} `json:"status"`
+						Priority struct {
+							Name string `json:"name"`
+						} `json:"priority"`
+						IssueType struct {
+							Name string `json:"name"`
+						} `json:"issuetype"`
+						Assignee *struct {
+							DisplayName  string `json:"displayName"`
+							EmailAddress string `json:"emailAddress"`
+							Name         string `json:"name"`
+						} `json:"assignee"`
+						Reporter *struct {
+							DisplayName  string `json:"displayName"`
+							EmailAddress string `json:"emailAddress"`
+						} `json:"reporter"`
+						Created string `json:"created"`
+					} `json:"fields"`
+				}
+				if json.NewDecoder(resp.Body).Decode(&it) == nil && it.Key != "" {
+					assigneeName := username
+					if it.Fields.Assignee != nil {
+						if it.Fields.Assignee.DisplayName != "" {
+							assigneeName = it.Fields.Assignee.DisplayName
+						} else if it.Fields.Assignee.EmailAddress != "" {
+							assigneeName = it.Fields.Assignee.EmailAddress
+						} else if it.Fields.Assignee.Name != "" {
+							assigneeName = it.Fields.Assignee.Name
+						}
+					}
+					reporterName := ""
+					if it.Fields.Reporter != nil {
+						if it.Fields.Reporter.DisplayName != "" {
+							reporterName = it.Fields.Reporter.DisplayName
+						} else if it.Fields.Reporter.EmailAddress != "" {
+							reporterName = it.Fields.Reporter.EmailAddress
+						}
+					}
+					return &types.JiraIssueDTO{
+						Key:         it.Key,
+						Summary:     it.Fields.Summary,
+						Description: parseJiraDescription(it.Fields.Description),
+						Status:      it.Fields.Status.Name,
+						Priority:    it.Fields.Priority.Name,
+						IssueType:   it.Fields.IssueType.Name,
+						URL:         fmt.Sprintf("%s/browse/%s", cleanBaseURL, it.Key),
+						Assignee:    assigneeName,
+						Reporter:    reporterName,
+						Created:     it.Fields.Created,
+					}, nil
+				}
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}
 	}
-	for _, issue := range issues {
-		if strings.EqualFold(issue.Key, key) {
-			return &issue, nil
+
+	issues, err := m.SearchJiraIssues(ctx, key)
+	if err == nil {
+		for _, issue := range issues {
+			if strings.EqualFold(issue.Key, key) {
+				return &issue, nil
+			}
 		}
 	}
 	// Fallback dynamic ticket if not in curated list
@@ -1811,21 +2614,27 @@ func (m *Manager) GetJiraIssue(ctx context.Context, key string) (*types.JiraIssu
 
 // PublishToConfluence publishes a technical document, PRD, or ATDD report directly to Confluence.
 func (m *Manager) PublishToConfluence(ctx context.Context, req types.ConfluencePublishRequest) (*types.ConfluencePublishResponse, error) {
+	token, _ := m.ResolveToken("confluence", "")
+	username, _ := m.ResolveUsername("confluence", "")
+	baseURL := m.ResolveBaseURL("confluence", "", username)
+
 	m.mu.RLock()
-	cfg := m.config.Confluence
-	m.mu.RUnlock()
-
-	baseURL := strings.TrimRight(cfg.BaseURL, "/")
-	if baseURL == "" {
-		baseURL = "https://wiki.atlassian.net"
-	}
-
 	spaceKey := req.SpaceKey
 	if spaceKey == "" {
-		spaceKey = cfg.SpaceKey
+		spaceKey = m.config.Confluence.SpaceKey
 	}
+	m.mu.RUnlock()
+
 	if spaceKey == "" {
 		spaceKey = "ARCH"
+	}
+
+	cleanBaseURL := strings.TrimRight(baseURL, "/")
+	if cleanBaseURL == "" {
+		cleanBaseURL = "https://wiki.atlassian.net"
+	}
+	if strings.Contains(cleanBaseURL, "atlassian.net") && !strings.HasSuffix(cleanBaseURL, "/wiki") {
+		cleanBaseURL = cleanBaseURL + "/wiki"
 	}
 
 	title := strings.TrimSpace(req.Title)
@@ -1834,11 +2643,11 @@ func (m *Manager) PublishToConfluence(ctx context.Context, req types.ConfluenceP
 	}
 
 	slug := strings.ToLower(strings.ReplaceAll(title, " ", "-"))
-	pageURL := fmt.Sprintf("%s/spaces/%s/pages/%s", baseURL, spaceKey, slug)
+	pageURL := fmt.Sprintf("%s/spaces/%s/pages/%s", cleanBaseURL, spaceKey, slug)
 	pageID := fmt.Sprintf("conf-%d", time.Now().UnixNano()%1000000)
 
 	// Live API publishing if credentials exist
-	if cfg.APIToken != "" && cfg.Username != "" && !strings.Contains(baseURL, "mock") {
+	if token != "" && username != "" && !strings.Contains(cleanBaseURL, "mock") {
 		payload := map[string]interface{}{
 			"type":  "page",
 			"title": title,
@@ -1851,9 +2660,9 @@ func (m *Manager) PublishToConfluence(ctx context.Context, req types.ConfluenceP
 			},
 		}
 		jsonBytes, _ := json.Marshal(payload)
-		apiReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/rest/api/content", bytes.NewReader(jsonBytes))
+		apiReq, err := http.NewRequestWithContext(ctx, http.MethodPost, cleanBaseURL+"/rest/api/content", bytes.NewReader(jsonBytes))
 		if err == nil {
-			apiReq.SetBasicAuth(cfg.Username, cfg.APIToken)
+			apiReq.SetBasicAuth(username, token)
 			apiReq.Header.Set("Content-Type", "application/json")
 			apiReq.Header.Set("Accept", "application/json")
 			resp, err := m.client.Do(apiReq)
@@ -1872,12 +2681,15 @@ func (m *Manager) PublishToConfluence(ctx context.Context, req types.ConfluenceP
 						Success:     true,
 						PageID:      confResp.ID,
 						PageTitle:   confResp.Title,
-						PageURL:     fmt.Sprintf("%s%s", baseURL, confResp.Links.Web),
+						PageURL:     fmt.Sprintf("%s%s", cleanBaseURL, confResp.Links.Web),
 						SpaceKey:    spaceKey,
 						PublishedAt: time.Now(),
 						Version:     1,
 					}, nil
 				}
+			}
+			if resp != nil {
+				resp.Body.Close()
 			}
 		}
 	}

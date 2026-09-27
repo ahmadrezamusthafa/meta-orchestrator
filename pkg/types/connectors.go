@@ -87,6 +87,8 @@ type ConnectorItem struct {
 	LastTestedAt  time.Time              `json:"last_tested_at,omitempty"`
 	LatencyMs     int64                  `json:"latency_ms,omitempty"`
 	ErrorMessage  string                 `json:"error_message,omitempty"`
+	HasEnvAuth    bool                   `json:"has_env_auth,omitempty"`
+	EnvAuthSource string                 `json:"env_auth_source,omitempty"`
 }
 
 // ToggleConnectorRequest represents a quick toggle enable/disable command.

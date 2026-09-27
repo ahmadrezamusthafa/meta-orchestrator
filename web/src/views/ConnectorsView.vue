@@ -868,11 +868,11 @@ onUnmounted(() => {
 
               <!-- Top Row: Icon + Badges + Direct Toggle Switch -->
               <div class="space-y-3.5 relative z-10">
-                <div class="flex items-center justify-between gap-2">
-                  <div class="flex items-center gap-2">
+                <div class="flex items-start justify-between gap-3">
+                  <div class="flex items-center gap-2.5 min-w-0 flex-1">
                     <!-- Icon Container -->
                     <div 
-                      class="w-10 h-10 rounded-xl border flex items-center justify-center shadow-md transition-transform group-hover:scale-105"
+                      class="w-10 h-10 rounded-xl border flex items-center justify-center shadow-md transition-transform group-hover:scale-105 shrink-0"
                       :class="[getBrandColor(c).bg, getBrandColor(c).border, getBrandColor(c).text]"
                     >
                       <CheckSquare v-if="c.id === 'jira'" class="w-5 h-5" />
@@ -884,12 +884,32 @@ onUnmounted(() => {
                       <Zap v-else class="w-5 h-5" />
                     </div>
 
-                    <div class="flex flex-col gap-1">
+                    <!-- Tags / Badges Container -->
+                    <div class="flex flex-wrap items-center gap-1.5 min-w-0">
+                      <!-- Category Badge -->
                       <span 
-                        class="px-2 py-0.5 rounded text-[10px] font-mono border w-fit"
+                        class="px-2 py-0.5 rounded text-[10px] font-mono border whitespace-nowrap"
                         :class="getBrandColor(c).badgeBg"
                       >
                         {{ c.category_label || c.category }}
+                      </span>
+
+                      <!-- MCP Protocol Badge -->
+                      <span 
+                        v-if="c.mcp && c.mcp.enabled" 
+                        class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-950/80 text-purple-300 border border-purple-800/50 inline-flex items-center gap-1 whitespace-nowrap"
+                        title="Supports Model Context Protocol"
+                      >
+                        <Cpu class="w-3 h-3 text-purple-400" /> MCP
+                      </span>
+
+                      <!-- Env Auth Indicator Badge -->
+                      <span 
+                        v-if="c.has_env_auth"
+                        class="px-2 py-0.5 rounded text-[10px] font-mono bg-teal-950/80 text-teal-300 border border-teal-700/60 inline-flex items-center gap-1 whitespace-nowrap"
+                        :title="c.env_auth_source ? `Loaded from ${c.env_auth_source}` : 'Resolved from environment / .env'"
+                      >
+                        <ShieldCheck class="w-3 h-3 text-teal-400" /> Env Auth
                       </span>
                     </div>
                   </div>
@@ -897,7 +917,7 @@ onUnmounted(() => {
                   <!-- DIRECT TOGGLE SWITCH (Stops Propagation) -->
                   <div 
                     @click.stop="handleToggle(c, $event)"
-                    class="flex items-center gap-1.5 p-1 -m-1 rounded-lg hover:bg-slate-800/60 transition"
+                    class="flex items-center gap-1.5 p-1 -m-1 rounded-lg hover:bg-slate-800/60 transition shrink-0"
                     :title="c.enabled ? 'Click to disable' : 'Click to enable'"
                   >
                     <div 
@@ -919,16 +939,8 @@ onUnmounted(() => {
 
                 <!-- Connector Info -->
                 <div>
-                  <h3 class="font-bold text-sm text-white group-hover:text-blue-400 transition flex items-center justify-between">
-                    <span>{{ c.name }}</span>
-                    <!-- MCP Protocol Badge -->
-                    <span 
-                      v-if="c.mcp" 
-                      class="px-1.5 py-0.2 rounded text-[9px] font-mono bg-purple-950/80 text-purple-300 border border-purple-800/50 flex items-center gap-0.5"
-                      title="Supports Model Context Protocol"
-                    >
-                      <Cpu class="w-2.5 h-2.5" /> MCP
-                    </span>
+                  <h3 class="font-bold text-sm text-white group-hover:text-blue-400 transition truncate">
+                    {{ c.name }}
                   </h3>
                   <p class="text-xs text-slate-400 line-clamp-2 leading-relaxed mt-1">
                     {{ c.description }}
@@ -940,7 +952,7 @@ onUnmounted(() => {
                   <span
                     v-for="(cap, idx) in c.capabilities.slice(0, 3)"
                     :key="idx"
-                    class="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-950/70 text-slate-300 border border-slate-800"
+                    class="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-950/70 text-slate-300 border border-slate-800 whitespace-nowrap"
                   >
                     {{ cap }}
                   </span>
@@ -948,51 +960,51 @@ onUnmounted(() => {
               </div>
 
               <!-- Card Bottom: Real Status, Live Ping, & Setup Prompt -->
-              <div class="pt-4 mt-4 border-t border-slate-800/80 flex items-center justify-between text-xs relative z-10">
+              <div class="pt-3.5 mt-4 border-t border-slate-800/80 flex items-center justify-between text-xs relative z-10 gap-2 min-w-0">
                 <!-- Status Badge (REAL INFORMATION ONLY) -->
-                <div class="flex items-center gap-2 font-mono text-[11px]">
+                <div class="flex items-center gap-2 font-mono text-[11px] min-w-0 flex-wrap">
                   <template v-if="!c.enabled">
-                    <span class="w-2 h-2 rounded-full bg-slate-600"></span>
+                    <span class="w-2 h-2 rounded-full bg-slate-600 shrink-0"></span>
                     <span class="text-slate-500 font-semibold uppercase">Disabled</span>
                   </template>
                   <template v-else-if="c.status === 'connected'">
-                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
                     <span class="text-emerald-400 font-semibold uppercase">Connected</span>
-                    <span v-if="c.latency_ms && c.latency_ms > 0" class="text-[10px] text-slate-400">({{ c.latency_ms }}ms)</span>
+                    <span v-if="c.latency_ms && c.latency_ms > 0" class="text-[10px] text-slate-400 shrink-0">({{ c.latency_ms }}ms)</span>
                   </template>
                   <template v-else-if="c.status === 'configured'">
-                    <span class="w-2 h-2 rounded-full bg-sky-400"></span>
+                    <span class="w-2 h-2 rounded-full bg-sky-400 shrink-0"></span>
                     <span class="text-sky-400 font-semibold uppercase">Configured</span>
                   </template>
                   <template v-else-if="c.status === 'error'">
-                    <span class="w-2 h-2 rounded-full bg-rose-400"></span>
+                    <span class="w-2 h-2 rounded-full bg-rose-400 shrink-0"></span>
                     <span class="text-rose-400 font-semibold uppercase">Error</span>
-                    <span v-if="c.latency_ms && c.latency_ms > 0" class="text-[10px] text-rose-400/80">({{ c.latency_ms }}ms)</span>
+                    <span v-if="c.latency_ms && c.latency_ms > 0" class="text-[10px] text-rose-400/80 shrink-0">({{ c.latency_ms }}ms)</span>
                   </template>
                   <template v-else>
-                    <span class="w-2 h-2 rounded-full bg-slate-500"></span>
+                    <span class="w-2 h-2 rounded-full bg-slate-500 shrink-0"></span>
                     <span class="text-slate-400 font-semibold uppercase">Unconfigured</span>
                   </template>
 
                   <!-- Live Ping Flash Badge -->
                   <span 
                     v-if="recentlyPingedIds.has(c.id)"
-                    class="px-1.5 py-0.5 rounded text-[9px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-700/60 flex items-center gap-1 animate-pulse"
+                    class="px-1.5 py-0.5 rounded text-[9px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-700/60 inline-flex items-center gap-1 animate-pulse shrink-0 whitespace-nowrap"
                   >
                     <Wifi class="w-2.5 h-2.5" /> Pinged
                   </span>
                 </div>
 
                 <!-- Last tested timestamp & Setup CTA -->
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 shrink-0">
                   <span 
                     v-if="c.last_tested_at && formatRelativeTime(c.last_tested_at)" 
-                    class="text-[10px] text-slate-500 font-mono hidden sm:inline"
+                    class="text-[10px] text-slate-500 font-mono hidden xl:inline whitespace-nowrap"
                     :title="`Last tested: ${new Date(c.last_tested_at).toLocaleString()}`"
                   >
                     {{ formatRelativeTime(c.last_tested_at) }}
                   </span>
-                  <div class="flex items-center gap-1 text-[11px] font-medium text-slate-400 group-hover:text-blue-400 transition">
+                  <div class="flex items-center gap-1 text-[11px] font-medium text-slate-400 group-hover:text-blue-400 transition whitespace-nowrap">
                     <span>Setup</span>
                     <ArrowRight class="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition-transform" />
                   </div>
@@ -1021,9 +1033,9 @@ onUnmounted(() => {
 
           <div class="h-4 w-px bg-slate-800"></div>
 
-          <div class="flex items-center gap-2.5">
+          <div class="flex items-center gap-2.5 min-w-0">
             <div 
-              class="w-7 h-7 rounded-lg border flex items-center justify-center text-xs"
+              class="w-7 h-7 rounded-lg border flex items-center justify-center text-xs shrink-0"
               :class="[getBrandColor(selectedConnector).bg, getBrandColor(selectedConnector).border, getBrandColor(selectedConnector).text]"
             >
               <CheckSquare v-if="selectedConnector.id === 'jira'" class="w-4 h-4" />
@@ -1034,18 +1046,35 @@ onUnmounted(() => {
               <FileText v-else-if="selectedConnector.id === 'notion'" class="w-4 h-4" />
               <Zap v-else class="w-4 h-4" />
             </div>
-            <div>
-              <h2 class="text-sm font-semibold text-slate-100 flex items-center gap-2">
-                {{ selectedConnector.name }}
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <h2 class="text-sm font-semibold text-slate-100 whitespace-nowrap">
+                  {{ selectedConnector.name }}
+                </h2>
                 <span 
-                  class="px-2 py-0.5 rounded text-[10px] font-mono border"
+                  class="px-2 py-0.5 rounded text-[10px] font-mono border whitespace-nowrap"
                   :class="getBrandColor(selectedConnector).badgeBg"
                 >
                   {{ selectedConnector.category_label }}
                 </span>
+                <!-- MCP Badge -->
+                <span 
+                  v-if="selectedConnector.mcp && selectedConnector.mcp.enabled" 
+                  class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-950/80 text-purple-300 border border-purple-800/50 inline-flex items-center gap-1 whitespace-nowrap"
+                >
+                  <Cpu class="w-3 h-3 text-purple-400" /> MCP
+                </span>
+                <!-- Env Auth Badge -->
+                <span 
+                  v-if="selectedConnector.has_env_auth"
+                  class="px-2 py-0.5 rounded text-[10px] font-mono bg-teal-950/80 text-teal-300 border border-teal-700/60 inline-flex items-center gap-1 whitespace-nowrap"
+                  :title="selectedConnector.env_auth_source ? `Loaded from ${selectedConnector.env_auth_source}` : 'Resolved from environment'"
+                >
+                  <ShieldCheck class="w-3 h-3 text-teal-400" /> Env Auth
+                </span>
                 <!-- Live Status Badge -->
                 <span 
-                  class="px-2 py-0.5 rounded-full text-[10px] font-mono uppercase font-bold tracking-wider inline-flex items-center gap-1.5 border"
+                  class="px-2.5 py-0.5 rounded-full text-[10px] font-mono uppercase font-bold tracking-wider inline-flex items-center gap-1.5 border whitespace-nowrap"
                   :class="[
                     !selectedConnector.enabled ? 'bg-slate-900 border-slate-700 text-slate-400' :
                     selectedConnector.status === 'connected' ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-400' :
@@ -1055,7 +1084,7 @@ onUnmounted(() => {
                   ]"
                 >
                   <span 
-                    class="w-1.5 h-1.5 rounded-full"
+                    class="w-1.5 h-1.5 rounded-full shrink-0"
                     :class="[
                       !selectedConnector.enabled ? 'bg-slate-500' :
                       selectedConnector.status === 'connected' ? 'bg-emerald-400 animate-pulse' :
@@ -1066,7 +1095,7 @@ onUnmounted(() => {
                   />
                   {{ !selectedConnector.enabled ? 'DISABLED' : (selectedConnector.status || 'UNCONFIGURED') }}
                 </span>
-              </h2>
+              </div>
             </div>
           </div>
         </div>
@@ -1280,6 +1309,16 @@ onUnmounted(() => {
                         <EyeOff v-if="showToken" class="w-4 h-4" />
                         <Eye v-else class="w-4 h-4" />
                       </button>
+                    </div>
+                    <div 
+                      v-if="selectedConnector.has_env_auth" 
+                      class="mt-2 px-3 py-2 rounded-lg bg-teal-950/40 border border-teal-800/50 flex items-center justify-between text-xs text-teal-300 font-mono flex-wrap gap-2"
+                    >
+                      <div class="flex items-center gap-1.5">
+                        <ShieldCheck class="w-3.5 h-3.5 text-teal-400 shrink-0" />
+                        <span>Active via environment: <span class="font-bold text-teal-200">{{ selectedConnector.env_auth_source }}</span></span>
+                      </div>
+                      <span class="text-[10px] text-teal-400/80 bg-teal-900/50 px-1.5 py-0.5 rounded border border-teal-700/50 whitespace-nowrap">Auto-detected</span>
                     </div>
                   </div>
 
