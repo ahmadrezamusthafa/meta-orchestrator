@@ -16,9 +16,14 @@ import { useToastStore } from '../../stores/toast'
 import type { PromptItemDTO } from '../../types'
 import RegisterPromptModal from './RegisterPromptModal.vue'
 
-const props = defineProps<{
-  prompts: PromptItemDTO[]
-}>()
+const props = withDefaults(
+  defineProps<{
+    prompts?: PromptItemDTO[]
+  }>(),
+  {
+    prompts: () => [],
+  }
+)
 
 const emit = defineEmits<{
   (e: 'reload'): void
@@ -51,15 +56,20 @@ Target AST Slice: {{target_ast_slice}}
 Database migrations, sequence diagrams, and cross-repo data flow required.`,
 }
 
+const safePrompts = computed(() => {
+  return Array.isArray(props.prompts) ? props.prompts : []
+})
+
 const filteredPrompts = computed(() => {
-  return props.prompts.filter((p) => {
+  return safePrompts.value.filter((p) => {
+    if (!p) return false
     if (selectedSource.value !== 'all') {
       if (p.source !== selectedSource.value) return false
     }
     if (searchQuery.value.trim()) {
       const q = searchQuery.value.toLowerCase()
-      const matchName = p.name.toLowerCase().includes(q)
-      const matchId = p.id.toLowerCase().includes(q)
+      const matchName = (p.name || '').toLowerCase().includes(q)
+      const matchId = (p.id || '').toLowerCase().includes(q)
       const matchDesc = (p.description || '').toLowerCase().includes(q)
       const matchRole = (p.role || '').toLowerCase().includes(q)
       if (!matchName && !matchId && !matchDesc && !matchRole) return false
@@ -71,7 +81,9 @@ const filteredPrompts = computed(() => {
 function openSlotTester(p: PromptItemDTO) {
   activeSlotPrompt.value = p
   mockValues.value = {}
-  p.variables.forEach((v: string) => {
+  const vars = p.variables || []
+  vars.forEach((v: string) => {
+    if (!v) return
     if (v.includes('epic') || v.includes('parent_issue')) {
       mockValues.value[v] = 'MIB-9685'
     } else if (v.includes('user_story')) {
@@ -127,8 +139,8 @@ function slotLabel(v: string): string {
   return `{{${v}}}`
 }
 
-function formatVars(vars: string[]): string {
-  if (!vars || vars.length === 0) return 'None'
+function formatVars(vars?: string[]): string {
+  if (!vars || !Array.isArray(vars) || vars.length === 0) return 'None'
   return vars.map(v => '{' + v + '}').join(', ')
 }
 
@@ -162,7 +174,7 @@ function onRegisteredPromptSource() {
         </button>
 
         <span class="text-xs font-mono text-sky-400 px-2 py-1 rounded bg-slate-900 border border-slate-800">
-          {{ filteredPrompts.length }} / {{ prompts.length }} Templates
+          {{ filteredPrompts.length }} / {{ safePrompts.length }} Templates
         </span>
       </div>
     </div>
@@ -275,7 +287,7 @@ function onRegisteredPromptSource() {
               </span>
             </td>
             <td class="p-3 text-sky-400 font-mono text-[11px]">
-              <span :title="p.variables.join(', ')">{{ formatVars(p.variables) }}</span>
+              <span :title="(p.variables || []).join(', ')">{{ formatVars(p.variables) }}</span>
             </td>
             <td class="p-3">
               <span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-800 inline-flex items-center gap-1">
@@ -326,13 +338,13 @@ function onRegisteredPromptSource() {
 
         <div class="flex-1 overflow-y-auto space-y-4 pr-1">
           <!-- Variables Inputs -->
-          <div v-if="activeSlotPrompt.variables.length > 0" class="p-3.5 bg-slate-950 rounded-lg border border-slate-800 space-y-2.5">
+          <div v-if="activeSlotPrompt && (activeSlotPrompt.variables || []).length > 0" class="p-3.5 bg-slate-950 rounded-lg border border-slate-800 space-y-2.5">
             <h4 class="text-xs font-semibold text-slate-300 uppercase tracking-wide flex items-center justify-between">
               <span>Dynamic Parameter Slot Variables (Live Injection)</span>
-              <span class="text-[10px] text-slate-500 font-mono">{{ activeSlotPrompt.variables.length }} variable(s) found</span>
+              <span class="text-[10px] text-slate-500 font-mono">{{ (activeSlotPrompt.variables || []).length }} variable(s) found</span>
             </h4>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div v-for="v in activeSlotPrompt.variables" :key="v" class="space-y-1">
+              <div v-for="v in (activeSlotPrompt.variables || [])" :key="v" class="space-y-1">
                 <label class="block text-[11px] font-mono text-sky-400">{{ slotLabel(v) }}</label>
                 <input
                   v-model="mockValues[v]"

@@ -3,15 +3,20 @@ import { ref } from 'vue'
 import { Plus } from 'lucide-vue-next'
 import HookEditorDrawer from './HookEditorDrawer.vue'
 
-const props = defineProps<{
-  hooks: Array<{
-    id: string
-    event: string
-    type: string
-    command: string
-    policy: string
-  }>
-}>()
+const props = withDefaults(
+  defineProps<{
+    hooks?: Array<{
+      id: string
+      event: string
+      type: string
+      command: string
+      policy: string
+    }>
+  }>(),
+  {
+    hooks: () => [],
+  }
+)
 
 const emit = defineEmits<{
   (e: 'add-hook', hook: any): void
@@ -48,7 +53,7 @@ function handleSaveHook(newHook: any) {
         </button>
 
         <span class="text-xs font-mono text-purple-400 px-2 py-0.5 rounded bg-slate-900 border border-slate-800">
-          {{ hooks.length }} Hooks Active
+          {{ (props.hooks || []).length }} Hooks Active
         </span>
       </div>
     </div>
@@ -65,7 +70,12 @@ function handleSaveHook(newHook: any) {
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-800/80 text-slate-300">
-          <tr v-for="h in hooks" :key="h.id" class="hover:bg-slate-900/40">
+          <tr v-if="(props.hooks || []).length === 0">
+            <td colspan="5" class="p-8 text-center text-slate-500 font-sans">
+              No lifecycle hooks registered yet.
+            </td>
+          </tr>
+          <tr v-for="h in (props.hooks || [])" :key="h.id" class="hover:bg-slate-900/40">
             <td class="p-3 font-semibold text-slate-200">{{ h.id }}</td>
             <td class="p-3 text-amber-400">{{ h.event }}</td>
             <td class="p-3 text-sky-400">{{ h.type }}</td>

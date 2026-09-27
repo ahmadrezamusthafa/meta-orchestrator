@@ -136,12 +136,14 @@ async function handleRemovePromptSource(sourceId: string, sourceName: string) {
 }
 
 const filteredSkills = computed(() => {
-  return skillsStore.skills.filter((s) => {
+  const list = Array.isArray(skillsStore.skills) ? skillsStore.skills : []
+  return list.filter((s) => {
+    if (!s) return false
     // Format filter
     if (selectedFormat.value !== 'all') {
       if (selectedFormat.value === 'custom') {
-        if (s.source_type !== 'custom_dir') return false
-      } else if (s.source_format !== selectedFormat.value) {
+        if ((s.source_type || '').toLowerCase() !== 'custom_dir') return false
+      } else if ((s.source_format || '').toLowerCase() !== selectedFormat.value.toLowerCase()) {
         return false
       }
     }
@@ -157,16 +159,17 @@ const filteredSkills = computed(() => {
     // Search query
     if (searchQuery.value.trim()) {
       const q = searchQuery.value.toLowerCase()
-      const matchName = s.name.toLowerCase().includes(q)
+      const matchName = (s.name || '').toLowerCase().includes(q)
       const matchDesc = (s.description || '').toLowerCase().includes(q)
       const matchCmd = (s.command || '').toLowerCase().includes(q)
-      const matchRoles = (s.required_roles || []).some((r) => r.toLowerCase().includes(q))
+      const matchRoles = (s.required_roles || []).some((r) => (r || '').toLowerCase().includes(q))
       if (!matchName && !matchDesc && !matchCmd && !matchRoles) return false
     }
 
     return true
   })
 })
+
 
 async function handleToggleSkill(skill: UniversalSkillDTO, enabled: boolean) {
   try {

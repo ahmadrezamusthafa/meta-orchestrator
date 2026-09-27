@@ -365,7 +365,8 @@ func (r *PromptRegistry) parsePromptFile(filePath string, sourceName string, ove
 
 	// Extract Variables
 	varSet := make(map[string]bool)
-	var vars []string
+	vars := make([]string, 0)
+
 
 	addVar := func(v string) {
 		v = strings.TrimSpace(v)
