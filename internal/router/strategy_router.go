@@ -56,6 +56,12 @@ type TierAdvisor interface {
 	AdviseTier(taskType, complexity, stageID, currentTier string) (tier string, reason string, ok bool)
 }
 
+// MethodAdvisor supplies the empirically optimal method (and tier) per stage and complexity,
+// e.g. the shadow benchmark's best_methods_matrix. ok=false keeps best practice.
+type MethodAdvisor interface {
+	AdviseMethod(stageID, complexity string) (method string, tier string, reason string, ok bool)
+}
+
 // Router dispatches requests according to configured strategy.
 type Router struct {
 	mu            sync.RWMutex
@@ -64,6 +70,7 @@ type Router struct {
 	priorityChain []PriorityModelItem
 	roundRobinIdx int
 	advisor       TierAdvisor
+	methodAdvisor MethodAdvisor
 }
 
 // NewRouter creates a new router instance.
@@ -155,6 +162,13 @@ func (r *Router) SetTierAdvisor(a TierAdvisor) {
 	r.advisor = a
 }
 
+// SetMethodAdvisor installs the benchmark-driven method matrix used by best-practice routing.
+func (r *Router) SetMethodAdvisor(a MethodAdvisor) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.methodAdvisor = a
+}
+
 // Route decides the optimal model and execution method for a given task stage and complexity.
 func (r *Router) Route(stageID string, complexity string, repoTypes []string) *RoutingDecision {
 	return r.RouteForTask(stageID, complexity, "", repoTypes)
@@ -203,8 +217,24 @@ func (r *Router) modelForTier(tier string) string {
 	return ""
 }
 
+// applyAdvisor layers the benchmark method matrix and then calibrated tier weights
+// (including admin locks, which therefore win) over a best-practice decision.
 func (r *Router) applyAdvisor(d *RoutingDecision, stageID, complexity, taskType string) *RoutingDecision {
-	if r.advisor == nil || taskType == "" || d == nil {
+	if d == nil {
+		return d
+	}
+	if r.methodAdvisor != nil {
+		if method, tier, reason, ok := r.methodAdvisor.AdviseMethod(stageID, complexity); ok {
+			d.Method = method
+			if model := r.modelForTier(tier); model != "" {
+				d.Tier = tier
+				d.Model = model
+				d.FallbackChain = r.buildFallbackChain(model)
+			}
+			d.Reasoning = fmt.Sprintf("%s | %s", d.Reasoning, reason)
+		}
+	}
+	if r.advisor == nil || taskType == "" {
 		return d
 	}
 	tier, reason, ok := r.advisor.AdviseTier(taskType, strings.ToUpper(complexity), stageID, d.Tier)

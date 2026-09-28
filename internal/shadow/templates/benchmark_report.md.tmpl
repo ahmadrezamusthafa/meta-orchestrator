@@ -1,0 +1,39 @@
+**INTERNAL**
+
+# Stage × Method Benchmark Report
+
+- **Generated:** {{.GeneratedAt}}
+- **Sweep:** `{{.SweepID}}` ({{.SweepStarted}} → {{.SweepFinished}}, {{.SweepDuration}})
+- **Tuples scored:** {{.TupleCount}} · **Winners selected:** {{.WinnerCount}} · **Candidates evaluated:** {{.CandidateCount}}
+- **Scoring heuristic:** Score = {{.WeightFPVR}}·FPVR − {{.WeightCost}}·NormalizedCost − {{.WeightTTR}}·NormalizedTTR
+  (cost and TTR are min–max normalized within each stage/complexity tuple; the winner is the highest-scoring
+  Pareto-efficient candidate with at least {{.MinSamples}} samples)
+
+## Winning Method Matrix
+
+| Stage | LOW | MEDIUM | HIGH | SYSTEM |
+|---|---|---|---|---|
+{{- range .WinnerRows}}
+| {{.Stage}} |{{range .Cols}} {{.}} |{{end}}
+{{- end}}
+
+{{- if .Changes}}
+
+## Changes vs Previous Matrix
+
+{{range .Changes}}- {{.}}
+{{end}}
+{{- end}}
+
+## Per-Tuple Comparison
+
+FPVR is shown with its 95% CI (Wilson score interval). Cost Δ is relative to the tuple winner's average cost per run.
+{{range .Tuples}}
+### {{.Stage}} · {{.Complexity}}
+
+| Method | Model | Tier | Samples | FPVR [95% CI] | Avg Tokens | Avg Cost | Cost Δ vs Winner | Avg TTR | Score | Pareto | Result |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+{{- range .Rows}}
+| {{.Method}} | {{.Model}} | {{.Tier}} | {{.Samples}} | {{.FPVR}} | {{.Tokens}} | {{.Cost}} | {{.CostDiff}} | {{.TTR}} | {{.Score}} | {{.Pareto}} | {{.Result}} |
+{{- end}}
+{{end}}
