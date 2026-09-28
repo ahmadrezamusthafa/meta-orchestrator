@@ -20,6 +20,7 @@ type AnthropicDriver struct {
 	sessionToken string
 	baseURL      string
 	httpClient   *http.Client
+	cliPath      string
 }
 
 // NewAnthropicDriver creates a new Claude driver.

@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
@@ -34,11 +35,19 @@ type ToolCall struct {
 
 // LLMRequest encapsulates the unified payload sent to any provider.
 type LLMRequest struct {
-	Model       string                 `json:"model"`
-	Messages    []Message              `json:"messages"`
-	Temperature float32                `json:"temperature"`
-	MaxTokens   int                    `json:"max_tokens"`
+	Model       string                          `json:"model"`
+	Messages    []Message                       `json:"messages"`
+	Temperature float32                         `json:"temperature"`
+	MaxTokens   int                             `json:"max_tokens"`
 	Tools       []*types.UniversalSkillContract `json:"tools,omitempty"`
+	// SessionID resumes a provider-side conversation (Claude Code CLI --resume).
+	SessionID string `json:"session_id,omitempty"`
+	// WorkDir is the working directory for agentic providers (Claude Code CLI).
+	WorkDir string `json:"work_dir,omitempty"`
+	// PermissionMode for agentic providers; empty means read-only ("plan").
+	PermissionMode string `json:"permission_mode,omitempty"`
+	// Timeout bounds agentic turns; zero uses the driver default.
+	Timeout time.Duration `json:"-"`
 }
 
 // LLMResponse normalizes responses from all providers.
@@ -49,6 +58,8 @@ type LLMResponse struct {
 	TokenUsage   types.TokenUsage `json:"token_usage"`
 	Provider     string           `json:"provider"`
 	Model        string           `json:"model"`
+	SessionID    string           `json:"session_id,omitempty"`
+	DurationMS   int64            `json:"duration_ms,omitempty"`
 }
 
 // ProviderClient specifies the standard driver contract for all AI providers.
