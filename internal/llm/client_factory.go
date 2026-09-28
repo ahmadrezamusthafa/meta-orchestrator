@@ -18,7 +18,11 @@ type ClientFactory struct {
 	cfg          *config.OrchestratorConfig
 	providers    map[string]ProviderClient
 	credResolver CredentialResolver
+	usageObs     UsageObserver
 }
+
+// UsageObserver is notified after every successful completion (telemetry instrumentation hook).
+type UsageObserver func(modelStr string, resp *LLMResponse)
 
 // NewClientFactory creates a factory wired to the active configuration.
 func NewClientFactory(cfg *config.OrchestratorConfig) *ClientFactory {
@@ -39,6 +43,13 @@ func (f *ClientFactory) SetCredentialResolver(resolver CredentialResolver) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.credResolver = resolver
+}
+
+// SetUsageObserver registers a hook invoked with each successful completion's response.
+func (f *ClientFactory) SetUsageObserver(obs UsageObserver) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.usageObs = obs
 }
 
 func (f *ClientFactory) initializeDrivers() {
@@ -132,6 +143,12 @@ func (f *ClientFactory) ExecuteWithFallbackChain(
 		req.Model = modelID
 		resp, completeErr := client.Complete(ctx, req)
 		if completeErr == nil {
+			f.mu.RLock()
+			obs := f.usageObs
+			f.mu.RUnlock()
+			if obs != nil && resp != nil {
+				obs(modelStr, resp)
+			}
 			return resp, modelStr, nil
 		}
 

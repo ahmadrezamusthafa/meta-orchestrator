@@ -58,6 +58,7 @@ type geminiResponse struct {
 		PromptTokenCount     int64 `json:"promptTokenCount"`
 		CandidatesTokenCount int64 `json:"candidatesTokenCount"`
 		TotalTokenCount      int64 `json:"totalTokenCount"`
+		CachedContentTokens  int64 `json:"cachedContentTokenCount"`
 	} `json:"usageMetadata"`
 	Error *struct {
 		Message string `json:"message"`
@@ -186,6 +187,7 @@ func (d *AntigravityDriver) Complete(ctx context.Context, req *LLMRequest) (*LLM
 		TokenUsage: types.TokenUsage{
 			PromptTokens:     promptTokens,
 			CompletionTokens: completionTokens,
+			CachedTokens:     parsed.UsageMetadata.CachedContentTokens,
 			TotalTokens:      promptTokens + completionTokens,
 			EstimatedCostUSD: float64(promptTokens)*0.00000125 + float64(completionTokens)*0.000005,
 		},

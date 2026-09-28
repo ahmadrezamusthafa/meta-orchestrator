@@ -14,6 +14,8 @@ const (
 	EventHITLRequired    EventType = "hitl.required"
 	EventToolProgress   EventType = "tool.install.progress"
 	EventConnectorStatus EventType = "connector.status"
+	EventTelemetryTokens EventType = "telemetry.tokens.consumed"
+	EventRouterMatrixUpdated EventType = "router.matrix.updated"
 )
 
 // OrchestratorEvent encapsulates payload broadcast via Redis and WebSocket.

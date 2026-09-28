@@ -42,6 +42,7 @@ type Task struct {
 type TokenUsage struct {
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`
+	CachedTokens     int64   `json:"cached_tokens,omitempty"` // subset of PromptTokens served from provider prompt cache
 	TotalTokens      int64   `json:"total_tokens"`
 	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
 }
