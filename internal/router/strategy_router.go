@@ -2,14 +2,44 @@ package router
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
 )
 
+// RouterMode defines the operational mode for AI model routing.
+type RouterMode string
+
+const (
+	ModePrioritySequence RouterMode = "priority_sequence" // Custom ordered waterfall priority chain
+	ModeBestPractice     RouterMode = "best_practice"      // Heuristic tiered routing (Stage + Complexity)
+	ModeCostOptimized    RouterMode = "cost_optimized"     // Lowest cost per token first
+	ModeLatencyOptimized RouterMode = "latency_optimized"  // Lowest TTFT / latency first
+	ModeRoundRobin       RouterMode = "round_robin"        // Balanced rotation across active providers
+)
+
+// PriorityModelItem represents a model entry in the customizable priority chain.
+type PriorityModelItem struct {
+	ID        string  `json:"id"`
+	Provider  string  `json:"provider"`
+	Model     string  `json:"model"`
+	Name      string  `json:"name"`
+	Enabled   bool    `json:"enabled"`
+	CostPer1k float64 `json:"cost_per_1k"` // USD cost per 1k tokens
+	LatencyMs int     `json:"latency_ms"`  // estimated latency
+}
+
+// RouterSettings captures current mode and customized priority chain.
+type RouterSettings struct {
+	Mode          RouterMode          `json:"mode"`
+	PriorityChain []PriorityModelItem `json:"priority_chain"`
+}
+
 // RoutingDecision captures the model, method, and token budget chosen by the router.
 type RoutingDecision struct {
-	Strategy       string   `json:"strategy"` // "best_practice" or "custom"
+	Strategy       string   `json:"strategy"` // "best_practice", "priority_sequence", "cost_optimized", "latency_optimized", "round_robin", "custom"
 	Model          string   `json:"model"`
 	FallbackChain  []string `json:"fallback_chain"` // 9router priority ordered fallback sequence
 	Method         string   `json:"method"`
@@ -20,7 +50,11 @@ type RoutingDecision struct {
 
 // Router dispatches requests according to configured strategy.
 type Router struct {
-	cfg *config.OrchestratorConfig
+	mu            sync.RWMutex
+	cfg           *config.OrchestratorConfig
+	mode          RouterMode
+	priorityChain []PriorityModelItem
+	roundRobinIdx int
 }
 
 // NewRouter creates a new router instance.
@@ -28,20 +62,267 @@ func NewRouter(cfg *config.OrchestratorConfig) *Router {
 	if cfg == nil {
 		cfg = config.GetDefaultConfig()
 	}
-	return &Router{cfg: cfg}
+
+	defaultChain := []PriorityModelItem{
+		{
+			ID:        "item-1",
+			Provider:  "claude",
+			Model:     "claude-3-5-sonnet-20241022",
+			Name:      "Claude 3.5 Sonnet",
+			Enabled:   true,
+			CostPer1k: 0.003,
+			LatencyMs: 142,
+		},
+		{
+			ID:        "item-2",
+			Provider:  "antigravity",
+			Model:     "gemini-2.0-flash",
+			Name:      "Gemini 2.0 Flash",
+			Enabled:   true,
+			CostPer1k: 0.0001,
+			LatencyMs: 98,
+		},
+		{
+			ID:        "item-3",
+			Provider:  "chatgpt",
+			Model:     "gpt-4o",
+			Name:      "OpenAI GPT-4o",
+			Enabled:   true,
+			CostPer1k: 0.0025,
+			LatencyMs: 185,
+		},
+		{
+			ID:        "item-4",
+			Provider:  "opencode",
+			Model:     "deepseek-coder-v2",
+			Name:      "DeepSeek Coder V2 (Local)",
+			Enabled:   true,
+			CostPer1k: 0.0,
+			LatencyMs: 250,
+		},
+	}
+
+	mode := ModeBestPractice
+	if cfg.Router.Strategy == "priority_sequence" {
+		mode = ModePrioritySequence
+	}
+
+	return &Router{
+		cfg:           cfg,
+		mode:          mode,
+		priorityChain: defaultChain,
+	}
+}
+
+// SetSettings updates the active mode and custom priority chain.
+func (r *Router) SetSettings(settings RouterSettings) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if settings.Mode != "" {
+		r.mode = settings.Mode
+	}
+	if len(settings.PriorityChain) > 0 {
+		r.priorityChain = make([]PriorityModelItem, len(settings.PriorityChain))
+		copy(r.priorityChain, settings.PriorityChain)
+	}
+}
+
+// GetSettings retrieves current mode and priority chain.
+func (r *Router) GetSettings() RouterSettings {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	chainCopy := make([]PriorityModelItem, len(r.priorityChain))
+	copy(chainCopy, r.priorityChain)
+	return RouterSettings{
+		Mode:          r.mode,
+		PriorityChain: chainCopy,
+	}
 }
 
 // Route decides the optimal model and execution method for a given task stage and complexity.
 func (r *Router) Route(stageID string, complexity string, repoTypes []string) *RoutingDecision {
-	strategy := r.cfg.Router.Strategy
-	if strategy == "custom" && r.cfg.Router.CustomRules != "" {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Check custom rule override first if strategy is "custom"
+	if r.cfg.Router.Strategy == "custom" && r.cfg.Router.CustomRules != "" {
 		decision := r.routeCustom(stageID, complexity, repoTypes)
 		if decision != nil {
 			return decision
 		}
+		return r.routeBestPractice(stageID, complexity, repoTypes)
 	}
 
-	return r.routeBestPractice(stageID, complexity, repoTypes)
+	// Handle configured router mode
+	switch r.mode {
+	case ModePrioritySequence:
+		return r.routePrioritySequence(stageID, complexity)
+	case ModeCostOptimized:
+		return r.routeCostOptimized(stageID, complexity)
+	case ModeLatencyOptimized:
+		return r.routeLatencyOptimized(stageID, complexity)
+	case ModeRoundRobin:
+		return r.routeRoundRobin(stageID, complexity)
+	default:
+		return r.routeBestPractice(stageID, complexity, repoTypes)
+	}
+}
+
+func (r *Router) routePrioritySequence(stageID string, complexity string) *RoutingDecision {
+	var enabled []PriorityModelItem
+	for _, item := range r.priorityChain {
+		if item.Enabled {
+			enabled = append(enabled, item)
+		}
+	}
+
+	if len(enabled) == 0 {
+		return r.routeBestPractice(stageID, complexity, nil)
+	}
+
+	var fallbackChain []string
+	for _, item := range enabled {
+		fullModel := item.Model
+		if !strings.Contains(fullModel, "/") {
+			fullModel = fmt.Sprintf("%s/%s", item.Provider, item.Model)
+		}
+		fallbackChain = append(fallbackChain, fullModel)
+	}
+
+	primary := fallbackChain[0]
+	budget := int64(100000)
+	if r.cfg.Router.MaxTokenBudget > 0 {
+		budget = r.cfg.Router.MaxTokenBudget
+	}
+
+	return &RoutingDecision{
+		Strategy:       string(ModePrioritySequence),
+		Model:          primary,
+		FallbackChain:  fallbackChain,
+		Method:         "react",
+		TokenBudget:    budget,
+		Reasoning:      fmt.Sprintf("Priority Sequence: Custom waterfall order starting with %s (%d models in chain)", primary, len(fallbackChain)),
+		RequiresDocker: true,
+	}
+}
+
+func (r *Router) routeCostOptimized(stageID string, complexity string) *RoutingDecision {
+	var sortedItems []PriorityModelItem
+	for _, item := range r.priorityChain {
+		if item.Enabled {
+			sortedItems = append(sortedItems, item)
+		}
+	}
+
+	sort.Slice(sortedItems, func(i, j int) bool {
+		return sortedItems[i].CostPer1k < sortedItems[j].CostPer1k
+	})
+
+	if len(sortedItems) == 0 {
+		return r.routeBestPractice(stageID, complexity, nil)
+	}
+
+	var fallbackChain []string
+	for _, item := range sortedItems {
+		fullModel := item.Model
+		if !strings.Contains(fullModel, "/") {
+			fullModel = fmt.Sprintf("%s/%s", item.Provider, item.Model)
+		}
+		fallbackChain = append(fallbackChain, fullModel)
+	}
+
+	primary := fallbackChain[0]
+	return &RoutingDecision{
+		Strategy:       string(ModeCostOptimized),
+		Model:          primary,
+		FallbackChain:  fallbackChain,
+		Method:         "react",
+		TokenBudget:    80000,
+		Reasoning:      fmt.Sprintf("Cost-Optimized: Lowest cost model %s ($%.4f/1k) prioritized first", primary, sortedItems[0].CostPer1k),
+		RequiresDocker: true,
+	}
+}
+
+func (r *Router) routeLatencyOptimized(stageID string, complexity string) *RoutingDecision {
+	var sortedItems []PriorityModelItem
+	for _, item := range r.priorityChain {
+		if item.Enabled {
+			sortedItems = append(sortedItems, item)
+		}
+	}
+
+	sort.Slice(sortedItems, func(i, j int) bool {
+		return sortedItems[i].LatencyMs < sortedItems[j].LatencyMs
+	})
+
+	if len(sortedItems) == 0 {
+		return r.routeBestPractice(stageID, complexity, nil)
+	}
+
+	var fallbackChain []string
+	for _, item := range sortedItems {
+		fullModel := item.Model
+		if !strings.Contains(fullModel, "/") {
+			fullModel = fmt.Sprintf("%s/%s", item.Provider, item.Model)
+		}
+		fallbackChain = append(fallbackChain, fullModel)
+	}
+
+	primary := fallbackChain[0]
+	return &RoutingDecision{
+		Strategy:       string(ModeLatencyOptimized),
+		Model:          primary,
+		FallbackChain:  fallbackChain,
+		Method:         "react",
+		TokenBudget:    100000,
+		Reasoning:      fmt.Sprintf("Latency-Optimized: Fastest responding model %s (%dms) prioritized first", primary, sortedItems[0].LatencyMs),
+		RequiresDocker: true,
+	}
+}
+
+func (r *Router) routeRoundRobin(stageID string, complexity string) *RoutingDecision {
+	var enabled []PriorityModelItem
+	for _, item := range r.priorityChain {
+		if item.Enabled {
+			enabled = append(enabled, item)
+		}
+	}
+
+	if len(enabled) == 0 {
+		return r.routeBestPractice(stageID, complexity, nil)
+	}
+
+	idx := r.roundRobinIdx % len(enabled)
+	r.roundRobinIdx++
+
+	// Put the chosen model first, then the remaining
+	var fallbackChain []string
+	chosen := enabled[idx]
+	chosenModel := chosen.Model
+	if !strings.Contains(chosenModel, "/") {
+		chosenModel = fmt.Sprintf("%s/%s", chosen.Provider, chosen.Model)
+	}
+	fallbackChain = append(fallbackChain, chosenModel)
+
+	for i, item := range enabled {
+		if i != idx {
+			m := item.Model
+			if !strings.Contains(m, "/") {
+				m = fmt.Sprintf("%s/%s", item.Provider, item.Model)
+			}
+			fallbackChain = append(fallbackChain, m)
+		}
+	}
+
+	return &RoutingDecision{
+		Strategy:       string(ModeRoundRobin),
+		Model:          chosenModel,
+		FallbackChain:  fallbackChain,
+		Method:         "react",
+		TokenBudget:    100000,
+		Reasoning:      fmt.Sprintf("Round-Robin: Distributed request to slot #%d (%s) for load balancing", idx+1, chosenModel),
+		RequiresDocker: true,
+	}
 }
 
 func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes []string) *RoutingDecision {

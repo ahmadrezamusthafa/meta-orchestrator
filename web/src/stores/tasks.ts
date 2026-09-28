@@ -256,6 +256,36 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
+  async function resumeTask(taskId: string) {
+    try {
+      const res = await api.resumeTask(taskId)
+      const task = tasks.value.find(t => t.id === taskId)
+      if (task) {
+        task.state = 'RUNNING'
+      }
+      toastStore.success('Session Resumed', `Task ${taskId} execution resumed with active context`)
+      return res
+    } catch (err: any) {
+      toastStore.error('Resume Failed', err?.message || 'Failed to resume session')
+      throw err
+    }
+  }
+
+  async function pauseTask(taskId: string) {
+    try {
+      const res = await api.pauseTask(taskId)
+      const task = tasks.value.find(t => t.id === taskId)
+      if (task) {
+        task.state = 'SUSPENDED'
+      }
+      toastStore.info('Session Paused', `Task ${taskId} paused. Preserved context ready to resume.`)
+      return res
+    } catch (err: any) {
+      toastStore.error('Pause Failed', err?.message || 'Failed to pause session')
+      throw err
+    }
+  }
+
   return {
     tasks,
     activeTaskId,
@@ -277,6 +307,8 @@ export const useTaskStore = defineStore('tasks', () => {
     fetchTask,
     createTask,
     executeTask,
+    resumeTask,
+    pauseTask,
     injectContext,
     resetWorkspace,
     updateGate,

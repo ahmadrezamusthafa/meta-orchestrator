@@ -9,7 +9,7 @@ import RoutingExplainerPill from '../common/RoutingExplainerPill.vue'
 import { 
   Layers, Flame, Clock, Lock, AlertTriangle, ArrowRight, 
   ExternalLink, FileText, User, MoreVertical, Check, Copy, Terminal,
-  GitBranch, Link2
+  GitBranch, Link2, Play
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{
@@ -32,6 +32,29 @@ const toastStore = useToastStore()
 const isDragging = ref(false)
 const copiedId = ref(false)
 const showStageMenu = ref(false)
+const isExecutingAI = ref(false)
+
+async function handleRunAI() {
+  if (isExecutingAI.value) return
+  isExecutingAI.value = true
+  try {
+    // 1. Immediately open console drawer so user sees live terminal & AI thoughts
+    emit('open-console', props.task.id)
+    
+    // 2. If suspended or blocked, resume session; otherwise dispatch execution
+    if (props.task.state === 'SUSPENDED' || props.task.state === 'BLOCKED_FRUSTRATION') {
+      await taskStore.resumeTask(props.task.id)
+    } else {
+      await taskStore.executeTask(props.task.id)
+    }
+  } catch (err: any) {
+    console.error('Run/Resume AI error:', err)
+  } finally {
+    setTimeout(() => {
+      isExecutingAI.value = false
+    }, 1500)
+  }
+}
 
 const guidance = computed(() => getStageGuidance(props.task, props.allStages))
 const isBlocked = computed(() => props.task.state === 'BLOCKED_FRUSTRATION')
@@ -184,6 +207,24 @@ function moveToStage(stageId: string, e: Event) {
 
         <!-- Row 1 Right: Single Console Button, Action & Menu -->
         <div class="flex items-center gap-1 flex-shrink-0" @click.stop>
+          <!-- Compact Run AI Button -->
+          <button
+            @click.stop="handleRunAI"
+            :disabled="isExecutingAI || isWaitingDependency || task.state === 'COMPLETED'"
+            type="button"
+            :title="isWaitingDependency ? `Blocked: waiting on ${unmetDependencies.join(', ')}` : 'Trigger 9Router AI execution for current stage and open live console'"
+            class="h-6 px-1.5 rounded text-[10px] font-mono flex items-center gap-1 transition-all"
+            :class="task.state === 'RUNNING' || isExecutingAI
+              ? 'bg-emerald-950/80 border border-emerald-500/80 text-emerald-300'
+              : isWaitingDependency
+                ? 'bg-slate-950 border border-slate-800 text-slate-500 cursor-not-allowed'
+                : 'bg-emerald-950/70 hover:bg-emerald-900 border border-emerald-700/80 text-emerald-300 hover:text-white'"
+          >
+            <span v-if="isExecutingAI" class="animate-spin text-emerald-400">⟳</span>
+            <Play v-else class="w-2.5 h-2.5 fill-current text-emerald-400" />
+            <span class="hidden sm:inline">{{ isExecutingAI ? '...' : task.state === 'RUNNING' ? 'Running' : (task.state === 'SUSPENDED' || task.state === 'BLOCKED_FRUSTRATION') ? 'Resume' : 'Run' }}</span>
+          </button>
+
           <!-- Single Canonical Console Button -->
           <button
             @click="emit('open-console', task.id)"
@@ -345,8 +386,26 @@ function moveToStage(stageId: string, e: Event) {
             </span>
           </div>
 
-          <!-- Right: Canonical Console Button & Quick Move Menu -->
+          <!-- Right: Canonical Run AI & Console Buttons & Quick Move Menu -->
           <div class="flex items-center gap-1.5 flex-shrink-0" @click.stop>
+            <!-- 1-Click Run AI Button with Automatic Console Auto-Open -->
+            <button
+              @click="handleRunAI"
+              :disabled="isExecutingAI || isWaitingDependency || task.state === 'COMPLETED'"
+              type="button"
+              :title="isWaitingDependency ? `Blocked: waiting on ${unmetDependencies.join(', ')}` : 'Trigger 9Router AI execution for current stage and open live console'"
+              class="h-6 px-2 rounded text-[10px] font-mono flex items-center gap-1.5 transition-all shadow-sm"
+              :class="task.state === 'RUNNING' || isExecutingAI
+                ? 'bg-emerald-950/80 border border-emerald-500/80 text-emerald-300'
+                : isWaitingDependency
+                  ? 'bg-slate-950 border border-slate-800 text-slate-500 cursor-not-allowed'
+                  : 'bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-700/80 text-emerald-300 hover:text-white'"
+            >
+              <span v-if="isExecutingAI" class="animate-spin text-emerald-400">⟳</span>
+              <Play v-else class="w-2.5 h-2.5 fill-current text-emerald-400" />
+              <span>{{ isExecutingAI ? 'Routing...' : task.state === 'RUNNING' ? 'Running' : (task.state === 'SUSPENDED' || task.state === 'BLOCKED_FRUSTRATION') ? 'Resume' : 'Run AI' }}</span>
+            </button>
+
             <!-- Single, Canonical 1-Click Console Terminal Button -->
             <button
               @click="emit('open-console', task.id)"

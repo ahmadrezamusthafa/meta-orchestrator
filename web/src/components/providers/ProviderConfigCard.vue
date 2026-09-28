@@ -5,8 +5,8 @@ import { api } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import {
   Cpu, Wifi, Key, Server, Check, Eye, EyeOff,
-  LogIn, LogOut, Shield, Globe, User, ChevronDown, Save,
-  Cookie, ExternalLink, Info
+  LogIn, LogOut, Shield, Globe, User, ChevronDown, ChevronUp, Save,
+  Cookie, ExternalLink, Info, Plus
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -299,6 +299,54 @@ const authDropdownClass = computed(() => {
     default: return 'bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
   }
 })
+
+const selectedModel = ref(props.provider.default_model)
+const showAllModels = ref(false)
+const isSavingModel = ref(false)
+
+async function changeDefaultModel(model: string) {
+  selectedModel.value = model
+  isSavingModel.value = true
+  try {
+    await api.saveProviderConfig(props.provider.id, {
+      model: model,
+    })
+    toastStore.success('Default Model Updated', `${props.provider.name} set to ${model}`)
+  } catch (err: any) {
+    toastStore.error('Update Failed', err.message)
+  } finally {
+    isSavingModel.value = false
+  }
+}
+
+const showAddCustomInline = ref(false)
+const customModelInput = ref('')
+const isAddingCustom = ref(false)
+
+async function addCustomModelToProvider() {
+  const modelId = customModelInput.value.trim()
+  if (!modelId) return
+
+  isAddingCustom.value = true
+  try {
+    await api.registerCustomModel({
+      provider_id: props.provider.id,
+      model_id: modelId,
+      model_name: modelId,
+    })
+    if (!props.provider.models.includes(modelId)) {
+      props.provider.models.unshift(modelId)
+    }
+    await changeDefaultModel(modelId)
+    customModelInput.value = ''
+    showAddCustomInline.value = false
+    toastStore.success('Custom Model Added', `${modelId} is now active for ${props.provider.name}`)
+  } catch (err: any) {
+    toastStore.error('Failed to add model', err.message)
+  } finally {
+    isAddingCustom.value = false
+  }
+}
 </script>
 
 <template>
@@ -629,15 +677,95 @@ const authDropdownClass = computed(() => {
         />
       </div>
 
-      <!-- Model Selector (shown regardless of auth method) -->
-      <div>
-        <label class="block text-[11px] text-slate-400 mb-1">Default Model Endpoint</label>
-        <select
-          :value="provider.default_model"
-          class="w-full h-8 px-2 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
-        >
-          <option v-for="m in provider.models" :key="m" :value="m">{{ m }}</option>
-        </select>
+      <!-- Model Selector & All Available Models Catalog -->
+      <div class="space-y-2">
+        <div class="flex items-center justify-between">
+          <label class="text-[11px] text-slate-400 flex items-center gap-1">
+            <Cpu class="w-3 h-3 text-slate-500" />
+            <span>Default Model Endpoint</span>
+          </label>
+          <button
+            @click="showAllModels = !showAllModels"
+            type="button"
+            class="text-[10px] font-mono text-sky-400 hover:text-sky-300 flex items-center gap-1 transition-colors"
+          >
+            <span>{{ showAllModels ? 'Hide Catalog' : `All Models (${provider.models.length})` }}</span>
+            <ChevronUp v-if="showAllModels" class="w-3 h-3" />
+            <ChevronDown v-else class="w-3 h-3" />
+          </button>
+        </div>
+
+        <div class="relative">
+          <select
+            :value="selectedModel"
+            :disabled="isSavingModel"
+            @change="changeDefaultModel(($event.target as HTMLSelectElement).value)"
+            class="w-full h-8 px-2 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 font-mono focus:outline-none focus:border-emerald-500 transition-colors"
+          >
+            <option v-for="m in provider.models" :key="m" :value="m">{{ m }}</option>
+          </select>
+          <div v-if="isSavingModel" class="absolute right-2.5 top-2 text-[10px] text-emerald-400 animate-spin">⟳</div>
+        </div>
+
+        <!-- All Available Models Pill Cloud -->
+        <div v-if="showAllModels" class="p-2.5 bg-slate-950 border border-slate-800/80 rounded-lg space-y-2">
+          <div class="text-[10px] text-slate-400 font-medium flex items-center justify-between">
+            <span>Available AI Models:</span>
+            <span class="text-slate-500 text-[9px]">Click to activate</span>
+          </div>
+          <div class="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto pr-1">
+            <button
+              v-for="m in provider.models"
+              :key="m"
+              @click="changeDefaultModel(m)"
+              type="button"
+              class="px-2 py-1 rounded text-[10px] font-mono transition-all text-left flex items-center gap-1 border"
+              :class="selectedModel === m
+                ? 'bg-sky-950/80 border-sky-600 text-sky-200 shadow-sm'
+                : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'"
+            >
+              <Check v-if="selectedModel === m" class="w-2.5 h-2.5 text-sky-400 shrink-0" />
+              <span class="truncate">{{ m }}</span>
+            </button>
+          </div>
+
+          <!-- Add Custom Model to Provider -->
+          <div class="pt-2 border-t border-slate-800/80">
+            <button
+              v-if="!showAddCustomInline"
+              @click="showAddCustomInline = true"
+              type="button"
+              class="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1 font-mono transition-colors"
+            >
+              <Plus class="w-3 h-3" />
+              <span>+ Add custom model identifier (e.g. claude-opus-5-5)</span>
+            </button>
+            <div v-else class="flex items-center gap-1.5">
+              <input
+                v-model="customModelInput"
+                type="text"
+                placeholder="e.g. claude-opus-5-5"
+                class="flex-1 h-7 px-2 bg-slate-900 border border-slate-700 rounded text-[11px] font-mono text-slate-200 focus:outline-none focus:border-purple-500"
+                @keyup.enter="addCustomModelToProvider"
+              />
+              <button
+                @click="addCustomModelToProvider"
+                :disabled="isAddingCustom || !customModelInput.trim()"
+                type="button"
+                class="h-7 px-2.5 rounded bg-purple-950 hover:bg-purple-900 border border-purple-700 text-[10px] font-medium text-purple-200 disabled:opacity-40"
+              >
+                {{ isAddingCustom ? 'Adding…' : 'Add' }}
+              </button>
+              <button
+                @click="showAddCustomInline = false"
+                type="button"
+                class="h-7 px-1.5 text-slate-500 hover:text-slate-300 text-xs"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>

@@ -68,3 +68,54 @@ stage:IMPLEMENTATION_GREEN -> model:openai/gpt-4o,method:superpower
 		t.Errorf("expected fallback to best_practice, got %s", dec2.Strategy)
 	}
 }
+
+func TestRouterModesAndCustomPriority(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	r := NewRouter(cfg)
+
+	customChain := []PriorityModelItem{
+		{ID: "1", Provider: "openai", Model: "gpt-4o", Name: "GPT-4o", Enabled: true, CostPer1k: 0.005, LatencyMs: 200},
+		{ID: "2", Provider: "claude", Model: "claude-3-5-sonnet", Name: "Claude Sonnet", Enabled: true, CostPer1k: 0.003, LatencyMs: 150},
+		{ID: "3", Provider: "antigravity", Model: "gemini-2.0-flash", Name: "Gemini Flash", Enabled: true, CostPer1k: 0.0001, LatencyMs: 90},
+	}
+
+	// 1. Test Priority Sequence mode
+	r.SetSettings(RouterSettings{
+		Mode:          ModePrioritySequence,
+		PriorityChain: customChain,
+	})
+	dec := r.Route("task_implementation", "HIGH", nil)
+	if dec.Strategy != "priority_sequence" {
+		t.Errorf("expected strategy 'priority_sequence', got %s", dec.Strategy)
+	}
+	if dec.Model != "openai/gpt-4o" {
+		t.Errorf("expected primary model 'openai/gpt-4o', got %s", dec.Model)
+	}
+	if len(dec.FallbackChain) != 3 || dec.FallbackChain[1] != "claude/claude-3-5-sonnet" {
+		t.Errorf("expected fallback chain with claude 2nd, got %v", dec.FallbackChain)
+	}
+
+	// 2. Test Cost-Optimized mode (Gemini Flash has lowest cost)
+	r.SetSettings(RouterSettings{
+		Mode:          ModeCostOptimized,
+		PriorityChain: customChain,
+	})
+	decCost := r.Route("task_implementation", "HIGH", nil)
+	if decCost.Strategy != "cost_optimized" {
+		t.Errorf("expected strategy 'cost_optimized', got %s", decCost.Strategy)
+	}
+	if decCost.Model != "antigravity/gemini-2.0-flash" {
+		t.Errorf("expected cheapest model 'antigravity/gemini-2.0-flash', got %s", decCost.Model)
+	}
+
+	// 3. Test Latency-Optimized mode (Gemini Flash has lowest latency 90ms)
+	r.SetSettings(RouterSettings{
+		Mode:          ModeLatencyOptimized,
+		PriorityChain: customChain,
+	})
+	decLat := r.Route("task_implementation", "HIGH", nil)
+	if decLat.Model != "antigravity/gemini-2.0-flash" {
+		t.Errorf("expected fastest model 'antigravity/gemini-2.0-flash', got %s", decLat.Model)
+	}
+}
+

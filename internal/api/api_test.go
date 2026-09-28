@@ -443,4 +443,127 @@ func TestTaskExecutionWith9Router(t *testing.T) {
 	}
 }
 
+func TestRouterSettingsEndpoint(t *testing.T) {
+	router := setupTestRouter()
+
+	// 1. Test GET /api/v1/router/settings
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/v1/router/settings", nil)
+	wGet := httptest.NewRecorder()
+	router.ServeHTTP(wGet, reqGet)
+
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from GET /api/v1/router/settings, got %d", wGet.Code)
+	}
+
+	var resGet map[string]interface{}
+	if err := json.NewDecoder(wGet.Body).Decode(&resGet); err != nil {
+		t.Fatalf("Failed to decode GET router settings response: %v", err)
+	}
+
+	if resGet["mode"] == nil {
+		t.Errorf("Expected 'mode' in response")
+	}
+	modes, ok := resGet["available_modes"].([]interface{})
+	if !ok || len(modes) < 5 {
+		t.Errorf("Expected at least 5 available modes, got %d", len(modes))
+	}
+	models, ok := resGet["all_models"].([]interface{})
+	if !ok || len(models) < 10 {
+		t.Errorf("Expected at least 10 all_models, got %d", len(models))
+	}
+
+	// 2. Test POST /api/v1/router/settings to update mode and priority chain
+	updatePayload := map[string]interface{}{
+		"mode": "priority_sequence",
+		"priority_chain": []map[string]interface{}{
+			{
+				"id":          "custom-1",
+				"provider":    "antigravity",
+				"model":       "gemini-2.5-pro",
+				"name":        "Gemini 2.5 Pro",
+				"enabled":     true,
+				"cost_per_1k": 0.00125,
+				"latency_ms":  120,
+			},
+			{
+				"id":          "custom-2",
+				"provider":    "claude",
+				"model":       "claude-3-7-sonnet-20250219",
+				"name":        "Claude 3.7 Sonnet",
+				"enabled":     true,
+				"cost_per_1k": 0.003,
+				"latency_ms":  140,
+			},
+		},
+	}
+	payloadBytes, _ := json.Marshal(updatePayload)
+	reqPost := httptest.NewRequest(http.MethodPost, "/api/v1/router/settings", bytes.NewReader(payloadBytes))
+	reqPost.Header.Set("Content-Type", "application/json")
+	wPost := httptest.NewRecorder()
+	router.ServeHTTP(wPost, reqPost)
+
+	if wPost.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from POST /api/v1/router/settings, got %d: %s", wPost.Code, wPost.Body.String())
+	}
+
+	// 3. Verify updated settings via GET
+	reqVerify := httptest.NewRequest(http.MethodGet, "/api/v1/router/settings", nil)
+	wVerify := httptest.NewRecorder()
+	router.ServeHTTP(wVerify, reqVerify)
+
+	var resVerify map[string]interface{}
+	_ = json.NewDecoder(wVerify.Body).Decode(&resVerify)
+	if resVerify["mode"] != "priority_sequence" {
+		t.Errorf("Expected mode 'priority_sequence', got %v", resVerify["mode"])
+	}
+	chain := resVerify["priority_chain"].([]interface{})
+	if len(chain) != 2 {
+		t.Errorf("Expected priority_chain length 2, got %d", len(chain))
+	}
+
+	// 4. Test POST /api/v1/router/models to register a new frontier custom model
+	newModelPayload := map[string]interface{}{
+		"provider_id": "claude",
+		"model_id":    "claude-opus-5-5-custom",
+		"model_name":  "Claude Opus 5.5 (Custom Experimental)",
+		"cost_per_1k": 0.015,
+		"latency_ms":  240,
+	}
+	newModelBytes, _ := json.Marshal(newModelPayload)
+	reqReg := httptest.NewRequest(http.MethodPost, "/api/v1/router/models", bytes.NewReader(newModelBytes))
+	reqReg.Header.Set("Content-Type", "application/json")
+	wReg := httptest.NewRecorder()
+	router.ServeHTTP(wReg, reqReg)
+
+	if wReg.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from POST /api/v1/router/models, got %d", wReg.Code)
+	}
+
+	// Verify it shows up in GET /api/v1/router/settings
+	reqCheck := httptest.NewRequest(http.MethodGet, "/api/v1/router/settings", nil)
+	wCheck := httptest.NewRecorder()
+	router.ServeHTTP(wCheck, reqCheck)
+
+	var resCheck map[string]interface{}
+	_ = json.NewDecoder(wCheck.Body).Decode(&resCheck)
+	modelsList := resCheck["all_models"].([]interface{})
+	foundOpus55 := false
+	foundCustom := false
+	for _, m := range modelsList {
+		mMap := m.(map[string]interface{})
+		if mMap["model_id"] == "claude-opus-5-5" {
+			foundOpus55 = true
+		}
+		if mMap["model_id"] == "claude-opus-5-5-custom" {
+			foundCustom = true
+		}
+	}
+	if !foundOpus55 {
+		t.Errorf("Expected claude-opus-5-5 in all_models")
+	}
+	if !foundCustom {
+		t.Errorf("Expected claude-opus-5-5-custom in all_models after registration")
+	}
+}
+
 

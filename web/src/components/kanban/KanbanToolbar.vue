@@ -220,6 +220,16 @@ async function handleRefresh() {
         <span class="hidden sm:inline capitalize">{{ density }}</span>
       </button>
 
+      <!-- Execution Mode Indicator Pill -->
+      <div 
+        class="hidden xl:flex items-center gap-1.5 px-2.5 h-8 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-300 select-none"
+        title="Kanban tasks can be triggered manually via '▶ Run AI' on any card/console, or automatically unblock and advance when prerequisites finish."
+      >
+        <PlayCircle class="w-3.5 h-3.5 text-emerald-400" />
+        <span class="text-slate-400">Execution:</span>
+        <span class="text-emerald-300 font-mono font-medium">Manual &amp; Auto-Advance</span>
+      </div>
+
       <!-- Refresh Button -->
       <button
         @click="handleRefresh"

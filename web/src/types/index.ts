@@ -155,6 +155,45 @@ export interface OAuthStatus {
   scopes?: string
 }
 
+export type RouterMode =
+  | 'priority_sequence'
+  | 'best_practice'
+  | 'cost_optimized'
+  | 'latency_optimized'
+  | 'round_robin'
+
+export interface PriorityModelItem {
+  id: string
+  provider: string
+  model: string
+  name: string
+  enabled: boolean
+  cost_per_1k: number
+  latency_ms: number
+}
+
+export interface RouterModeDTO {
+  id: RouterMode
+  name: string
+  description: string
+}
+
+export interface AvailableModelDTO {
+  provider_id: string
+  provider_name: string
+  model_id: string
+  model_name: string
+  cost_per_1k: number
+  latency_ms: number
+}
+
+export interface RouterSettingsDTO {
+  mode: RouterMode
+  priority_chain: PriorityModelItem[]
+  available_modes: RouterModeDTO[]
+  all_models: AvailableModelDTO[]
+}
+
 export interface TierMappingDTO {
   tier_1_reasoning: { provider_id: string; model_id: string }
   tier_2_codegen: { provider_id: string; model_id: string }

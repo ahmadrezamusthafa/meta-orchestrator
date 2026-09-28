@@ -6,7 +6,7 @@ import type {
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
   UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse,
   PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
-  OAuthStatus
+  OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO
 } from '../types'
 
 
@@ -47,6 +47,36 @@ export const api = {
     return res.json()
   },
 
+  async clearTaskProcessLogs(taskId: string): Promise<any> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/process/clear`, {
+      method: 'POST'
+    })
+    if (!res.ok) throw new Error('Failed to clear process logs')
+    return res.json()
+  },
+
+  async resumeTask(taskId: string): Promise<any> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/resume`, {
+      method: 'POST'
+    })
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      throw new Error(errData?.error || `Failed to resume task ${taskId}`)
+    }
+    return res.json()
+  },
+
+  async pauseTask(taskId: string): Promise<any> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/pause`, {
+      method: 'POST'
+    })
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      throw new Error(errData?.error || `Failed to pause task ${taskId}`)
+    }
+    return res.json()
+  },
+
   async getTaskWorktree(taskId: string): Promise<TaskWorktreeDTO> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/worktree`)
     if (!res.ok) throw new Error(`Failed to fetch worktree for task ${taskId}`)
@@ -73,7 +103,10 @@ export const api = {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/execute`, {
       method: 'POST'
     })
-    if (!res.ok) throw new Error(`Failed to execute task ${taskId}`)
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      throw new Error(errData?.error || `Failed to execute task ${taskId} (HTTP ${res.status})`)
+    }
     return res.json()
   },
 
@@ -173,6 +206,44 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Failed to save provider config' }))
       throw new Error(err.error || 'Failed to save provider config')
+    }
+    return res.json()
+  },
+
+  async getRouterSettings(): Promise<RouterSettingsDTO> {
+    const res = await fetch(`${BASE_URL}/router/settings`)
+    if (!res.ok) throw new Error('Failed to fetch router settings')
+    return res.json()
+  },
+
+  async updateRouterSettings(payload: { mode: RouterMode; priority_chain: PriorityModelItem[] }): Promise<any> {
+    const res = await fetch(`${BASE_URL}/router/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to update router settings' }))
+      throw new Error(err.error || 'Failed to update router settings')
+    }
+    return res.json()
+  },
+
+  async registerCustomModel(payload: {
+    provider_id: string
+    model_id: string
+    model_name?: string
+    cost_per_1k?: number
+    latency_ms?: number
+  }): Promise<any> {
+    const res = await fetch(`${BASE_URL}/router/models`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to register model' }))
+      throw new Error(err.error || 'Failed to register model')
     }
     return res.json()
   },
