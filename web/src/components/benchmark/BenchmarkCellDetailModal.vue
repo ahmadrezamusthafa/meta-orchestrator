@@ -31,6 +31,10 @@ defineEmits<{
           <div class="text-slate-400">First-Pass Verification: <span class="text-emerald-400 font-bold">{{ cell.fpvr_percent }}%</span></div>
           <div class="text-slate-400">Average Token Burn: <span class="text-sky-400">{{ cell.avg_tokens.toLocaleString() }} tokens</span></div>
           <div class="text-slate-400">Mean Duration: <span class="text-slate-200">{{ cell.avg_duration_s }}s</span></div>
+          <div v-if="cell.model_tier" class="text-slate-400">Model Tier: <span class="text-slate-200">{{ cell.model_tier }}</span></div>
+          <div v-if="cell.avg_cost_usd !== undefined" class="text-slate-400">Avg Cost / Run: <span class="text-sky-400">${{ cell.avg_cost_usd.toFixed(4) }}</span></div>
+          <div v-if="cell.score !== undefined" class="text-slate-400">Composite Score: <span class="text-sky-400">{{ cell.score.toFixed(2) }}</span></div>
+          <div v-if="cell.samples !== undefined" class="text-slate-400">Samples: <span class="text-sky-400">{{ cell.samples }}</span></div>
         </div>
 
         <p class="text-[11px] font-sans text-slate-400 leading-relaxed">

@@ -208,6 +208,18 @@ export interface BenchmarkCellDTO {
   fpvr_percent: number
   avg_tokens: number
   avg_duration_s: number
+  // Phase 4 shadow-benchmark fields (optional for backward compatibility)
+  model_tier?: string
+  avg_cost_usd?: number
+  score?: number
+  samples?: number
+}
+
+export interface BenchmarksResponseDTO {
+  total_cells: number
+  generated_at?: string
+  source?: 'shadow_benchmark' | 'default' | string
+  matrix: BenchmarkCellDTO[]
 }
 
 export interface PromptItemDTO {
@@ -537,5 +549,88 @@ export interface CheckPathCompatibilityResponse {
   error?: string
 }
 
+// ─── Phase 4: Telemetry & Analytics ────────────────────────────────────────
 
+export type TelemetryWindow = '24h' | '7d' | '30d' | 'all'
 
+export interface TelemetryTotalsDTO {
+  runs: number
+  prompt_tokens: number
+  completion_tokens: number
+  cached_tokens: number
+  total_tokens: number
+  cost_usd: number
+  fpvr_percent: number
+  mttr_seconds: number
+}
+
+export interface TelemetryCategoryDTO {
+  category: string
+  runs: number
+  avg_tpf_tokens: number
+  avg_cost_usd: number
+  fpvr_percent: number
+}
+
+export interface LeaderboardEntryDTO {
+  model: string
+  tier: string
+  tasks_completed: number
+  fpvr_percent: number
+  avg_tpf_tokens: number
+  avg_cost_usd: number
+  avg_ttr_seconds: number
+}
+
+export interface MethodStatDTO {
+  method: string
+  runs: number
+  total_cost_usd: number
+  avg_cost_usd: number
+  avg_tpf_tokens: number
+  fpvr_percent: number
+  avg_ttr_seconds: number
+}
+
+export interface RepoStabilityDTO {
+  repo: string
+  runs: number
+  failure_loops: number
+  avg_test_iterations: number
+  flakiness_index: number // 0..1
+}
+
+export interface TelemetrySummaryDTO {
+  window: TelemetryWindow | string
+  repo: string
+  generated_at: string
+  query_latency_ms: number
+  totals: TelemetryTotalsDTO
+  by_category: TelemetryCategoryDTO[]
+  leaderboard: LeaderboardEntryDTO[]
+  methods: MethodStatDTO[]
+  stability: RepoStabilityDTO[]
+  repos: string[]
+}
+
+export interface TokenBurnPointDTO {
+  date: string
+  prompt_tokens: number
+  completion_tokens: number
+  cached_tokens: number
+  cost_usd: number
+}
+
+export interface MttrPointDTO {
+  date: string
+  runs: number
+  mttr_seconds: number
+  fpvr_percent: number
+}
+
+export interface TelemetryTrendsDTO {
+  window: TelemetryWindow | string
+  bucket: string
+  burn: TokenBurnPointDTO[]
+  mttr: MttrPointDTO[]
+}

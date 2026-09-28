@@ -6,7 +6,8 @@ import type {
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
   UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse,
   PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
-  OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO
+  OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO,
+  BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow
 } from '../types'
 
 
@@ -248,8 +249,24 @@ export const api = {
     return res.json()
   },
 
-  async getBenchmarks(): Promise<{ total_cells: number; matrix: BenchmarkCellDTO[] }> {
+  async getBenchmarks(): Promise<BenchmarksResponseDTO> {
     const res = await fetch(`${BASE_URL}/benchmarks`)
+    if (!res.ok) throw new Error('Failed to fetch benchmark matrix')
+    return res.json()
+  },
+
+  // Telemetry & Analytics (Phase 4)
+  async getTelemetrySummary(window: TelemetryWindow, repo = ''): Promise<TelemetrySummaryDTO> {
+    const query = new URLSearchParams({ window, repo })
+    const res = await fetch(`${BASE_URL}/telemetry/summary?${query.toString()}`)
+    if (!res.ok) throw new Error('Failed to fetch telemetry summary')
+    return res.json()
+  },
+
+  async getTelemetryTrends(window: TelemetryWindow, repo = ''): Promise<TelemetryTrendsDTO> {
+    const query = new URLSearchParams({ window, repo })
+    const res = await fetch(`${BASE_URL}/telemetry/trends?${query.toString()}`)
+    if (!res.ok) throw new Error('Failed to fetch telemetry trends')
     return res.json()
   },
 

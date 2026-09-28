@@ -13,6 +13,7 @@ import {
   ChevronRight,
   ShieldCheck,
   Sparkles,
+  LineChart,
 } from 'lucide-vue-next'
 
 const layoutStore = useLayoutStore()
@@ -45,6 +46,10 @@ const layoutStore = useLayoutStore()
 
         <NavRailItem to="/connectors" label="Connectors (JIRA/Wiki)" :is-expanded="layoutStore.isNavExpanded">
           <Plug class="w-5 h-5" />
+        </NavRailItem>
+
+        <NavRailItem to="/analytics" label="Executive Analytics" :is-expanded="layoutStore.isNavExpanded">
+          <LineChart class="w-5 h-5" />
         </NavRailItem>
 
         <NavRailItem to="/skills" label="Skills & Registries Hub" :is-expanded="layoutStore.isNavExpanded">
