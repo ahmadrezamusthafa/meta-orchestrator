@@ -401,3 +401,46 @@ func TestTasksAPI_DependencyDAGAndWorktree(t *testing.T) {
 	}
 }
 
+func TestTaskExecutionWith9Router(t *testing.T) {
+	router := setupTestRouter()
+
+	// 1. Send execute request for TASK-8942
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/TASK-8942/execute", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from /execute, got %d", w.Code)
+	}
+
+	var res map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&res); err != nil {
+		t.Fatalf("Failed to decode execute response: %v", err)
+	}
+	if res["status"] != "execution_dispatched" {
+		t.Errorf("Expected status 'execution_dispatched', got %v", res["status"])
+	}
+
+	// 2. Fetch process logs
+	reqProc := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/TASK-8942/process", nil)
+	wProc := httptest.NewRecorder()
+	router.ServeHTTP(wProc, reqProc)
+
+	if wProc.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from /process, got %d", wProc.Code)
+	}
+
+	var proc types.TaskProcessInfo
+	if err := json.NewDecoder(wProc.Body).Decode(&proc); err != nil {
+		t.Fatalf("Failed to decode process info: %v", err)
+	}
+
+	if proc.TaskID != "TASK-8942" {
+		t.Errorf("Expected task ID TASK-8942, got %s", proc.TaskID)
+	}
+	if len(proc.Logs) == 0 {
+		t.Errorf("Expected 9router logs to be populated, got 0 logs")
+	}
+}
+
+

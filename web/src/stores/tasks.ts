@@ -245,6 +245,17 @@ export const useTaskStore = defineStore('tasks', () => {
     })
   }
 
+  async function executeTask(taskId: string) {
+    try {
+      const res = await api.executeTask(taskId)
+      toastStore.success('9Router AI Dispatched', `Task ${taskId} execution started with multi-provider routing`)
+      return res
+    } catch (err: any) {
+      toastStore.error('Execution Failed', err?.message || 'Failed to dispatch AI execution')
+      throw err
+    }
+  }
+
   return {
     tasks,
     activeTaskId,
@@ -265,6 +276,7 @@ export const useTaskStore = defineStore('tasks', () => {
     fetchTasks,
     fetchTask,
     createTask,
+    executeTask,
     injectContext,
     resetWorkspace,
     updateGate,

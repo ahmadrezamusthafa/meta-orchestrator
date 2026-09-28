@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
@@ -268,10 +271,23 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Route sub-actions: /api/v1/tasks/{id}/inject, /api/v1/tasks/{id}/reset, /api/v1/tasks/{id}/gate, /api/v1/tasks/{id}/process
+	// Route sub-actions: /api/v1/tasks/{id}/inject, /api/v1/tasks/{id}/reset, /api/v1/tasks/{id}/gate, /api/v1/tasks/{id}/process, /api/v1/tasks/{id}/execute
 	if len(parts) > 1 {
 		subAction := parts[1]
 		switch subAction {
+		case "execute":
+			if req.Method != http.MethodPost {
+				r.writeError(w, http.StatusMethodNotAllowed, "POST required for execute")
+				return
+			}
+			go r.executeTaskWithAI(taskID)
+			r.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"status":  "execution_dispatched",
+				"task_id": taskID,
+				"message": "Task queued for 9router AI execution",
+			})
+			return
+
 		case "process":
 			if len(parts) > 2 && parts[2] == "execute" {
 				if req.Method != http.MethodPost {
@@ -610,6 +626,9 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 
 		if body.CurrentStageID != "" {
 			task.CurrentStageID = body.CurrentStageID
+			if task.CurrentStageID == "task_implementation" {
+				go r.executeTaskWithAI(taskID)
+			}
 		}
 		if body.State != "" {
 			task.State = body.State
@@ -662,3 +681,261 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
 }
+
+// executeTaskWithAI executes a task using the 9router multi-provider fallback engine.
+func (r *Router) executeTaskWithAI(taskID string) {
+	r.mu.RLock()
+	task, exists := r.tasks[taskID]
+	if !exists {
+		r.mu.RUnlock()
+		return
+	}
+	taskCopy := cloneTask(task)
+	r.mu.RUnlock()
+
+	// 1. Dependency gate check
+	for _, depID := range taskCopy.Dependencies {
+		r.mu.RLock()
+		dep, ok := r.tasks[depID]
+		r.mu.RUnlock()
+		if !ok || dep.State != types.TaskStateCompleted {
+			return
+		}
+	}
+
+	complexity := taskCopy.Metadata["complexity"]
+	if complexity == "" {
+		complexity = "MEDIUM"
+	}
+
+	// 2. 9Router Strategy decision
+	var decision *router.RoutingDecision
+	if r.strategyRouter != nil {
+		decision = r.strategyRouter.Route(taskCopy.CurrentStageID, complexity, taskCopy.AssignedRepos)
+	} else {
+		decision = &router.RoutingDecision{
+			Strategy:      "best_practice",
+			Model:         "claude/claude-3-5-sonnet-20241022",
+			FallbackChain: []string{"claude/claude-3-5-sonnet-20241022", "antigravity/gemini-2.0-flash", "openai/gpt-4o", "opencode/deepseek-coder-v2"},
+			Method:        "react",
+			TokenBudget:   100000,
+			Reasoning:     "Best practice 9router default",
+		}
+	}
+
+	nowStr := time.Now().Format("15:04:05")
+
+	// Update task state & process info
+	r.mu.Lock()
+	task.State = types.TaskStateRunning
+	task.UpdatedAt = time.Now()
+	if task.Metadata == nil {
+		task.Metadata = make(map[string]string)
+	}
+	task.Metadata["router_strategy"] = decision.Strategy
+	task.Metadata["active_model"] = decision.Model
+	task.Metadata["router_reasoning"] = decision.Reasoning
+
+	proc := r.getOrCreateTaskProcessLocked(taskID)
+	proc.Status = "RUNNING"
+	proc.CurrentStep = fmt.Sprintf("9Router executing: %s (%s)", decision.Model, decision.Method)
+	proc.Command = fmt.Sprintf("ai-router --model %s --method %s", decision.Model, decision.Method)
+
+	dispatchLog := fmt.Sprintf("[%s] \x1b[36m[9Router]\x1b[0m Stage '\x1b[1m%s\x1b[0m' (Complexity: %s) -> Strategy: \x1b[32m%s\x1b[0m",
+		nowStr, taskCopy.CurrentStageID, complexity, decision.Strategy)
+	modelLog := fmt.Sprintf("[%s] \x1b[36m[9Router]\x1b[0m Primary Model: \x1b[35m%s\x1b[0m | Method: %s | Budget: %d tokens",
+		nowStr, decision.Model, decision.Method, decision.TokenBudget)
+	chainLog := fmt.Sprintf("[%s] \x1b[36m[9Router Priority Chain]\x1b[0m %s",
+		nowStr, strings.Join(decision.FallbackChain, " -> "))
+	reasonLog := fmt.Sprintf("[%s] \x1b[34m[Router Rationale]\x1b[0m %s", nowStr, decision.Reasoning)
+
+	proc.Logs = append(proc.Logs, dispatchLog, modelLog, chainLog, reasonLog)
+	r.mu.Unlock()
+
+	// Broadcast WS logs
+	if r.cfg.WSHub != nil {
+		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+			Type:      types.EventAgentTerminal,
+			TaskID:    taskID,
+			StageID:   taskCopy.CurrentStageID,
+			Timestamp: time.Now(),
+			Payload: map[string]string{
+				"stream": "stdout",
+				"chunk":  fmt.Sprintf("%s\r\n%s\r\n%s\r\n%s\r\n", dispatchLog, modelLog, chainLog, reasonLog),
+			},
+		})
+		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+			Type:      types.EventAgentThought,
+			TaskID:    taskID,
+			StageID:   taskCopy.CurrentStageID,
+			Timestamp: time.Now(),
+			Payload: map[string]interface{}{
+				"profile":    "ai_router",
+				"model":      decision.Model,
+				"thought":    fmt.Sprintf("9Router routing stage '%s' to %s (Priority fallback: %s)", taskCopy.CurrentStageID, decision.Model, strings.Join(decision.FallbackChain, " -> ")),
+				"is_steered": false,
+			},
+		})
+		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+			Type:      types.EventTaskStatus,
+			TaskID:    taskID,
+			StageID:   taskCopy.CurrentStageID,
+			Timestamp: time.Now(),
+			Payload:   taskCopy,
+		})
+	}
+
+	// 3. Token budget enforcement
+	if r.budgetTracker != nil {
+		r.budgetTracker.SetTaskBudget(taskID, decision.TokenBudget)
+	}
+
+	// 4. Formulate LLM Prompt
+	systemMsg := fmt.Sprintf("You are an expert AI software engineer executing task %s in stage %s. Assigned repositories: %s.",
+		taskCopy.ID, taskCopy.CurrentStageID, strings.Join(taskCopy.AssignedRepos, ", "))
+	userPrompt := fmt.Sprintf("Task: %s\nDescription: %s\nStage: %s\nExecution Method: %s\nProvide implementation plan, code modifications, and verification steps.",
+		taskCopy.Title, taskCopy.Description, taskCopy.CurrentStageID, decision.Method)
+
+	req := &llm.LLMRequest{
+		Messages: []llm.Message{
+			{Role: llm.RoleSystem, Content: systemMsg},
+			{Role: llm.RoleUser, Content: userPrompt},
+		},
+		MaxTokens: 4096,
+	}
+
+	// 5. Execute with 9router fallback chain
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	onFailover := func(failedModel string, nextModel string, err error) {
+		tStr := time.Now().Format("15:04:05")
+		failLog := fmt.Sprintf("[%s] \x1b[33m[9Router Failover]\x1b[0m Primary model '\x1b[31m%s\x1b[0m' failed (%v). Auto-routing to fallback '\x1b[32m%s\x1b[0m'...",
+			tStr, failedModel, err, nextModel)
+		r.mu.Lock()
+		if p, ok := r.taskProcesses[taskID]; ok {
+			p.Logs = append(p.Logs, failLog)
+		}
+		r.mu.Unlock()
+
+		if r.cfg.WSHub != nil {
+			r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+				Type:      types.EventAgentTerminal,
+				TaskID:    taskID,
+				StageID:   taskCopy.CurrentStageID,
+				Timestamp: time.Now(),
+				Payload: map[string]string{
+					"stream": "stderr",
+					"chunk":  failLog + "\r\n",
+				},
+			})
+			r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+				Type:      types.EventAgentThought,
+				TaskID:    taskID,
+				StageID:   taskCopy.CurrentStageID,
+				Timestamp: time.Now(),
+				Payload: map[string]interface{}{
+					"profile":    "ai_router",
+					"model":      nextModel,
+					"thought":    fmt.Sprintf("Failover triggered: %s failed -> routed to %s", failedModel, nextModel),
+					"is_steered": false,
+				},
+			})
+		}
+	}
+
+	var resp *llm.LLMResponse
+	var actualModel string
+	var execErr error
+
+	if r.clientFactory != nil {
+		resp, actualModel, execErr = r.clientFactory.ExecuteWithFallbackChain(ctx, decision.FallbackChain, req, onFailover)
+	} else {
+		execErr = fmt.Errorf("client factory not initialized")
+	}
+
+	finTimeStr := time.Now().Format("15:04:05")
+	r.mu.Lock()
+	proc = r.getOrCreateTaskProcessLocked(taskID)
+	if execErr != nil {
+		proc.Status = "FAILED"
+		errLog := fmt.Sprintf("[%s] \x1b[31m[9Router Execution Error]\x1b[0m All providers failed: %v", finTimeStr, execErr)
+		proc.Logs = append(proc.Logs, errLog)
+		r.mu.Unlock()
+
+		if r.cfg.WSHub != nil {
+			r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+				Type:      types.EventAgentTerminal,
+				TaskID:    taskID,
+				StageID:   taskCopy.CurrentStageID,
+				Timestamp: time.Now(),
+				Payload: map[string]string{
+					"stream": "stderr",
+					"chunk":  errLog + "\r\n",
+				},
+			})
+		}
+		return
+	}
+
+	// 6. Record token usage & successful output
+	if r.budgetTracker != nil {
+		_, _ = r.budgetTracker.RecordUsage(taskID, resp.TokenUsage.PromptTokens, resp.TokenUsage.CompletionTokens, resp.TokenUsage.EstimatedCostUSD)
+	}
+
+	task.TokenUsage = resp.TokenUsage
+	task.Metadata["active_model"] = actualModel
+	proc.Status = "COMPLETED"
+	proc.CurrentStep = fmt.Sprintf("Completed via %s (%d tokens)", actualModel, resp.TokenUsage.TotalTokens)
+
+	successLog := fmt.Sprintf("[%s] \x1b[32m[9Router Success]\x1b[0m Executed via \x1b[35m%s\x1b[0m | Tokens: %d (%d in / %d out) | Est. Cost: $%.5f",
+		finTimeStr, actualModel, resp.TokenUsage.TotalTokens, resp.TokenUsage.PromptTokens, resp.TokenUsage.CompletionTokens, resp.TokenUsage.EstimatedCostUSD)
+	proc.Logs = append(proc.Logs, successLog)
+
+	// Add AI output snippet to process logs
+	previewLines := strings.Split(resp.Content, "\n")
+	for i, line := range previewLines {
+		if i >= 15 {
+			proc.Logs = append(proc.Logs, fmt.Sprintf("[%s] ... (%d more lines)", finTimeStr, len(previewLines)-15))
+			break
+		}
+		proc.Logs = append(proc.Logs, fmt.Sprintf("[%s] %s", finTimeStr, line))
+	}
+
+	finalTaskSnapshot := cloneTask(task)
+	r.mu.Unlock()
+
+	// Broadcast success terminal & thoughts
+	if r.cfg.WSHub != nil {
+		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+			Type:      types.EventAgentTerminal,
+			TaskID:    taskID,
+			StageID:   finalTaskSnapshot.CurrentStageID,
+			Timestamp: time.Now(),
+			Payload: map[string]string{
+				"stream": "stdout",
+				"chunk":  fmt.Sprintf("%s\r\n\x1b[37m%s\x1b[0m\r\n", successLog, resp.Content),
+			},
+		})
+		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+			Type:      types.EventAgentThought,
+			TaskID:    taskID,
+			StageID:   finalTaskSnapshot.CurrentStageID,
+			Timestamp: time.Now(),
+			Payload: map[string]interface{}{
+				"profile":    "code_architect",
+				"model":      actualModel,
+				"thought":    fmt.Sprintf("Completed code generation for %s. Token usage: %d.", finalTaskSnapshot.ID, resp.TokenUsage.TotalTokens),
+				"is_steered": false,
+			},
+		})
+		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+			Type:      types.EventTaskStatus,
+			TaskID:    taskID,
+			StageID:   finalTaskSnapshot.CurrentStageID,
+			Timestamp: time.Now(),
+			Payload:   finalTaskSnapshot,
+		})
+	}
+}
+

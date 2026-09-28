@@ -69,6 +69,14 @@ export const api = {
     return res.json()
   },
 
+  async executeTask(taskId: string): Promise<any> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/execute`, {
+      method: 'POST'
+    })
+    if (!res.ok) throw new Error(`Failed to execute task ${taskId}`)
+    return res.json()
+  },
+
   async createTask(payload: any): Promise<Task> {
     const res = await fetch(`${BASE_URL}/tasks`, {
       method: 'POST',

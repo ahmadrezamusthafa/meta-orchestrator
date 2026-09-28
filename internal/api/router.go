@@ -12,8 +12,10 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/connectors"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
@@ -37,11 +39,14 @@ type RouterConfig struct {
 
 // Router provides the HTTP REST API handler for the Mission Control frontend.
 type Router struct {
-	cfg           RouterConfig
-	mux           *http.ServeMux
-	mu            sync.RWMutex
-	tasks         map[string]*types.Task
-	taskProcesses map[string]*types.TaskProcessInfo
+	cfg            RouterConfig
+	mux            *http.ServeMux
+	mu             sync.RWMutex
+	tasks          map[string]*types.Task
+	taskProcesses  map[string]*types.TaskProcessInfo
+	strategyRouter *router.Router
+	budgetTracker  *router.BudgetTracker
+	clientFactory  *llm.ClientFactory
 }
 
 // NewRouter constructs a new REST API router.
@@ -64,11 +69,35 @@ func NewRouter(cfg RouterConfig) *Router {
 	if cfg.WSHub != nil && cfg.ConnectorsManager != nil {
 		cfg.ConnectorsManager.SetBroadcastFunc(cfg.WSHub.BroadcastEvent)
 	}
+
+	var orchCfg *config.OrchestratorConfig
+	if cfg.ConfigResolver != nil {
+		orchCfg, _ = cfg.ConfigResolver.Resolve()
+	}
+	if orchCfg == nil {
+		orchCfg = config.GetDefaultConfig()
+	}
+
+	stratRouter := router.NewRouter(orchCfg)
+	budgTracker := router.NewBudgetTracker()
+	clFactory := llm.NewClientFactory(orchCfg)
+	clFactory.SetCredentialResolver(func(providerID string) (apiKey string, sessionToken string, authMethod string) {
+		providerAuthStore.mu.RLock()
+		defer providerAuthStore.mu.RUnlock()
+		if state, ok := providerAuthStore.state[providerID]; ok && state != nil {
+			return state.APIKey, state.SessionToken, state.AuthMethod
+		}
+		return "", "", ""
+	})
+
 	r := &Router{
-		cfg:           cfg,
-		mux:           http.NewServeMux(),
-		tasks:         make(map[string]*types.Task),
-		taskProcesses: make(map[string]*types.TaskProcessInfo),
+		cfg:            cfg,
+		mux:            http.NewServeMux(),
+		tasks:          make(map[string]*types.Task),
+		taskProcesses:  make(map[string]*types.TaskProcessInfo),
+		strategyRouter: stratRouter,
+		budgetTracker:  budgTracker,
+		clientFactory:  clFactory,
 	}
 	r.seedDefaultTasks()
 	r.registerRoutes()

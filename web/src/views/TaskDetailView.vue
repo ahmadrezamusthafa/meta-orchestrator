@@ -38,7 +38,9 @@ import {
   GitBranch,
   Link2,
   ShieldCheck,
-  Lock
+  Lock,
+  Play,
+  Sparkles
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -56,6 +58,7 @@ const taskProcess = ref<TaskProcessDTO | null>(null)
 const worktreeInfo = ref<TaskWorktreeDTO | null>(null)
 const dependencyInfo = ref<TaskDependencyInfoDTO | null>(null)
 const copiedProcessCommand = ref(false)
+const isExecutingAI = ref(false)
 
 let unsubscribeWS: (() => void) | null = null
 
@@ -132,6 +135,25 @@ async function handleGateReject() {
     toastStore.error('Gate Rejection Failed', err?.message || 'Server error')
   }
 }
+
+async function handleExecuteTask() {
+  if (isExecutingAI.value) return
+  isExecutingAI.value = true
+  try {
+    await taskStore.executeTask(taskId.value)
+    leftTab.value = 'terminal'
+    setTimeout(async () => {
+      taskProcess.value = await api.getTaskProcess(taskId.value)
+      await taskStore.fetchTask(taskId.value)
+    }, 1000)
+  } catch (err: any) {
+    console.error('Execute error:', err)
+  } finally {
+    setTimeout(() => {
+      isExecutingAI.value = false
+    }, 2000)
+  }
+}
 </script>
 
 <template>
@@ -162,11 +184,32 @@ async function handleGateReject() {
           :rationale="currentTask.metadata?.router_rationale"
         />
 
+        <span v-if="currentTask.metadata?.active_model" class="px-2 py-0.5 rounded bg-purple-950/80 border border-purple-800 text-[10px] font-mono text-purple-300 flex items-center gap-1">
+          <BrainCircuit class="w-3 h-3 text-purple-400" />
+          <span>{{ currentTask.metadata.active_model }}</span>
+        </span>
+
+        <span v-if="currentTask.token_usage?.total_tokens" class="px-2 py-0.5 rounded bg-slate-800 text-[10px] font-mono text-amber-300 flex items-center gap-1">
+          <Sparkles class="w-2.5 h-2.5 text-amber-400" />
+          <span>{{ currentTask.token_usage.total_tokens.toLocaleString() }} tokens</span>
+        </span>
+
         <span class="px-2 py-0.5 rounded bg-slate-800 text-[10px] font-mono text-slate-300">
           Method: {{ currentTask.selected_method }}
         </span>
 
         <PhaseStatusBadge :state="currentTask.state" />
+
+        <!-- 9Router AI Execute Trigger Button -->
+        <button
+          @click="handleExecuteTask"
+          :disabled="isExecutingAI || currentTask.state === 'COMPLETED'"
+          class="h-7 px-3 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-mono font-medium flex items-center gap-1.5 shadow-sm transition-all active:scale-95"
+          title="Route and execute task through 9Router AI priority chain"
+        >
+          <Play class="w-3 h-3 fill-current" :class="{ 'animate-spin': isExecutingAI }" />
+          <span>{{ isExecutingAI ? 'Routing AI...' : 'Run with 9Router' }}</span>
+        </button>
       </div>
     </div>
 

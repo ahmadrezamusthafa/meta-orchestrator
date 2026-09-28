@@ -9,12 +9,13 @@ import (
 
 // RoutingDecision captures the model, method, and token budget chosen by the router.
 type RoutingDecision struct {
-	Strategy       string `json:"strategy"` // "best_practice" or "custom"
-	Model          string `json:"model"`
-	Method         string `json:"method"`
-	TokenBudget    int64  `json:"token_budget"`
-	Reasoning      string `json:"reasoning"`
-	RequiresDocker bool   `json:"requires_docker"`
+	Strategy       string   `json:"strategy"` // "best_practice" or "custom"
+	Model          string   `json:"model"`
+	FallbackChain  []string `json:"fallback_chain"` // 9router priority ordered fallback sequence
+	Method         string   `json:"method"`
+	TokenBudget    int64    `json:"token_budget"`
+	Reasoning      string   `json:"reasoning"`
+	RequiresDocker bool     `json:"requires_docker"`
 }
 
 // Router dispatches requests according to configured strategy.
@@ -49,13 +50,27 @@ func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes 
 		normComplexity = "MEDIUM"
 	}
 
+	normStage := strings.ToUpper(stageID)
+	switch normStage {
+	case "PRD_DISCOVERY":
+		normStage = "INTAKE_PRD"
+	case "ATDD_CREATION":
+		normStage = "ATDD_RED_PHASE"
+	case "TASK_IMPLEMENTATION":
+		normStage = "IMPLEMENTATION_GREEN"
+	case "E2E_VALIDATION", "UAT_VERIFICATION":
+		normStage = "E2E_AUTOMATION"
+	case "SIGNOFF_MERGE":
+		normStage = "CONTRACT_VERIFY"
+	}
+
 	var model string
 	var method string
 	var budget int64
 	var reasoning string
 	requiresDocker := false
 
-	switch stageID {
+	switch normStage {
 	case "INTAKE_PRD", "TECH_DOC_RFC", "CONTRACT_SPEC":
 		model = r.cfg.ModelTiers.Tier1Reasoning
 		method = "bmad"
@@ -108,14 +123,38 @@ func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes 
 		budget = r.cfg.Router.MaxTokenBudget
 	}
 
+	fallbackChain := r.buildFallbackChain(model)
+
 	return &RoutingDecision{
 		Strategy:       "best_practice",
 		Model:          model,
+		FallbackChain:  fallbackChain,
 		Method:         method,
 		TokenBudget:    budget,
 		Reasoning:      reasoning,
 		RequiresDocker: requiresDocker,
 	}
+}
+
+// buildFallbackChain creates a prioritized sequence of fallback models (9router pattern).
+func (r *Router) buildFallbackChain(primary string) []string {
+	allCandidates := []string{
+		primary,
+		"claude/claude-3-5-sonnet-20241022",
+		"antigravity/gemini-2.0-flash",
+		"openai/gpt-4o",
+		"opencode/deepseek-coder-v2",
+	}
+
+	seen := make(map[string]bool)
+	var chain []string
+	for _, c := range allCandidates {
+		if c != "" && !seen[c] {
+			seen[c] = true
+			chain = append(chain, c)
+		}
+	}
+	return chain
 }
 
 func (r *Router) routeCustom(stageID string, complexity string, repoTypes []string) *RoutingDecision {
