@@ -49,18 +49,51 @@ func (p *TaskProfiler) ProfileTask(title string, description string, explicitWor
 		}
 	}
 
-	// 4. Determine initial routing decision
-	routing := p.router.Route("INTAKE_PRD", complexity, impactedRepos)
+	// 4. Determine initial routing decision (task type lets calibrated weights adjust tiering)
+	taskType := ClassifyTaskType(title, description)
+	routing := p.router.RouteForTask("INTAKE_PRD", complexity, taskType, impactedRepos)
 
 	return &types.TaskProfile{
 		WorkflowID:       workflowID,
 		Complexity:       complexity,
+		TaskType:         taskType,
 		IdentifiedRepos:  impactedRepos,
 		RecommendedModel: routing.Model,
 		Method:           routing.Method,
 		TokenBudget:      routing.TokenBudget,
 		RequiresDocker:   routing.RequiresDocker,
 	}, nil
+}
+
+// Router exposes the profiler's strategy router (e.g. to install a TierAdvisor).
+func (p *TaskProfiler) Router() *Router { return p.router }
+
+// taskTypeRules are checked in order; the first category with a matching keyword wins.
+var taskTypeRules = []struct {
+	category string
+	keywords []string
+}{
+	{"architecture", []string{"architecture", "architectural", "system design", "design new", "epic", "event-sourcing", "rearchitect"}},
+	{"migration", []string{"migration", "migrate", "schema change", "upgrade to"}},
+	{"docs", []string{"readme", "typo", "documentation", "docs", "changelog", "comment"}},
+	{"bugfix", []string{"bug", "fix", "crash", "regression", "hotfix", "error", "null pointer"}},
+	{"crud", []string{"crud", "endpoint", "rest api", "create ", "update ", "delete ", "list ", "form"}},
+	{"refactor", []string{"refactor", "cleanup", "clean up", "rename"}},
+	{"test", []string{"test", "coverage", "atdd", "e2e"}},
+	{"ui", []string{"ui", "css", "layout", "component", "style"}},
+}
+
+// ClassifyTaskType maps a request to a recurring task category used by the feedback loop.
+func ClassifyTaskType(title string, description string) string {
+	combined := " " + strings.ToLower(title+" "+description) + " "
+	for _, rule := range taskTypeRules {
+		for _, kw := range rule.keywords {
+			if strings.Contains(combined, kw) {
+				return rule.category
+			}
+		}
+	}
+	return "general"
 }
 
 // AssessComplexity evaluates title, scope, and repo impact to assign a complexity tier.

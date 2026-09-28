@@ -51,6 +51,7 @@ type TokenUsage struct {
 type TaskProfile struct {
 	WorkflowID       string   `json:"workflow_id"`
 	Complexity       string   `json:"complexity"` // "LOW", "MEDIUM", "HIGH", "CRITICAL"
+	TaskType         string   `json:"task_type,omitempty"` // recurring category, e.g. "crud", "migration"
 	IdentifiedRepos  []string `json:"identified_repos"`
 	RecommendedModel string   `json:"recommended_model"`
 	Method           string   `json:"method"`
