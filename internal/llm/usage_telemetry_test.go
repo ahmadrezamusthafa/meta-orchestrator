@@ -7,7 +7,18 @@ import (
 	"testing"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
+
+type fixedClient struct{}
+
+func (fixedClient) Complete(ctx context.Context, req *LLMRequest) (*LLMResponse, error) {
+	return &LLMResponse{Content: "ok", Provider: "stub", TokenUsage: types.TokenUsage{PromptTokens: 5, CompletionTokens: 5}}, nil
+}
+func (c fixedClient) Stream(ctx context.Context, req *LLMRequest, ch chan<- types.ThoughtChunk) (*LLMResponse, error) {
+	return c.Complete(ctx, req)
+}
+func (fixedClient) CountTokens(req *LLMRequest) int64 { return 0 }
 
 func TestOpenAIDriverExtractsCachedPromptTokens(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -31,6 +42,7 @@ func TestOpenAIDriverExtractsCachedPromptTokens(t *testing.T) {
 
 func TestClientFactoryUsageObserverFiresOnSuccessfulModel(t *testing.T) {
 	f := NewClientFactory(config.GetDefaultConfig())
+	f.OverrideProvider("claude", fixedClient{})
 	var observed []string
 	f.SetUsageObserver(func(modelStr string, resp *LLMResponse) {
 		observed = append(observed, modelStr)

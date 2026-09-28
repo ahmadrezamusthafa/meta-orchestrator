@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/shadow"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
@@ -203,7 +204,7 @@ func TestProvidersAndBenchmarksAPI(t *testing.T) {
 
 	var benchResp struct {
 		TotalCells int                `json:"total_cells"`
-		Matrix     []BenchmarkCellDTO `json:"matrix"`
+		Matrix     []shadow.MatrixCell `json:"matrix"`
 	}
 	_ = json.NewDecoder(wBench.Body).Decode(&benchResp)
 	if benchResp.TotalCells != 36 {

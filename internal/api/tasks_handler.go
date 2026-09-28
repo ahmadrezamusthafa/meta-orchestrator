@@ -12,6 +12,7 @@ import (
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/telemetry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
@@ -529,6 +530,7 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 								task.CurrentStageID = "signoff_merge"
 								task.State = types.TaskStateCompleted
 								proc.Status = "COMPLETED"
+								r.onTaskCompleted(task)
 							}
 							proc.CurrentStep = fmt.Sprintf("Step %d of 7: %s (%s Method)", task.CurrentStageIndex+1, task.CurrentStageID, task.SelectedMethod)
 							respLog = fmt.Sprintf("[%s] \x1b[32m[Interactive Confirmation: APPROVED]\x1b[0m Operator confirmed gate. Advancing to %s.", nowStr, task.CurrentStageID)
@@ -785,6 +787,7 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 					task.CurrentStageID = "signoff_merge"
 					task.State = types.TaskStateCompleted
 					proc.Status = "COMPLETED"
+					r.onTaskCompleted(task)
 				}
 				gateLog := fmt.Sprintf("[%s] \x1b[32m[Gate Review]\x1b[0m Stage approved by operator. Advancing to %s.", time.Now().Format("15:04:05"), task.CurrentStageID)
 				proc.Logs = append(proc.Logs, gateLog)
@@ -1026,10 +1029,15 @@ func (r *Router) executeTaskWithAI(taskID string) {
 		complexity = "MEDIUM"
 	}
 
+	taskType := taskCopy.Metadata["task_type"]
+	if taskType == "" {
+		taskType = router.ClassifyTaskType(taskCopy.Title, taskCopy.Description)
+	}
+
 	// 2. 9Router Strategy decision
 	var decision *router.RoutingDecision
 	if r.strategyRouter != nil {
-		decision = r.strategyRouter.Route(taskCopy.CurrentStageID, complexity, taskCopy.AssignedRepos)
+		decision = r.strategyRouter.RouteForTask(taskCopy.CurrentStageID, complexity, taskType, taskCopy.AssignedRepos)
 	} else {
 		decision = &router.RoutingDecision{
 			Strategy:      "best_practice",
@@ -1053,6 +1061,10 @@ func (r *Router) executeTaskWithAI(taskID string) {
 	task.Metadata["router_strategy"] = decision.Strategy
 	task.Metadata["active_model"] = decision.Model
 	task.Metadata["router_reasoning"] = decision.Reasoning
+	task.Metadata["task_type"] = taskType
+	if r.telemetry != nil {
+		r.telemetry.ttr.StartRun(taskRunMeta(taskCopy, decision, complexity, taskType))
+	}
 
 	proc := r.getOrCreateTaskProcessLocked(taskID)
 	proc.Status = "RUNNING"
@@ -1249,9 +1261,27 @@ func (r *Router) executeTaskWithAI(taskID string) {
 		)
 	}
 
+	// Telemetry: account tokens at pricing-table cost, record the verification cycle, close the run.
+	var runRec telemetry.RunRecord
+	var haveRun bool
+	if r.telemetry != nil {
+		if execErr == nil && resp != nil {
+			meta := taskRunMeta(taskCopy, decision, complexity, taskType)
+			ev := r.telemetry.tracker.Record(telemetry.CallMeta{TaskID: taskID, StageID: meta.StageID, Model: actualModel,
+				Provider: resp.Provider, Tier: meta.Tier, Method: meta.Method, Repo: meta.Repo, Category: taskType}, resp.TokenUsage)
+			resp.TokenUsage.EstimatedCostUSD = ev.CostUSD
+			r.telemetry.ttr.RecordTestIteration(taskID, true)
+		}
+		runRec, haveRun = r.telemetry.ttr.Finish(taskID, execErr == nil)
+		go func() { _, _ = r.recalibrate(context.Background()) }()
+	}
+
 	finTimeStr := time.Now().Format("15:04:05")
 	r.mu.Lock()
 	proc = r.getOrCreateTaskProcessLocked(taskID)
+	if haveRun {
+		runRec.ApplyToTask(task)
+	}
 	if execErr != nil {
 		proc.Status = "FAILED"
 		errLog := fmt.Sprintf("[%s] \x1b[31m[9Router Execution Error]\x1b[0m All providers failed: %v", finTimeStr, execErr)

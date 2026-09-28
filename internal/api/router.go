@@ -17,6 +17,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/telemetry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -35,6 +36,7 @@ type RouterConfig struct {
 	PromptRegistry    *registry.PromptRegistry
 	WSHub             *ws.Hub
 	RootDir           string
+	Telemetry         TelemetryConfig
 }
 
 // Router provides the HTTP REST API handler for the Mission Control frontend.
@@ -47,6 +49,7 @@ type Router struct {
 	strategyRouter *router.Router
 	budgetTracker  *router.BudgetTracker
 	clientFactory  *llm.ClientFactory
+	telemetry      *telemetrySubsystem
 }
 
 // NewRouter constructs a new REST API router.
@@ -99,6 +102,7 @@ func NewRouter(cfg RouterConfig) *Router {
 		budgetTracker:  budgTracker,
 		clientFactory:  clFactory,
 	}
+	r.initTelemetry()
 	r.seedDefaultTasks()
 	r.registerRoutes()
 	r.startBackgroundProcessMonitor()
@@ -469,6 +473,10 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/workflows", r.handleWorkflows)
 	r.mux.HandleFunc("/api/v1/registries", r.handleRegistries)
 	r.mux.HandleFunc("/api/v1/benchmarks", r.handleBenchmarks)
+	r.mux.Handle("/api/v1/telemetry/", telemetry.NewHandler(r.telemetry.store))
+	r.mux.HandleFunc("/api/v1/router/weights", r.handleRouterWeights)
+	r.mux.HandleFunc("/api/v1/router/weights/lock", r.handleRouterWeightLock)
+	r.mux.HandleFunc("/api/v1/shadow/status", r.handleShadowStatus)
 	r.mux.HandleFunc("/api/v1/artifacts/", r.handleArtifacts)
 	r.mux.HandleFunc("/api/v1/projects", r.handleProjects)
 	r.mux.HandleFunc("/api/v1/projects/scan", r.handleProjectScan)

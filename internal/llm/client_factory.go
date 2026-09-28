@@ -19,6 +19,7 @@ type ClientFactory struct {
 	providers    map[string]ProviderClient
 	credResolver CredentialResolver
 	usageObs     UsageObserver
+	overrides    map[string]ProviderClient
 }
 
 // UsageObserver is notified after every successful completion (telemetry instrumentation hook).
@@ -43,6 +44,17 @@ func (f *ClientFactory) SetCredentialResolver(resolver CredentialResolver) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.credResolver = resolver
+}
+
+// OverrideProvider pins a client for a provider name, taking precedence over configured and
+// credential-resolved drivers (test doubles, sandboxed shadow replays).
+func (f *ClientFactory) OverrideProvider(name string, client ProviderClient) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.overrides == nil {
+		f.overrides = make(map[string]ProviderClient)
+	}
+	f.overrides[name] = client
 }
 
 // SetUsageObserver registers a hook invoked with each successful completion's response.
@@ -87,6 +99,10 @@ func (f *ClientFactory) GetClient(modelStr string) (ProviderClient, string, erro
 	// Normalize provider name aliases
 	if providerName == "chatgpt" {
 		providerName = "openai"
+	}
+
+	if client, ok := f.overrides[providerName]; ok {
+		return client, modelID, nil
 	}
 
 	// If credential resolver is provided, update client with latest credentials
