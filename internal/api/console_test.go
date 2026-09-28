@@ -213,14 +213,21 @@ func TestExecuteStreamsIntoConsoleWithoutFabricatedLogs(t *testing.T) {
 
 	a := activity(t, r, "")
 	got := kinds(a.Entries)
-	if !strings.HasPrefix(got, "state,request,") || !strings.HasSuffix(got, ",response") {
+	if !strings.HasPrefix(got, "state,system,request,") || !strings.HasSuffix(got, ",response,state,system") {
 		t.Fatalf("execute entries = %s", got)
 	}
 	if st := a.Entries[0].State; st.From != "PENDING" || st.To != "RUNNING" || st.Stage != "task_implementation" {
 		t.Fatalf("state entry = %+v", st)
 	}
-	if a.Entries[1].Request.Source != "execute" || a.Entries[1].Request.Method == "" {
-		t.Fatalf("request = %+v", a.Entries[1].Request)
+	if a.Entries[2].Request.Source != "execute" || a.Entries[2].Request.Method == "" {
+		t.Fatalf("request = %+v", a.Entries[2].Request)
+	}
+	n := len(a.Entries)
+	if st := a.Entries[n-2].State; st.From != "RUNNING" || st.To != "WAITING_GATE_APPROVAL" {
+		t.Fatalf("stage must settle into review, got %+v", st)
+	}
+	if !strings.Contains(a.Entries[n-1].Content, "approve to continue to e2e_validation") {
+		t.Fatalf("operator next-step note = %q", a.Entries[n-1].Content)
 	}
 
 	r.mu.RLock()

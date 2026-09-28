@@ -33,7 +33,7 @@ export function useAgentConsole(taskIdSource: MaybeRefOrGetter<string>) {
   const turnStartedAt = ref<number | null>(null)
   const serverSessionId = ref('')
   const serverModel = ref('')
-  /** Model override chosen with /model; sent with subsequent chat messages. */
+  /** Optional model override sent with subsequent chat messages (empty = router default). */
   const selectedModel = ref('')
   const localTask = ref<Task | null>(null)
   const sending = ref(false)

@@ -1,8 +1,8 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,9 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/telemetry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
@@ -153,7 +150,7 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 			maxBudget = 50000
 		}
 
-		initialState := types.TaskStateRunning
+		initialState := types.TaskStatePending
 		var unmetDeps []string
 		if len(body.Dependencies) > 0 {
 			for _, depID := range body.Dependencies {
@@ -231,6 +228,14 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 		createdCopy := cloneTask(newTask)
 		r.mu.Unlock()
 
+		if len(unmetDeps) > 0 {
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
+				"Task created at %s. Waiting for %s to complete — it starts automatically once they are done.", startStage, strings.Join(unmetDeps, ", "))})
+		} else {
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
+				"Task created at %s. Run the stage to start the agent, or ask it a question below.", startStage)})
+		}
+
 		// Broadcast new task event over WebSocket
 		if r.cfg.WSHub != nil {
 			r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
@@ -279,115 +284,16 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 		case "activity", "chat":
 			r.handleTaskConsole(w, req, taskSnapshot, parts)
 			return
-		case "execute":
+		case "execute", "resume":
 			if req.Method != http.MethodPost {
-				r.writeError(w, http.StatusMethodNotAllowed, "POST required for execute")
+				r.writeError(w, http.StatusMethodNotAllowed, "POST required for "+subAction)
 				return
 			}
-
-			r.mu.RLock()
-			task, exists := r.tasks[taskID]
-			var unmetDeps []string
-			if exists && task != nil {
-				for _, depID := range task.Dependencies {
-					if dep, ok := r.tasks[depID]; !ok || dep.State != types.TaskStateCompleted {
-						unmetDeps = append(unmetDeps, depID)
-					}
-				}
+			trigger := "run"
+			if subAction == "resume" {
+				trigger = "resume"
 			}
-			r.mu.RUnlock()
-
-			if len(unmetDeps) > 0 {
-				nowStr := time.Now().Format("15:04:05")
-				errMsg := fmt.Sprintf("[%s] \x1b[33m[9Router Blocked]\x1b[0m Cannot execute %s: Waiting for prerequisite task(s) \x1b[31m[%s]\x1b[0m to complete first.",
-					nowStr, taskID, strings.Join(unmetDeps, ", "))
-				r.mu.Lock()
-				proc := r.getOrCreateTaskProcessLocked(taskID)
-				proc.Status = "PAUSED"
-				proc.CurrentStep = fmt.Sprintf("Held: Waiting on dependencies [%s]", strings.Join(unmetDeps, ", "))
-				proc.Logs = append(proc.Logs, errMsg)
-				r.mu.Unlock()
-
-				if r.cfg.WSHub != nil && exists && task != nil {
-					r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-						Type:      types.EventAgentTerminal,
-						TaskID:    taskID,
-						StageID:   task.CurrentStageID,
-						Timestamp: time.Now(),
-						Payload: map[string]string{
-							"stream": "stderr",
-							"chunk":  errMsg + "\r\n",
-						},
-					})
-				}
-
-				r.writeJSON(w, http.StatusConflict, map[string]interface{}{
-					"status":  "blocked_dependency",
-					"error":   fmt.Sprintf("Task has unmet dependencies: [%s]. Complete prerequisite tasks first.", strings.Join(unmetDeps, ", ")),
-					"task_id": taskID,
-					"unmet":   unmetDeps,
-				})
-				return
-			}
-
-			go r.executeTaskWithAI(taskID)
-			r.writeJSON(w, http.StatusOK, map[string]interface{}{
-				"status":  "execution_dispatched",
-				"task_id": taskID,
-				"message": "Task queued for 9router AI execution",
-			})
-			return
-
-		case "resume":
-			if req.Method != http.MethodPost {
-				r.writeError(w, http.StatusMethodNotAllowed, "POST required for resume")
-				return
-			}
-			r.mu.Lock()
-			task, exists := r.tasks[taskID]
-			if !exists || task == nil {
-				r.mu.Unlock()
-				r.writeError(w, http.StatusNotFound, "Task not found")
-				return
-			}
-
-			// If task was paused / blocked / suspended, resume it
-			r.setTaskState(task, types.TaskStateRunning)
-			task.UpdatedAt = time.Now()
-			proc := r.getOrCreateTaskProcessLocked(taskID)
-			proc.Status = "RUNNING"
-			nowStr := time.Now().Format("15:04:05")
-			resumeLog := fmt.Sprintf("[%s] \x1b[32m[Session Resumed]\x1b[0m Operator resumed session. Preserving all context and terminal logs.", nowStr)
-			proc.Logs = append(proc.Logs, resumeLog)
-			r.mu.Unlock()
-
-			if r.cfg.WSHub != nil {
-				r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-					Type:      types.EventAgentTerminal,
-					TaskID:    taskID,
-					StageID:   task.CurrentStageID,
-					Timestamp: time.Now(),
-					Payload: map[string]string{
-						"stream": "stdout",
-						"chunk":  resumeLog + "\r\n",
-					},
-				})
-				r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-					Type:      types.EventTaskStatus,
-					TaskID:    taskID,
-					StageID:   task.CurrentStageID,
-					Timestamp: time.Now(),
-					Payload:   cloneTask(task),
-				})
-			}
-
-			go r.executeTaskWithAI(taskID)
-
-			r.writeJSON(w, http.StatusOK, map[string]interface{}{
-				"status":  "resumed",
-				"task_id": taskID,
-				"process": proc,
-			})
+			r.respondStageStart(w, taskID, r.startStage(taskID, trigger, ""))
 			return
 
 		case "pause":
@@ -395,267 +301,29 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 				r.writeError(w, http.StatusMethodNotAllowed, "POST required for pause")
 				return
 			}
-			r.mu.Lock()
-			task, exists := r.tasks[taskID]
-			if !exists || task == nil {
-				r.mu.Unlock()
-				r.writeError(w, http.StatusNotFound, "Task not found")
+			snap, err := r.pauseTask(taskID)
+			if err != nil {
+				r.writeError(w, http.StatusConflict, err.Error())
 				return
 			}
-			r.setTaskState(task, types.TaskStateSuspended)
-			task.UpdatedAt = time.Now()
-			proc := r.getOrCreateTaskProcessLocked(taskID)
-			proc.Status = "PAUSED"
-			nowStr := time.Now().Format("15:04:05")
-			pauseLog := fmt.Sprintf("[%s] \x1b[33m[Session Paused]\x1b[0m Session execution paused by operator. Context preserved, ready to resume anytime.", nowStr)
-			proc.Logs = append(proc.Logs, pauseLog)
-			r.mu.Unlock()
-
-			if r.cfg.WSHub != nil {
-				r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-					Type:      types.EventAgentTerminal,
-					TaskID:    taskID,
-					StageID:   task.CurrentStageID,
-					Timestamp: time.Now(),
-					Payload: map[string]string{
-						"stream": "stderr",
-						"chunk":  pauseLog + "\r\n",
-					},
-				})
-				r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-					Type:      types.EventTaskStatus,
-					TaskID:    taskID,
-					StageID:   task.CurrentStageID,
-					Timestamp: time.Now(),
-					Payload:   cloneTask(task),
-				})
-			}
-
-			r.writeJSON(w, http.StatusOK, map[string]interface{}{
-				"status":  "paused",
-				"task_id": taskID,
-				"process": proc,
-			})
+			r.writeJSON(w, http.StatusOK, map[string]interface{}{"status": "paused", "task_id": taskID, "task": snap})
 			return
 
 		case "process":
-			if len(parts) > 2 {
-				subProc := parts[2]
-				if subProc == "clear" && req.Method == http.MethodPost {
-					r.mu.Lock()
-					proc := r.getOrCreateTaskProcessLocked(taskID)
-					nowStr := time.Now().Format("15:04:05")
-					proc.Logs = []string{
-						fmt.Sprintf("[%s] \x1b[33m[Terminal Cleared]\x1b[0m Buffer cleared manually by operator.", nowStr),
-					}
-					r.mu.Unlock()
-					r.writeJSON(w, http.StatusOK, map[string]interface{}{
-						"status":  "cleared",
-						"task_id": taskID,
-						"process": proc,
-					})
-					return
-				}
-
-				if subProc == "execute" {
-					if req.Method != http.MethodPost {
-						r.writeError(w, http.StatusMethodNotAllowed, "POST required for command execution")
-						return
-					}
-					var body struct {
-						Command string `json:"command"`
-					}
-					if err := json.NewDecoder(req.Body).Decode(&body); err != nil || strings.TrimSpace(body.Command) == "" {
-						r.writeError(w, http.StatusBadRequest, "Command string is required")
-						return
-					}
-
-					trimmedCmd := strings.TrimSpace(body.Command)
-					lowerCmd := strings.ToLower(trimmedCmd)
-
-					r.mu.Lock()
-					task, _ := r.tasks[taskID]
-					proc := r.getOrCreateTaskProcessLocked(taskID)
-					nowStr := time.Now().Format("15:04:05")
-					cmdLog := fmt.Sprintf("[%s] \x1b[35morch@%s:~$\x1b[0m %s", nowStr, strings.ToLower(taskID), trimmedCmd)
-					proc.Logs = append(proc.Logs, cmdLog)
-
-					var respLog string
-					var triggerResume bool
-					var broadcastTaskStatus bool
-
-					switch {
-					case lowerCmd == "help":
-						respLog = fmt.Sprintf("[%s] \x1b[36m=== Termux Shell Command Palette ===\x1b[0m\r\n" +
-							"  • \x1b[32mstatus / ps\x1b[0m       : Show runtime PID, CPU/Memory telemetry & active AI model\r\n" +
-							"  • \x1b[32mresume / continue\x1b[0m : Resume paused or blocked SDLC pipeline session\r\n" +
-							"  • \x1b[32mpause / stop\x1b[0m      : Pause session execution while preserving full terminal log\r\n" +
-							"  • \x1b[32my / yes / confirm\x1b[0m : Operator approval for pending stage gate or prompt\r\n" +
-							"  • \x1b[32mn / no / reject\x1b[0m   : Operator rejection / abort of pending gate\r\n" +
-							"  • \x1b[32mclear\x1b[0m             : Reset terminal view (manual clear only)\r\n" +
-							"  • \x1b[32mtest\x1b[0m              : Trigger automated verification test suite\r\n" +
-							"  • \x1b[32mgit status\x1b[0m        : Inspect branch worktree and staged files", nowStr)
-
-					case lowerCmd == "clear":
-						proc.Logs = []string{
-							fmt.Sprintf("[%s] \x1b[33m[Terminal Cleared]\x1b[0m Buffer cleared manually by operator.", nowStr),
-						}
-						respLog = fmt.Sprintf("[%s] \x1b[32m[Termux]\x1b[0m Terminal screen reset.", nowStr)
-
-					case lowerCmd == "resume" || lowerCmd == "continue":
-						if task != nil {
-							r.setTaskState(task, types.TaskStateRunning)
-							task.UpdatedAt = time.Now()
-						}
-						proc.Status = "RUNNING"
-						respLog = fmt.Sprintf("[%s] \x1b[32m[Session Resumed]\x1b[0m Session unpaused. Continuing execution with all logs and context intact.", nowStr)
-						triggerResume = true
-						broadcastTaskStatus = true
-
-					case lowerCmd == "pause" || lowerCmd == "stop":
-						if task != nil {
-							r.setTaskState(task, types.TaskStateSuspended)
-							task.UpdatedAt = time.Now()
-						}
-						proc.Status = "PAUSED"
-						respLog = fmt.Sprintf("[%s] \x1b[33m[Session Paused]\x1b[0m Session paused by operator. Context preserved, ready to resume anytime.", nowStr)
-						broadcastTaskStatus = true
-
-					case lowerCmd == "y" || lowerCmd == "yes" || lowerCmd == "confirm":
-						if task != nil && task.State == types.TaskStateWaitingGateApproval {
-							r.setTaskState(task, types.TaskStateRunning)
-							task.CurrentStageIndex++
-							if task.CurrentStageIndex == 1 {
-								task.CurrentStageID = "atdd_creation"
-							} else if task.CurrentStageIndex == 4 {
-								task.CurrentStageID = "task_implementation"
-							} else if task.CurrentStageIndex >= 7 {
-								task.CurrentStageID = "signoff_merge"
-								r.setTaskState(task, types.TaskStateCompleted)
-								proc.Status = "COMPLETED"
-								r.onTaskCompleted(task)
-							}
-							proc.CurrentStep = fmt.Sprintf("Step %d of 7: %s (%s Method)", task.CurrentStageIndex+1, task.CurrentStageID, task.SelectedMethod)
-							respLog = fmt.Sprintf("[%s] \x1b[32m[Interactive Confirmation: APPROVED]\x1b[0m Operator confirmed gate. Advancing to %s.", nowStr, task.CurrentStageID)
-							triggerResume = true
-							broadcastTaskStatus = true
-						} else {
-							respLog = fmt.Sprintf("[%s] \x1b[32m[Confirmation: YES]\x1b[0m Operator confirmed prompt. Pipeline progressing...", nowStr)
-							if proc.Status != "RUNNING" {
-								proc.Status = "RUNNING"
-								triggerResume = true
-							}
-						}
-
-					case lowerCmd == "n" || lowerCmd == "no" || lowerCmd == "reject":
-						if task != nil && task.State == types.TaskStateWaitingGateApproval {
-							r.setTaskState(task, types.TaskStateSuspended)
-							proc.Status = "PAUSED"
-							respLog = fmt.Sprintf("[%s] \x1b[31m[Interactive Confirmation: REJECTED]\x1b[0m Operator rejected gate. Stage execution paused.", nowStr)
-							broadcastTaskStatus = true
-						} else {
-							respLog = fmt.Sprintf("[%s] \x1b[33m[Confirmation: NO]\x1b[0m Operator cancelled prompt action.", nowStr)
-						}
-
-					case strings.Contains(lowerCmd, "test"):
-						respLog = fmt.Sprintf("[%s] \x1b[32m[Test Runner]\x1b[0m Executing test suite... 12/12 specifications PASS (0.24s).", nowStr)
-
-					case strings.Contains(lowerCmd, "status") || strings.Contains(lowerCmd, "ps") || lowerCmd == "top":
-						activeModel := "claude/claude-3-5-sonnet-20241022"
-						if task != nil && task.Metadata["active_model"] != "" {
-							activeModel = task.Metadata["active_model"]
-						}
-						taskStateStr := proc.Status
-						assignedReposStr := "all"
-						currentStageStr := "pipeline"
-						if task != nil {
-							taskStateStr = string(task.State)
-							assignedReposStr = strings.Join(task.AssignedRepos, ", ")
-							currentStageStr = task.CurrentStageID
-						}
-						respLog = fmt.Sprintf("[%s] \x1b[36m=== Termux Active Process Table (ps aux) ===\x1b[0m\r\n"+
-							"  \x1b[1mPID   PPID USER     STAT  %%CPU  %%MEM   TIME     COMMAND\x1b[0m\r\n"+
-							"  %-5d 4800 orch     R    %5.1f %5.1f   %02d:%02d    %s\r\n"+
-							"  %-5d %-4d orch     S      2.1   3.2   00:14    inotifywait -m %s\r\n"+
-							"  %-5d %-4d orch     S      0.9   4.8   00:08    test-runner --stage %s\r\n"+
-							"----------------------------------------------------------------------\r\n"+
-							"  \x1b[33mTask ID\x1b[0m        : %s (State: %s)\r\n"+
-							"  \x1b[33mCurrent Step\x1b[0m   : %s\r\n"+
-							"  \x1b[33mActive Model\x1b[0m   : %s\r\n"+
-							"  \x1b[33mAssigned Repos\x1b[0m : %s\r\n"+
-							"  \x1b[33mSandbox Path\x1b[0m   : %s",
-							nowStr,
-							proc.ProcessID, proc.CPUPercent, proc.MemoryMB/10, proc.DurationSeconds/60, proc.DurationSeconds%60, proc.Command,
-							proc.ProcessID+1, proc.ProcessID, proc.WorkingDir,
-							proc.ProcessID+2, proc.ProcessID, currentStageStr,
-							taskID, taskStateStr,
-							proc.CurrentStep,
-							activeModel,
-							assignedReposStr,
-							proc.WorkingDir,
-						)
-
-					case strings.Contains(lowerCmd, "git"):
-						respLog = fmt.Sprintf("[%s] \x1b[32m[Git]\x1b[0m Working tree clean. On branch feature/%s.", nowStr, strings.ToLower(taskID))
-
-					default:
-						respLog = fmt.Sprintf("[%s] \x1b[32m[Process Output]\x1b[0m Command executed successfully with exit code 0.", nowStr)
-					}
-
-					proc.Logs = append(proc.Logs, respLog)
-					r.mu.Unlock()
-
-					if r.cfg.WSHub != nil {
-						r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-							Type:      types.EventAgentTerminal,
-							TaskID:    taskID,
-							StageID:   task.CurrentStageID,
-							Timestamp: time.Now(),
-							Payload: map[string]string{
-								"stream": "stdout",
-								"chunk":  cmdLog + "\r\n" + respLog + "\r\n",
-							},
-						})
-						if broadcastTaskStatus && task != nil {
-							r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-								Type:      types.EventTaskStatus,
-								TaskID:    taskID,
-								StageID:   task.CurrentStageID,
-								Timestamp: time.Now(),
-								Payload:   cloneTask(task),
-							})
-						}
-					}
-
-					if triggerResume {
-						go r.executeTaskWithAI(taskID)
-					}
-
-					r.writeJSON(w, http.StatusOK, map[string]interface{}{
-						"status":  "executed",
-						"command": body.Command,
-						"process": proc,
-					})
-					return
-				}
-			}
-
-			if req.Method == http.MethodGet {
-				r.mu.Lock()
-				proc := r.getOrCreateTaskProcessLocked(taskID)
-				// Dynamically refresh duration
-				if proc.Status == "RUNNING" {
-					proc.DurationSeconds = int64(time.Since(proc.StartedAt).Seconds())
-				}
-				snapshot := *proc // encode a copy: the executor mutates proc concurrently
-				snapshot.Logs = append([]string(nil), proc.Logs...)
-				snapshot.SubProcesses = append([]types.TaskSubProcess(nil), proc.SubProcesses...)
-				r.mu.Unlock()
-				r.writeJSON(w, http.StatusOK, snapshot)
+			if req.Method != http.MethodGet {
+				r.writeError(w, http.StatusMethodNotAllowed, "GET required for process")
 				return
 			}
-
-			r.writeError(w, http.StatusMethodNotAllowed, "GET or POST execute required for process")
+			r.mu.Lock()
+			proc := r.getOrCreateTaskProcessLocked(taskID)
+			if proc.Status == "RUNNING" {
+				proc.DurationSeconds = int64(time.Since(proc.StartedAt).Seconds())
+			}
+			snapshot := *proc // encode a copy: the executor mutates proc concurrently
+			snapshot.Logs = append([]string(nil), proc.Logs...)
+			snapshot.SubProcesses = append([]types.TaskSubProcess(nil), proc.SubProcesses...)
+			r.mu.Unlock()
+			r.writeJSON(w, http.StatusOK, snapshot)
 			return
 
 		case "terminal", "logs":
@@ -664,12 +332,9 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 			r.mu.Lock()
-			proc := r.getOrCreateTaskProcessLocked(taskID)
+			logs := append([]string(nil), r.getOrCreateTaskProcessLocked(taskID).Logs...)
 			r.mu.Unlock()
-			r.writeJSON(w, http.StatusOK, map[string]interface{}{
-				"task_id": taskID,
-				"logs":    proc.Logs,
-			})
+			r.writeJSON(w, http.StatusOK, map[string]interface{}{"task_id": taskID, "logs": logs})
 			return
 
 		case "inject":
@@ -678,53 +343,29 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 			var body InjectContextRequest
-			if err := json.NewDecoder(req.Body).Decode(&body); err != nil || body.Instruction == "" {
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil || strings.TrimSpace(body.Instruction) == "" {
 				r.writeError(w, http.StatusBadRequest, "Valid instruction string is required")
 				return
 			}
-
+			instruction := strings.TrimSpace(body.Instruction)
 			r.mu.Lock()
-			if task.State == types.TaskStateBlockedFrustration {
-				r.setTaskState(task, types.TaskStateRunning)
+			if task.Metadata == nil {
+				task.Metadata = map[string]string{}
 			}
-			task.UpdatedAt = time.Now()
-			proc := r.getOrCreateTaskProcessLocked(taskID)
-			proc.Status = "RUNNING"
-			injectLog := fmt.Sprintf("[%s] \x1b[33m[HITL Steer]\x1b[0m Operator guidance injected: %s", time.Now().Format("15:04:05"), body.Instruction)
-			proc.Logs = append(proc.Logs, injectLog)
+			if g := task.Metadata["operator_guidance"]; g != "" {
+				instruction = g + "\n" + instruction
+			}
+			task.Metadata["operator_guidance"] = instruction
+			blocked := task.State == types.TaskStateBlockedFrustration
 			r.mu.Unlock()
-
-			// Broadcast thought event showing injected context
-			if r.cfg.WSHub != nil {
-				r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-					Type:      types.EventAgentThought,
-					TaskID:    taskID,
-					StageID:   task.CurrentStageID,
-					Timestamp: time.Now(),
-					Payload: map[string]interface{}{
-						"profile":    "HITL_Operator",
-						"model":      "human_instruction",
-						"thought":    fmt.Sprintf("Human Guidance Injected: %s", body.Instruction),
-						"is_steered": true,
-					},
-				})
-				r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-					Type:      types.EventAgentTerminal,
-					TaskID:    taskID,
-					StageID:   task.CurrentStageID,
-					Timestamp: time.Now(),
-					Payload: map[string]string{
-						"stream": "stdout",
-						"chunk":  injectLog + "\r\n",
-					},
-				})
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindUser, Content: "Guidance: " + strings.TrimSpace(body.Instruction)})
+			if blocked {
+				// A frustration-halted task restarts immediately with the new guidance.
+				r.respondStageStart(w, taskID, r.startStage(taskID, "guidance", ""))
+				return
 			}
-
-			r.writeJSON(w, http.StatusOK, map[string]interface{}{
-				"status":  "injected",
-				"task_id": taskID,
-				"task":    task,
-			})
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: "Guidance saved — the agent will follow it on the next stage run."})
+			r.writeJSON(w, http.StatusOK, map[string]interface{}{"status": "injected", "task_id": taskID, "task": r.taskSnapshot(taskID)})
 			return
 
 		case "reset":
@@ -732,40 +373,17 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 				r.writeError(w, http.StatusMethodNotAllowed, "POST required for reset")
 				return
 			}
-
 			r.mu.Lock()
-			r.setTaskState(task, types.TaskStateRunning)
-			task.UpdatedAt = time.Now()
 			if task.Metadata == nil {
-				task.Metadata = make(map[string]string)
+				task.Metadata = map[string]string{}
 			}
 			task.Metadata["frustration_count"] = "0"
 			delete(task.Metadata, "failing_trace")
-			proc := r.getOrCreateTaskProcessLocked(taskID)
-			proc.Status = "RUNNING"
-			resetLog := fmt.Sprintf("[%s] \x1b[33m[HITL Reset]\x1b[0m Purging container volumes and executing git reset --hard...", time.Now().Format("15:04:05"))
-			readyLog := fmt.Sprintf("[%s] \x1b[32m[HITL Reset]\x1b[0m Workspace clean. Resuming stage execution loop.", time.Now().Format("15:04:05"))
-			proc.Logs = append(proc.Logs, resetLog, readyLog)
+			delete(task.Metadata, "last_error")
 			r.mu.Unlock()
-
-			if r.cfg.WSHub != nil {
-				r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-					Type:      types.EventAgentTerminal,
-					TaskID:    taskID,
-					StageID:   task.CurrentStageID,
-					Timestamp: time.Now(),
-					Payload: map[string]string{
-						"stream": "stderr",
-						"chunk":  "\x1b[33m[HITL Reset] Purging container volumes and executing git reset --hard...\x1b[0m\r\n\x1b[32m[HITL Reset] Workspace clean. Resuming stage execution.\x1b[0m\r\n",
-					},
-				})
-			}
-
-			r.writeJSON(w, http.StatusOK, map[string]interface{}{
-				"status":  "reset_completed",
-				"task_id": taskID,
-				"task":    task,
-			})
+			r.interruptAndWait(taskID, 5*time.Second) // reset restarts the stage even if a turn is live
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: "Failure counters cleared. Re-running " + taskSnapshot.CurrentStageID + " from a fresh attempt."})
+			r.respondStageStart(w, taskID, r.startStage(taskID, "reset", ""))
 			return
 
 		case "gate":
@@ -778,40 +396,12 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 				r.writeError(w, http.StatusBadRequest, "Invalid gate approval payload")
 				return
 			}
-
-			r.mu.Lock()
-			proc := r.getOrCreateTaskProcessLocked(taskID)
-			if body.Approved {
-				r.setTaskState(task, types.TaskStateRunning)
-				// Advance stage
-				task.CurrentStageIndex++
-				if task.CurrentStageIndex == 1 {
-					task.CurrentStageID = "atdd_creation"
-				} else if task.CurrentStageIndex == 4 {
-					task.CurrentStageID = "task_implementation"
-				} else if task.CurrentStageIndex >= 7 {
-					task.CurrentStageID = "signoff_merge"
-					r.setTaskState(task, types.TaskStateCompleted)
-					proc.Status = "COMPLETED"
-					r.onTaskCompleted(task)
-				}
-				gateLog := fmt.Sprintf("[%s] \x1b[32m[Gate Review]\x1b[0m Stage approved by operator. Advancing to %s.", time.Now().Format("15:04:05"), task.CurrentStageID)
-				proc.Logs = append(proc.Logs, gateLog)
-				proc.CurrentStep = fmt.Sprintf("Step %d of 7: %s (%s Method)", task.CurrentStageIndex+1, task.CurrentStageID, task.SelectedMethod)
-			} else {
-				r.setTaskState(task, types.TaskStateSuspended)
-				proc.Status = "PAUSED"
-				gateLog := fmt.Sprintf("[%s] \x1b[31m[Gate Review]\x1b[0m Stage rejected by operator: %s. Process paused.", time.Now().Format("15:04:05"), body.Feedback)
-				proc.Logs = append(proc.Logs, gateLog)
+			snap, err := r.reviewStage(taskID, body.Approved, body.Feedback)
+			if err != nil && snap == nil {
+				r.writeError(w, http.StatusConflict, err.Error())
+				return
 			}
-			task.UpdatedAt = time.Now()
-			r.mu.Unlock()
-
-			r.writeJSON(w, http.StatusOK, map[string]interface{}{
-				"status":   "gate_updated",
-				"approved": body.Approved,
-				"task":     task,
-			})
+			r.writeJSON(w, http.StatusOK, map[string]interface{}{"status": "gate_updated", "approved": body.Approved, "task": snap})
 			return
 
 		case "worktree":
@@ -900,363 +490,66 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			body.CurrentStageID = body.Stage
 		}
 
+		// Moving a card changes its stage; it never pretends work is running. A move (or an explicit
+		// RUNNING state) that should execute goes through the stage controller.
 		r.mu.Lock()
-
-		// Enforce dependency validation if moving to implementation/execution
 		if body.CurrentStageID == "task_implementation" || body.CurrentStageID == "e2e_validation" {
 			var unmet []string
 			for _, depID := range task.Dependencies {
-				dep, exists := r.tasks[depID]
-				if !exists || dep.State != types.TaskStateCompleted {
+				if dep, ok := r.tasks[depID]; !ok || dep.State != types.TaskStateCompleted {
 					unmet = append(unmet, depID)
 				}
 			}
 			if len(unmet) > 0 {
-				r.setTaskState(task, types.TaskStateWaitingDependency)
-				if task.Metadata == nil {
-					task.Metadata = make(map[string]string)
-				}
-				task.Metadata["unmet_dependencies"] = strings.Join(unmet, ",")
 				r.mu.Unlock()
 				r.writeError(w, http.StatusBadRequest, fmt.Sprintf("cannot advance task while dependencies are unmet: %s", strings.Join(unmet, ", ")))
 				return
 			}
 		}
-
-		if body.CurrentStageID != "" {
+		stageChanged := body.CurrentStageID != "" && body.CurrentStageID != task.CurrentStageID
+		prevStage := task.CurrentStageID
+		if stageChanged {
 			task.CurrentStageID = body.CurrentStageID
-			if task.CurrentStageID == "task_implementation" {
-				go r.executeTaskWithAI(taskID)
+			if i := stageIndexOf(body.CurrentStageID); i >= 0 {
+				task.CurrentStageIndex = i
 			}
 		}
-		if body.State != "" {
+		wantRun := body.State == types.TaskStateRunning
+		switch {
+		case body.State == types.TaskStateCompleted && task.State != types.TaskStateCompleted:
+			r.setTaskState(task, types.TaskStateCompleted)
+			r.onTaskCompleted(task)
+		case body.State != "" && body.State != types.TaskStateRunning && body.State != task.State:
 			r.setTaskState(task, body.State)
+		case stageChanged && task.State != types.TaskStateCompleted && task.State != types.TaskStateRunning &&
+			task.State != types.TaskStateWaitingDependency:
+			r.setTaskState(task, types.TaskStatePending)
 		}
+		task.UpdatedAt = time.Now()
+		completed := task.State == types.TaskStateCompleted
+		r.mu.Unlock()
 
-		// If task completed, check if any dependent tasks can now be unblocked
-		if task.State == types.TaskStateCompleted {
-			for _, other := range r.tasks {
-				if other.State == types.TaskStateWaitingDependency {
-					allDone := true
-					for _, d := range other.Dependencies {
-						if dTask, ok := r.tasks[d]; !ok || dTask.State != types.TaskStateCompleted {
-							allDone = false
-							break
-						}
-					}
-					if allDone {
-						other.State = types.TaskStateRunning
-						delete(other.Metadata, "unmet_dependencies")
-						if r.cfg.WSHub != nil {
-							r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-								Type:      types.EventTaskStatus,
-								TaskID:    other.ID,
-								StageID:   other.CurrentStageID,
-								Timestamp: time.Now(),
-								Payload:   cloneTask(other),
-							})
-						}
-					}
+		if stageChanged {
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
+				"Moved from %s to %s by operator. Run the stage to start the agent.", prevStage, body.CurrentStageID)})
+		}
+		if wantRun {
+			if err := r.startStage(taskID, "run", ""); err != nil && !errors.Is(err, errTaskBusy) {
+				var blocked *depsBlockedError
+				if !errors.As(err, &blocked) {
+					r.writeError(w, http.StatusConflict, err.Error())
+					return
 				}
 			}
 		}
-
-		task.UpdatedAt = time.Now()
-		taskCopy := cloneTask(task)
-		r.mu.Unlock()
-
-		if r.cfg.WSHub != nil {
-			r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-				Type:      types.EventTaskStatus,
-				TaskID:    taskID,
-				StageID:   taskCopy.CurrentStageID,
-				Timestamp: time.Now(),
-				Payload:   taskCopy,
-			})
+		if completed {
+			r.startUnblockedDependents(taskID)
 		}
+		taskCopy := r.taskSnapshot(taskID)
+		r.broadcastTask(taskCopy)
 
 		r.writeJSON(w, http.StatusOK, taskCopy)
 	default:
 		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
 }
-
-// executeTaskWithAI executes a task using the 9router multi-provider fallback engine.
-func (r *Router) executeTaskWithAI(taskID string) {
-	r.mu.RLock()
-	task, exists := r.tasks[taskID]
-	if !exists {
-		r.mu.RUnlock()
-		return
-	}
-	taskCopy := cloneTask(task)
-	r.mu.RUnlock()
-
-	// 1. Dependency gate check
-	var unmet []string
-	for _, depID := range taskCopy.Dependencies {
-		r.mu.RLock()
-		dep, ok := r.tasks[depID]
-		r.mu.RUnlock()
-		if !ok || dep.State != types.TaskStateCompleted {
-			unmet = append(unmet, depID)
-		}
-	}
-
-	if len(unmet) > 0 {
-		nowStr := time.Now().Format("15:04:05")
-		msg := fmt.Sprintf("[%s] \x1b[33m[9Router Blocked]\x1b[0m Cannot execute task %s: Prerequisite task(s) \x1b[31m[%s]\x1b[0m are not completed yet. Task held in WAITING_DEPENDENCY.", nowStr, taskID, strings.Join(unmet, ", "))
-
-		r.mu.Lock()
-		r.setTaskState(task, types.TaskStateWaitingDependency)
-		proc := r.getOrCreateTaskProcessLocked(taskID)
-		proc.Status = "PAUSED"
-		proc.CurrentStep = fmt.Sprintf("Held: Waiting on dependencies [%s]", strings.Join(unmet, ", "))
-		proc.Logs = append(proc.Logs, msg)
-		r.mu.Unlock()
-
-		if r.cfg.WSHub != nil {
-			r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-				Type:      types.EventAgentTerminal,
-				TaskID:    taskID,
-				StageID:   taskCopy.CurrentStageID,
-				Timestamp: time.Now(),
-				Payload: map[string]string{
-					"stream": "stderr",
-					"chunk":  msg + "\r\n",
-				},
-			})
-		}
-		return
-	}
-
-	complexity := taskCopy.Metadata["complexity"]
-	if complexity == "" {
-		complexity = "MEDIUM"
-	}
-
-	taskType := taskCopy.Metadata["task_type"]
-	if taskType == "" {
-		taskType = router.ClassifyTaskType(taskCopy.Title, taskCopy.Description)
-	}
-
-	// 2. 9Router Strategy decision
-	var decision *router.RoutingDecision
-	if r.strategyRouter != nil {
-		decision = r.strategyRouter.RouteForTask(taskCopy.CurrentStageID, complexity, taskType, taskCopy.AssignedRepos)
-	} else {
-		decision = &router.RoutingDecision{
-			Strategy:      "best_practice",
-			Model:         "claude/claude-3-5-sonnet-20241022",
-			FallbackChain: []string{"claude/claude-3-5-sonnet-20241022", "antigravity/gemini-2.0-flash", "openai/gpt-4o", "opencode/deepseek-coder-v2"},
-			Method:        "react",
-			TokenBudget:   100000,
-			Reasoning:     "Best practice 9router default",
-		}
-	}
-
-	nowStr := time.Now().Format("15:04:05")
-
-	// Update task state & process info
-	r.mu.Lock()
-	r.setTaskState(task, types.TaskStateRunning)
-	task.UpdatedAt = time.Now()
-	if task.Metadata == nil {
-		task.Metadata = make(map[string]string)
-	}
-	task.Metadata["router_strategy"] = decision.Strategy
-	task.Metadata["active_model"] = decision.Model
-	task.Metadata["router_reasoning"] = decision.Reasoning
-	task.Metadata["task_type"] = taskType
-	if r.telemetry != nil {
-		r.telemetry.ttr.StartRun(taskRunMeta(taskCopy, decision, complexity, taskType))
-	}
-
-	proc := r.getOrCreateTaskProcessLocked(taskID)
-	proc.Status = "RUNNING"
-	proc.CurrentStep = fmt.Sprintf("9Router executing: %s (%s)", decision.Model, decision.Method)
-	proc.Command = fmt.Sprintf("ai-router --model %s --method %s", decision.Model, decision.Method)
-
-	dispatchLog := fmt.Sprintf("[%s] \x1b[36m[9Router]\x1b[0m Stage '\x1b[1m%s\x1b[0m' (Complexity: %s) -> Strategy: \x1b[32m%s\x1b[0m",
-		nowStr, taskCopy.CurrentStageID, complexity, decision.Strategy)
-	modelLog := fmt.Sprintf("[%s] \x1b[36m[9Router]\x1b[0m Primary Model: \x1b[35m%s\x1b[0m | Method: %s | Budget: %d tokens",
-		nowStr, decision.Model, decision.Method, decision.TokenBudget)
-	chainLog := fmt.Sprintf("[%s] \x1b[36m[9Router Priority Chain]\x1b[0m %s",
-		nowStr, strings.Join(decision.FallbackChain, " -> "))
-	reasonLog := fmt.Sprintf("[%s] \x1b[34m[Router Rationale]\x1b[0m %s", nowStr, decision.Reasoning)
-
-	proc.Logs = append(proc.Logs, dispatchLog, modelLog, chainLog, reasonLog)
-	r.mu.Unlock()
-
-	// Broadcast WS logs
-	if r.cfg.WSHub != nil {
-		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-			Type:      types.EventAgentTerminal,
-			TaskID:    taskID,
-			StageID:   taskCopy.CurrentStageID,
-			Timestamp: time.Now(),
-			Payload: map[string]string{
-				"stream": "stdout",
-				"chunk":  fmt.Sprintf("%s\r\n%s\r\n%s\r\n%s\r\n", dispatchLog, modelLog, chainLog, reasonLog),
-			},
-		})
-		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-			Type:      types.EventAgentThought,
-			TaskID:    taskID,
-			StageID:   taskCopy.CurrentStageID,
-			Timestamp: time.Now(),
-			Payload: map[string]interface{}{
-				"profile":    "ai_router",
-				"model":      decision.Model,
-				"thought":    fmt.Sprintf("9Router routing stage '%s' to %s (Priority fallback: %s)", taskCopy.CurrentStageID, decision.Model, strings.Join(decision.FallbackChain, " -> ")),
-				"is_steered": false,
-			},
-		})
-		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-			Type:      types.EventTaskStatus,
-			TaskID:    taskID,
-			StageID:   taskCopy.CurrentStageID,
-			Timestamp: time.Now(),
-			Payload:   taskCopy,
-		})
-	}
-
-	// 3. Token budget enforcement
-	if r.budgetTracker != nil {
-		r.budgetTracker.SetTaskBudget(taskID, decision.TokenBudget)
-	}
-
-	// 4. Formulate LLM Prompt
-	systemMsg := fmt.Sprintf("You are an expert AI software engineer executing task %s in stage %s. Assigned repositories: %s.",
-		taskCopy.ID, taskCopy.CurrentStageID, strings.Join(taskCopy.AssignedRepos, ", "))
-	userPrompt := fmt.Sprintf("Task: %s\nDescription: %s\nStage: %s\nExecution Method: %s\nProvide implementation plan, code modifications, and verification steps.",
-		taskCopy.Title, taskCopy.Description, taskCopy.CurrentStageID, decision.Method)
-
-	req := &llm.LLMRequest{
-		Messages: []llm.Message{
-			{Role: llm.RoleSystem, Content: systemMsg},
-			{Role: llm.RoleUser, Content: userPrompt},
-		},
-		MaxTokens: 4096,
-	}
-
-	// 5. Execute with 9router fallback chain, streaming real activity into the task console
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-	defer cancel()
-
-	turnID := r.console.nextID("turn")
-	var resp *llm.LLMResponse
-	var actualModel string
-	var execErr error
-	if err := r.beginTurn(taskID, turnID, cancel); err != nil {
-		execErr = err
-		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindError, Content: "Execution not started: " + err.Error(), Status: types.ConsoleFailed})
-	} else if r.clientFactory == nil {
-		execErr = fmt.Errorf("client factory not initialized")
-		r.endTurn(taskID, turnID, nil, "")
-	} else {
-		r.console.mu.Lock()
-		sessionID := r.console.get(taskID).sessionID
-		r.console.mu.Unlock()
-		resp, actualModel, execErr = r.runAgentTurn(ctx, agentTurn{Source: "execute", TurnID: turnID, Task: taskCopy,
-			Decision: decision, TaskType: taskType, Messages: req.Messages, SessionID: sessionID,
-			WorkDir: r.resolveWorkDir(taskCopy), MaxTokens: req.MaxTokens})
-		r.endTurn(taskID, turnID, resp, actualModel)
-	}
-
-	// Telemetry: close the run (tokens were accounted per turn by runAgentTurn).
-	var runRec telemetry.RunRecord
-	var haveRun bool
-	if r.telemetry != nil {
-		runRec, haveRun = r.telemetry.ttr.Finish(taskID, execErr == nil)
-		go func() { _, _ = r.recalibrate(context.Background()) }()
-	}
-
-	finTimeStr := time.Now().Format("15:04:05")
-	r.mu.Lock()
-	proc = r.getOrCreateTaskProcessLocked(taskID)
-	if haveRun {
-		runRec.ApplyToTask(task)
-	}
-	if execErr != nil {
-		proc.Status = "FAILED"
-		errLog := fmt.Sprintf("[%s] \x1b[31m[9Router Execution Error]\x1b[0m All providers failed: %v", finTimeStr, execErr)
-		proc.Logs = append(proc.Logs, errLog)
-		r.mu.Unlock()
-
-		if r.cfg.WSHub != nil {
-			r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-				Type:      types.EventAgentTerminal,
-				TaskID:    taskID,
-				StageID:   taskCopy.CurrentStageID,
-				Timestamp: time.Now(),
-				Payload: map[string]string{
-					"stream": "stderr",
-					"chunk":  errLog + "\r\n",
-				},
-			})
-		}
-		return
-	}
-
-	// 6. Record token usage & successful output
-	if r.budgetTracker != nil {
-		_, _ = r.budgetTracker.RecordUsage(taskID, resp.TokenUsage.PromptTokens, resp.TokenUsage.CompletionTokens, resp.TokenUsage.EstimatedCostUSD)
-	}
-
-	task.TokenUsage = resp.TokenUsage
-	task.Metadata["active_model"] = actualModel
-	proc.Status = "COMPLETED"
-	proc.CurrentStep = fmt.Sprintf("Completed via %s (%d tokens)", actualModel, resp.TokenUsage.TotalTokens)
-
-	successLog := fmt.Sprintf("[%s] \x1b[32m[9Router Success]\x1b[0m Executed via \x1b[35m%s\x1b[0m | Tokens: %d (%d in / %d out) | Est. Cost: $%.5f",
-		finTimeStr, actualModel, resp.TokenUsage.TotalTokens, resp.TokenUsage.PromptTokens, resp.TokenUsage.CompletionTokens, resp.TokenUsage.EstimatedCostUSD)
-	proc.Logs = append(proc.Logs, successLog)
-
-	// Add AI output snippet to process logs
-	previewLines := strings.Split(resp.Content, "\n")
-	for i, line := range previewLines {
-		if i >= 15 {
-			proc.Logs = append(proc.Logs, fmt.Sprintf("[%s] ... (%d more lines)", finTimeStr, len(previewLines)-15))
-			break
-		}
-		proc.Logs = append(proc.Logs, fmt.Sprintf("[%s] %s", finTimeStr, line))
-	}
-
-	finalTaskSnapshot := cloneTask(task)
-	r.mu.Unlock()
-
-	// Broadcast success terminal & thoughts
-	if r.cfg.WSHub != nil {
-		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-			Type:      types.EventAgentTerminal,
-			TaskID:    taskID,
-			StageID:   finalTaskSnapshot.CurrentStageID,
-			Timestamp: time.Now(),
-			Payload: map[string]string{
-				"stream": "stdout",
-				"chunk":  fmt.Sprintf("%s\r\n\x1b[37m%s\x1b[0m\r\n", successLog, resp.Content),
-			},
-		})
-		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-			Type:      types.EventAgentThought,
-			TaskID:    taskID,
-			StageID:   finalTaskSnapshot.CurrentStageID,
-			Timestamp: time.Now(),
-			Payload: map[string]interface{}{
-				"profile":    "code_architect",
-				"model":      actualModel,
-				"thought":    fmt.Sprintf("Completed code generation for %s. Token usage: %d.", finalTaskSnapshot.ID, resp.TokenUsage.TotalTokens),
-				"is_steered": false,
-			},
-		})
-		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-			Type:      types.EventTaskStatus,
-			TaskID:    taskID,
-			StageID:   finalTaskSnapshot.CurrentStageID,
-			Timestamp: time.Now(),
-			Payload:   finalTaskSnapshot,
-		})
-	}
-}
-

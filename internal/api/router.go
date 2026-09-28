@@ -106,6 +106,7 @@ func NewRouter(cfg RouterConfig) *Router {
 	}
 	r.initTelemetry()
 	r.seedDefaultTasks()
+	r.reconcileIdleRunning()
 	r.registerRoutes()
 	r.startBackgroundProcessMonitor()
 	return r

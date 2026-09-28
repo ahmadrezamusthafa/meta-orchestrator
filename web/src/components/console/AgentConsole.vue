@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { Play, Pause, RotateCw, Trash2, Copy, Check, Download } from 'lucide-vue-next'
+import { Trash2, Copy, Check, Download } from 'lucide-vue-next'
 import { api } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import { useAgentConsole } from '../../composables/useAgentConsole'
@@ -10,9 +10,10 @@ import ConsoleEntryView from './ConsoleEntryView.vue'
 import PromptInput from './PromptInput.vue'
 import GateSelector from './GateSelector.vue'
 import SpinnerLine from './SpinnerLine.vue'
-import { SHORTCUTS, SLASH_COMMANDS, helpText } from './consoleCommands'
+import TaskStatusBar from './TaskStatusBar.vue'
+import { SHORTCUTS } from './consoleCommands'
 import {
-  downloadText, formatCost, formatDuration, formatTokens, shortId, transcriptToMarkdown,
+  downloadText, formatCost, formatTokens, shortId, transcriptToMarkdown,
 } from './consoleFormat'
 import type { ExpandSignal } from './expandSignal'
 
@@ -147,49 +148,39 @@ onMounted(() => {
 // Actions
 // ---------------------------------------------------------------------------
 
-function system(text: string) {
-  c.addLocal('system', text)
-}
-
 function fail(text: string) {
   c.addLocal('error', text)
 }
 
-async function taskAction(label: string, fn: () => Promise<any>, done: string) {
+// Task actions: the backend writes the real transcript entries (state change, stage start,
+// pause note), so the console only reports failures locally.
+async function taskAction(label: string, fn: () => Promise<any>) {
   if (actionPending.value) return
   actionPending.value = true
   try {
     await fn()
-    system(done)
     await c.refreshTask()
     emit('task-updated')
   } catch (err: any) {
     fail(`${label} failed: ${err?.message || 'server error'}`)
+    await c.refreshTask()
   } finally {
     actionPending.value = false
   }
 }
 
-const runTask = () => taskAction('Run', () => api.executeTask(props.taskId), `⎿  Execution dispatched for ${props.taskId}`)
-const pauseTask = () => taskAction('Pause', () => api.pauseTask(props.taskId), '⎿  Session paused — context preserved')
-const resumeTask = () => taskAction('Resume', () => api.resumeTask(props.taskId), '⎿  Session resumed')
+const runTask = () => taskAction('Run', () => api.executeTask(props.taskId))
+const pauseTask = () => taskAction('Pause', () => api.pauseTask(props.taskId))
+const resumeTask = () => taskAction('Resume', () => api.resumeTask(props.taskId))
+const resetTask = () => taskAction('Reset', () => api.resetWorkspace(props.taskId))
 
-async function approveGate(feedback?: string) {
-  const s = stage.value
-  await taskAction(
-    'Gate approval',
-    () => api.gateApproval(props.taskId, true, feedback || undefined),
-    `⎿  Gate approved${s ? ` — advancing past ${s}` : ''}${feedback ? `\n   feedback: ${feedback}` : ''}`,
-  )
+async function approveGate() {
+  await taskAction('Approval', () => api.gateApproval(props.taskId, true))
 }
 
 async function rejectGate(feedback: string) {
   gateFeedbackMode.value = false
-  await taskAction(
-    'Gate rejection',
-    () => api.gateApproval(props.taskId, false, feedback || undefined),
-    `⎿  Gate rejected${feedback ? `\n   feedback: ${feedback}` : ''}`,
-  )
+  await taskAction('Rejection', () => api.gateApproval(props.taskId, false, feedback))
   nextTick(() => prompt.value?.focus())
 }
 
@@ -226,114 +217,10 @@ async function copyTranscript() {
   }
 }
 
-function setExpandAll(value: boolean) {
-  expandSignal.value = { token: expandSignal.value.token + 1, value }
-}
-
-function statusText(): string {
-  const t = task.value
-  const tot = c.totals.value
-  const pad = (k: string) => k.padEnd(10)
-  if (!t) return `${pad('Task')}${props.taskId}\n${pad('State')}unknown (task not loaded)`
-  const u = t.token_usage
-  return [
-    `${pad('Task')}${t.id}${t.title ? ` — ${t.title}` : ''}`,
-    `${pad('State')}${t.state}`,
-    `${pad('Stage')}${t.current_stage_id || '—'}`,
-    `${pad('Method')}${t.selected_method || '—'}`,
-    `${pad('Model')}${c.currentModel.value || 'auto'}${c.selectedModel.value ? ' (override)' : ''}`,
-    `${pad('Session')}${c.sessionId.value || '—'}`,
-    `${pad('Task')}${formatTokens(u?.prompt_tokens)} in · ${formatTokens(u?.completion_tokens)} out · ${formatTokens(u?.total_tokens)} total · ${formatCost(u?.estimated_cost_usd)}`,
-    `${pad('Console')}${formatTokens(tot.tokens)} tokens · ${formatCost(tot.cost)} across ${tot.responses} response${tot.responses === 1 ? '' : 's'}`,
-    `${pad('Turn')}${c.busy.value ? `running${c.activeTurnId.value ? ` (${shortId(c.activeTurnId.value, 14)})` : ''}` : 'idle'}`,
-  ].join('\n')
-}
-
-function costText(): string {
-  const t = c.totals.value
-  return [
-    `Total cost:            ${formatCost(t.cost)}`,
-    `Total duration (API):  ${formatDuration(t.durationMs)}`,
-    `Responses:             ${t.responses}`,
-    `Usage:                 ${t.prompt.toLocaleString()} input, ${t.completion.toLocaleString()} output, ${t.cached.toLocaleString()} cached`,
-  ].join('\n')
-}
-
-async function runSlash(input: string) {
-  const rawName = input.slice(1).split(/\s+/)[0] || ''
-  const name = rawName.toLowerCase()
-  const arg = input.slice(1 + rawName.length).trim()
-  c.addLocal('user', input)
-  switch (name) {
-    case 'help':
-      system(helpText())
-      break
-    case 'clear':
-      await clearTranscript()
-      break
-    case 'run':
-      await runTask()
-      break
-    case 'pause':
-      await pauseTask()
-      break
-    case 'resume':
-      await resumeTask()
-      break
-    case 'approve':
-      if (!isWaitingGate.value) fail('No gate is waiting for approval.')
-      else await approveGate(arg)
-      break
-    case 'reject':
-      if (!isWaitingGate.value) fail('No gate is waiting for approval.')
-      else if (arg) await rejectGate(arg)
-      else startRejectFeedback()
-      break
-    case 'status':
-      await c.refreshTask()
-      system(statusText())
-      break
-    case 'cost':
-      system(costText())
-      break
-    case 'model':
-      if (!arg) {
-        system(`Current model: ${c.currentModel.value || 'auto (router default)'}${c.selectedModel.value ? ' (override)' : ''}\nUsage: /model <provider/model> · /model default`)
-      } else if (arg === 'default' || arg === 'auto' || arg === 'reset') {
-        c.selectedModel.value = ''
-        system('⎿  Model override cleared — using router default')
-      } else if (!/^[\w.-]+\/[\w.:@/-]+$/.test(arg)) {
-        fail(`Invalid model "${arg}". Expected <provider/model>, e.g. claude/claude-3-5-sonnet-20241022`)
-      } else {
-        c.selectedModel.value = arg
-        system(`⎿  Model set to ${arg} for subsequent messages`)
-      }
-      break
-    case 'export':
-      exportTranscript()
-      system('⎿  Transcript downloaded')
-      break
-    case 'expand':
-      setExpandAll(true)
-      break
-    case 'collapse':
-      setExpandAll(false)
-      break
-    default: {
-      const near = SLASH_COMMANDS.filter(cmd => cmd.name.startsWith(name.slice(0, 2))).map(cmd => `/${cmd.name}`)
-      fail(`Unknown command /${name}.${near.length ? ` Did you mean ${near.join(', ')}?` : ''} Type /help for the list.`)
-    }
-  }
-}
-
 async function onSubmit(text: string) {
   atBottom.value = true
   if (gateFeedbackMode.value) {
     await rejectGate(text)
-    return
-  }
-  if (text.startsWith('/')) {
-    await runSlash(text)
     return
   }
   await c.send(text)
@@ -364,14 +251,10 @@ const wsLabel = computed(() => {
   return 'offline'
 })
 
-const canPause = computed(() => task.value?.state === 'RUNNING')
-const canResume = computed(() => ['SUSPENDED', 'BLOCKED_FRUSTRATION'].includes(task.value?.state || ''))
-const canRun = computed(() => !canPause.value && !canResume.value && !['COMPLETED', 'WAITING_DEPENDENCY'].includes(task.value?.state || ''))
-
 const promptPlaceholder = computed(() =>
   gateFeedbackMode.value
     ? 'Tell the agent what to do differently (enter to submit · esc to go back)'
-    : 'Try "summarize the failing test" or /help',
+    : 'Ask the agent about this task…',
 )
 </script>
 
@@ -391,45 +274,14 @@ const promptPlaceholder = computed(() =>
         <span v-if="stage" class="truncate text-slate-500">{{ stage }}</span>
       </div>
       <div class="flex flex-shrink-0 items-center gap-1">
-        <button
-          v-if="canRun"
-          type="button"
-          class="console-btn text-emerald-300"
-          :disabled="actionPending"
-          title="Execute current stage (/run)"
-          @click="runTask"
-        >
-          <Play class="h-3 w-3" /><span>Run</span>
-        </button>
-        <button
-          v-if="canPause"
-          type="button"
-          class="console-btn text-amber-300"
-          :disabled="actionPending"
-          title="Pause session (/pause)"
-          @click="pauseTask"
-        >
-          <Pause class="h-3 w-3" /><span>Pause</span>
-        </button>
-        <button
-          v-if="canResume"
-          type="button"
-          class="console-btn text-emerald-300"
-          :disabled="actionPending"
-          title="Resume session (/resume)"
-          @click="resumeTask"
-        >
-          <RotateCw class="h-3 w-3" /><span>Resume</span>
-        </button>
-        <span class="mx-1 h-4 w-px bg-slate-800" aria-hidden="true"></span>
-        <button type="button" class="console-btn" title="Clear transcript (/clear)" aria-label="Clear transcript" @click="clearTranscript">
+        <button type="button" class="console-btn" title="Clear transcript" aria-label="Clear transcript" @click="clearTranscript">
           <Trash2 class="h-3.5 w-3.5" />
         </button>
         <button type="button" class="console-btn" title="Copy transcript as markdown" aria-label="Copy transcript" @click="copyTranscript">
           <Check v-if="copied" class="h-3.5 w-3.5 text-emerald-400" />
           <Copy v-else class="h-3.5 w-3.5" />
         </button>
-        <button type="button" class="console-btn" title="Download transcript (/export)" aria-label="Download transcript" @click="exportTranscript">
+        <button type="button" class="console-btn" title="Download transcript" aria-label="Download transcript" @click="exportTranscript">
           <Download class="h-3.5 w-3.5" />
         </button>
       </div>
@@ -459,8 +311,7 @@ const promptPlaceholder = computed(() =>
                 <span class="text-slate-400">{{ taskId }}</span>
                 <span v-if="task?.title"> — {{ task.title }}</span>
               </div>
-              <div>cwd: /workspaces/{{ taskId }}</div>
-              <div class="pt-1">/help for commands · /run to execute the current stage · ? for shortcuts</div>
+              <div class="pt-1">Run the current stage from the bar below, or ask the agent a question. Press ? for shortcuts.</div>
             </div>
           </div>
 
@@ -499,6 +350,16 @@ const promptPlaceholder = computed(() =>
     <!-- Input region -->
     <div class="flex-shrink-0 border-t border-slate-900 bg-[#07090e] px-4 pb-2 pt-2">
       <div class="mx-auto max-w-5xl space-y-2">
+        <TaskStatusBar
+          :task="task"
+          :busy="c.busy.value"
+          :pending="actionPending"
+          @run="runTask"
+          @resume="resumeTask"
+          @pause="pauseTask"
+          @reset="resetTask"
+        />
+
         <GateSelector
           v-if="showGate"
           ref="gate"
@@ -533,7 +394,7 @@ const promptPlaceholder = computed(() =>
 
         <!-- Footer status line -->
         <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-1 font-mono text-[11px] text-slate-600">
-          <span :class="c.selectedModel.value ? 'text-violet-400/80' : ''" :title="c.selectedModel.value ? 'model override (/model default to reset)' : 'model'">
+          <span :class="c.selectedModel.value ? 'text-violet-400/80' : ''" title="model that answered last">
             {{ c.currentModel.value || 'auto' }}
           </span>
           <span aria-hidden="true">·</span>
