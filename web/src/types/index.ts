@@ -634,3 +634,95 @@ export interface TelemetryTrendsDTO {
   burn: TokenBurnPointDTO[]
   mttr: MttrPointDTO[]
 }
+
+// ---------------------------------------------------------------------------
+// Agent Console (structured activity transcript) — .superpowers/console/contract.md
+// ---------------------------------------------------------------------------
+
+export type ConsoleEntryKind =
+  | 'user'
+  | 'assistant'
+  | 'thinking'
+  | 'tool_use'
+  | 'tool_result'
+  | 'request'
+  | 'response'
+  | 'system'
+  | 'error'
+  | 'state'
+
+export type ConsoleEntryStatus = 'streaming' | 'done' | 'error' | 'cancelled'
+
+export interface ConsoleToolInfo {
+  id: string
+  name: string
+  input?: Record<string, any>
+  is_error?: boolean
+}
+
+export interface ConsoleMessage {
+  role: string
+  content: string
+}
+
+export interface ConsoleRequestInfo {
+  model: string
+  method: string
+  strategy: string
+  fallback_chain?: string[]
+  messages?: ConsoleMessage[]
+  session_id?: string
+  source?: 'chat' | 'execute' | string
+}
+
+export interface ConsoleUsageInfo {
+  model: string
+  provider: string
+  prompt_tokens: number
+  completion_tokens: number
+  cached_tokens: number
+  cost_usd: number
+  duration_ms: number
+  finish_reason: string
+  session_id?: string
+}
+
+export interface ConsoleStateInfo {
+  from: string
+  to: string
+  stage?: string
+}
+
+export interface ConsoleEntry {
+  id: string
+  task_id: string
+  turn_id?: string
+  kind: ConsoleEntryKind
+  content?: string
+  status?: ConsoleEntryStatus
+  tool?: ConsoleToolInfo
+  request?: ConsoleRequestInfo
+  usage?: ConsoleUsageInfo
+  state?: ConsoleStateInfo
+  created_at: string
+  updated_at?: string
+}
+
+export interface TaskActivityResponse {
+  entries: ConsoleEntry[]
+  busy: boolean
+  active_turn_id: string
+  session_id: string
+  model: string
+}
+
+export interface TaskChatResponse {
+  turn_id: string
+  entry_id: string
+}
+
+export interface ConsoleActivityDelta {
+  id: string
+  delta: string
+  kind: 'assistant' | 'thinking'
+}

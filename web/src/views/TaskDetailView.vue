@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useTaskStore } from '../stores/tasks'
 import { useTerminalStore } from '../stores/terminal'
 import { useToastStore } from '../stores/toast'
-import TermuxConsole from '../components/terminal/TermuxConsole.vue'
+import AgentConsole from '../components/console/AgentConsole.vue'
 import ThoughtFeed from '../components/thought/ThoughtFeed.vue'
 import WorkspaceGraph from '../components/workspace/WorkspaceGraph.vue'
 import FrustrationBanner from '../components/hitl/FrustrationBanner.vue'
@@ -405,14 +405,14 @@ async function handlePause() {
     <!-- 5. Focused Main View Navigation Tabs Bar -->
     <div class="h-10 px-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between flex-shrink-0">
       <div class="flex items-center gap-1">
-        <!-- Tab 1: Live Terminal (Termux Console) -->
+        <!-- Tab 1: Agent Console (structured activity transcript) -->
         <button
           @click="activeTab = 'terminal'"
           class="h-8 px-3.5 rounded text-xs font-mono transition-all flex items-center gap-2 border"
           :class="activeTab === 'terminal' ? 'bg-slate-800 border-slate-700 text-emerald-400 font-bold shadow-sm' : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'"
         >
           <Terminal class="w-4 h-4" />
-          <span>Live Terminal (Termux)</span>
+          <span>Agent Console</span>
           <span
             v-if="taskProcess?.status === 'RUNNING'"
             class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"
@@ -458,11 +458,11 @@ async function handlePause() {
 
     <!-- 6. Full-Width Focused Tab Content -->
     <main class="flex-1 overflow-hidden flex flex-col min-h-0 bg-slate-950">
-      <!-- TAB 1: Real-Time Live Termux Console -->
+      <!-- TAB 1: Agent Console -->
       <div v-if="activeTab === 'terminal'" class="h-full flex flex-col min-h-0">
-        <TermuxConsole
+        <AgentConsole
           :task-id="taskId"
-          :show-telemetry-header="true"
+          :show-header="true"
           @task-updated="refreshTaskData"
         />
       </div>

@@ -7,7 +7,8 @@ import type {
   UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse,
   PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
   OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO,
-  BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow
+  BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
+  TaskActivityResponse, TaskChatResponse
 } from '../types'
 
 
@@ -53,6 +54,53 @@ export const api = {
       method: 'POST'
     })
     if (!res.ok) throw new Error('Failed to clear process logs')
+    return res.json()
+  },
+
+  // Agent Console (structured activity transcript)
+  async getTaskActivity(taskId: string, after?: string): Promise<TaskActivityResponse> {
+    const query = new URLSearchParams()
+    if (after) query.set('after', after)
+    const qs = query.toString()
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/activity${qs ? `?${qs}` : ''}`)
+    if (!res.ok) throw new Error(`Failed to fetch activity for task ${taskId}`)
+    return res.json()
+  },
+
+  async clearTaskActivity(taskId: string): Promise<{ status: string }> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/activity`, {
+      method: 'DELETE'
+    })
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      throw new Error(errData?.error || `Failed to clear activity for task ${taskId}`)
+    }
+    return res.json()
+  },
+
+  async sendTaskChat(taskId: string, message: string, model?: string): Promise<TaskChatResponse> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(model ? { message, model } : { message })
+    })
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      const err = new Error(errData?.error || `Failed to send message (HTTP ${res.status})`) as Error & { status?: number }
+      err.status = res.status
+      throw err
+    }
+    return res.json()
+  },
+
+  async cancelTaskChat(taskId: string): Promise<{ status: 'cancelled' | 'idle' | string }> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/chat/cancel`, {
+      method: 'POST'
+    })
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      throw new Error(errData?.error || `Failed to cancel turn for task ${taskId}`)
+    }
     return res.json()
   },
 
