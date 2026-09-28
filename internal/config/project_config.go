@@ -2,10 +2,11 @@ package config
 
 // AIProviderConfig defines credentials and settings for an LLM provider.
 type AIProviderConfig struct {
-	Enabled bool   `json:"enabled" yaml:"enabled"`
-	APIKey  string `json:"api_key" yaml:"api_key"`
-	BaseURL string `json:"base_url,omitempty" yaml:"base_url,omitempty"`
-	Model   string `json:"model" yaml:"model"`
+	Enabled    bool   `json:"enabled" yaml:"enabled"`
+	APIKey     string `json:"api_key" yaml:"api_key"`
+	AuthMethod string `json:"auth_method,omitempty" yaml:"auth_method,omitempty"` // "api_key" or "oauth"
+	BaseURL    string `json:"base_url,omitempty" yaml:"base_url,omitempty"`
+	Model      string `json:"model" yaml:"model"`
 }
 
 // ModelTiersConfig defines model allocations per reasoning/codegen tier.

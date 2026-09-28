@@ -140,6 +140,19 @@ export interface ProviderDTO {
   base_url?: string
   default_model: string
   models: string[]
+  auth_method: 'api_key' | 'oauth' | 'session_token'
+  supports_oauth: boolean
+}
+
+export interface OAuthStatus {
+  provider_id: string
+  auth_method: 'api_key' | 'oauth' | 'session_token'
+  is_connected: boolean
+  connected_at?: string
+  email?: string
+  expires_at?: string
+  token_type?: string
+  scopes?: string
 }
 
 export interface TierMappingDTO {

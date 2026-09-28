@@ -77,7 +77,7 @@ async function testAllConnections() {
       <!-- 1. AI Provider Cards Grid -->
       <div>
         <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wide mb-3">
-          Configured AI Endpoints & API Keys
+          Configured AI Endpoints · API Keys, Session Tokens & OAuth
         </h3>
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <ProviderConfigCard

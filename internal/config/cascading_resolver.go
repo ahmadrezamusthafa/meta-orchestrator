@@ -126,6 +126,9 @@ func mergeConfigs(target *OrchestratorConfig, override *OrchestratorConfig) {
 			if v.APIKey != "" {
 				existing.APIKey = v.APIKey
 			}
+			if v.AuthMethod != "" {
+				existing.AuthMethod = v.AuthMethod
+			}
 			if v.BaseURL != "" {
 				existing.BaseURL = v.BaseURL
 			}

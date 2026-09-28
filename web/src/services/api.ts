@@ -5,7 +5,8 @@ import type {
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
   UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse,
-  PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO
+  PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
+  OAuthStatus
 } from '../types'
 
 
@@ -152,6 +153,19 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider_id: providerId })
     })
+    return res.json()
+  },
+
+  async saveProviderConfig(providerId: string, config: { api_key?: string; base_url?: string; model?: string; session_token?: string; auth_method?: string }): Promise<any> {
+    const res = await fetch(`${BASE_URL}/providers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId, ...config })
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to save provider config' }))
+      throw new Error(err.error || 'Failed to save provider config')
+    }
     return res.json()
   },
 
@@ -592,6 +606,39 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Failed to render prompt' }))
       throw new Error(err.error || 'Failed to render prompt')
+    }
+    return res.json()
+  },
+
+  // OAuth Provider Authentication
+  async initiateOAuth(providerId: string, redirectUri?: string): Promise<{ auth_url: string; state: string; provider_id: string; scopes: string }> {
+    const res = await fetch(`${BASE_URL}/providers/oauth/initiate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId, redirect_uri: redirectUri })
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to initiate OAuth' }))
+      throw new Error(err.error || 'Failed to initiate OAuth')
+    }
+    return res.json()
+  },
+
+  async getOAuthStatus(providerId: string): Promise<OAuthStatus> {
+    const res = await fetch(`${BASE_URL}/providers/oauth/status?provider_id=${encodeURIComponent(providerId)}`)
+    if (!res.ok) throw new Error('Failed to fetch OAuth status')
+    return res.json()
+  },
+
+  async disconnectOAuth(providerId: string): Promise<{ status: string; provider_id: string }> {
+    const res = await fetch(`${BASE_URL}/providers/oauth/disconnect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId })
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to disconnect OAuth' }))
+      throw new Error(err.error || 'Failed to disconnect OAuth')
     }
     return res.json()
   }
