@@ -1,0 +1,83 @@
+{
+  "stages": [
+    { "id": "prd_discovery", "name": "PRD Discovery", "index": 1 },
+    { "id": "repo_discovery", "name": "Repository Discovery", "index": 2 },
+    { "id": "atdd_creation", "name": "ATDD Creation", "index": 3 },
+    { "id": "techdoc_rfc", "name": "Tech Doc / RFC", "index": 4 },
+    { "id": "task_breakdown", "name": "Task Breakdown", "index": 5 },
+    { "id": "red_verification", "name": "Red Phase Verification", "index": 6 },
+    { "id": "task_implementation", "name": "Task Implementation", "index": 7 },
+    { "id": "e2e_validation", "name": "E2E Validation", "index": 8 },
+    { "id": "signoff_merge", "name": "Sign-off & Merge", "index": 9 }
+  ],
+  "complexities": [
+    { "id": "LOW", "description": "Single-file / minor patch" },
+    { "id": "MEDIUM", "description": "Modular service feature" },
+    { "id": "HIGH", "description": "Multi-repo contract change" },
+    { "id": "SYSTEM", "description": "Docker / CI / database migration" }
+  ],
+  "methods": [
+    { "id": "BMAD", "description": "Multi-agent role specialization (PM -> QA -> Architect -> Dev)" },
+    { "id": "Supervisor", "description": "Cross-repo orchestrator dispatching parallel sub-agents" },
+    { "id": "ReAct", "description": "Fast iterative single-agent reasoning and tool loop" },
+    { "id": "Superpower", "description": "Bare-metal plan-and-execute environment control" }
+  ],
+  "models": [
+    { "id": "claude/claude-3-5-sonnet-20241022", "name": "Claude 3.5 Sonnet", "tier": "tier1" },
+    { "id": "claude/claude-3-5-haiku-20241022", "name": "Claude 3.5 Haiku", "tier": "tier3" },
+    { "id": "openai/gpt-4o", "name": "GPT-4o", "tier": "tier1" },
+    { "id": "openai/gpt-4o-mini", "name": "GPT-4o mini", "tier": "tier2" },
+    { "id": "antigravity/gemini-2.0-flash", "name": "Antigravity (Gemini 2.0 Flash)", "tier": "tier2" },
+    { "id": "opencode/deepseek-coder-v2", "name": "OpenCode / Local DeepSeek Coder", "tier": "tier3" }
+  ],
+  "fixtures": [
+    {
+      "id": "fx-low-readme-badge",
+      "title": "Add build status badge to README",
+      "description": "Single-file documentation patch adding a CI status badge and a usage section.",
+      "complexity": "LOW",
+      "category": "docs",
+      "expect": ["readme", "badge"]
+    },
+    {
+      "id": "fx-low-null-guard",
+      "title": "Guard nil pointer in webhook handler",
+      "description": "Minor patch: return 400 when the webhook payload is empty instead of panicking.",
+      "complexity": "LOW",
+      "category": "bugfix",
+      "expect": ["nil", "400"]
+    },
+    {
+      "id": "fx-medium-crud-endpoint",
+      "title": "Add CRUD endpoints for invoice line items",
+      "description": "Modular service feature: create, list, update and delete invoice line items with validation.",
+      "complexity": "MEDIUM",
+      "category": "crud",
+      "expect": ["endpoint", "validation", "test"]
+    },
+    {
+      "id": "fx-high-contract-change",
+      "title": "Version the payments API contract across services",
+      "description": "Multi-repo contract change: add v2 payment intent schema to api-contracts and update backend and frontend consumers.",
+      "complexity": "HIGH",
+      "category": "contract",
+      "expect": ["contract", "v2", "backward"]
+    },
+    {
+      "id": "fx-system-migration",
+      "title": "Add zero-downtime database migration and CI job",
+      "description": "System change: expand/contract migration for the invoices table plus a CI step that runs migrations in a container.",
+      "complexity": "SYSTEM",
+      "category": "migration",
+      "expect": ["migration", "rollback", "ci"]
+    }
+  ],
+  "execution": {
+    "max_parallel_cells": 2,
+    "repetitions": 3,
+    "max_iterations": 3,
+    "cell_timeout_s": 600,
+    "cpu_ceiling_percent": 70,
+    "replay_stages": ["task_implementation"]
+  }
+}
