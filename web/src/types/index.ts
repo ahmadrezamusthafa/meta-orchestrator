@@ -446,6 +446,42 @@ export interface JiraIssueDTO {
   reporter?: string
   assignee?: string
   created?: string
+  parent_key?: string
+  epic_key?: string
+  epic_summary?: string
+}
+
+export interface JiraSyncConfig {
+  enabled: boolean
+  jql: string
+  interval_seconds: number
+  max_issues: number
+  workflow_id: string
+  selected_method: string
+  assigned_repos: string[] | null
+  default_stage_id: string
+  status_stage_map?: Record<string, string> | null
+  update_existing: boolean
+  exclude_statuses: string[] | null
+}
+
+export interface JiraSyncStatus {
+  connected: boolean
+  running: boolean
+  last_run_at?: string
+  last_error?: string
+  fetched: number
+  created: number
+  updated: number
+  skipped: number
+  dismissed: number
+  next_run_at?: string
+  linked_tasks: number
+}
+
+export interface JiraSyncSettings {
+  config: JiraSyncConfig
+  status: JiraSyncStatus
 }
 
 export interface ImportJiraIssueRequest {

@@ -14,7 +14,14 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
+const testJiraIssueBody = `{"key":"PAY-1044","fields":{"summary":"Express checkout","description":"1-tap payments",
+	"status":{"name":"To Do"},"priority":{"name":"High"},"issuetype":{"name":"Story"},"assignee":{"displayName":"Dev One"}}}`
+
+const testJiraSearchBody = `{"issues":[` + testJiraIssueBody + `,{"key":"PAY-1045","fields":{"summary":"Webhook idempotency",
+	"status":{"name":"In Progress"},"priority":{"name":"Highest"},"issuetype":{"name":"Bug"}}}]}`
+
 func setupTestRouterWithConnectors(t *testing.T) (*Router, string, *httptest.Server) {
+	isolateJiraEnv(t)
 	tempDir, err := os.MkdirTemp("", "connectors_test_*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
@@ -23,6 +30,21 @@ func setupTestRouterWithConnectors(t *testing.T) (*Router, string, *httptest.Ser
 	// Real mock HTTP server handling JIRA, Confluence, Slack, Bitbucket test endpoints
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/search") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(testJiraSearchBody))
+			return
+		}
+		if strings.Contains(r.URL.Path, "/issue/PAY-1044") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(testJiraIssueBody))
+			return
+		}
+		if strings.Contains(r.URL.Path, "/issue/") {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"errorMessages":["Issue does not exist"]}`))
+			return
+		}
 		if strings.Contains(r.URL.Path, "myself") {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"displayName": "DevOps Engineer", "key": "devops"}`))
@@ -407,3 +429,13 @@ func TestConnectorsCatalogEndpoints(t *testing.T) {
 	}
 }
 
+
+// isolateJiraEnv hides the developer's real JIRA credentials so tests only ever talk to httptest servers.
+func isolateJiraEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{"JIRA_EMAIL", "JIRA_USERNAME", "ATLASSIAN_EMAIL", "JIRA_API_TOKEN", "JIRA_TOKEN",
+		"ATLASSIAN_API_TOKEN", "JIRA_URL", "JIRA_BASE_URL", "CONFLUENCE_EMAIL", "CONFLUENCE_USERNAME",
+		"CONFLUENCE_API_TOKEN", "CONFLUENCE_TOKEN", "CONFLUENCE_URL", "CONFLUENCE_BASE_URL"} {
+		t.Setenv(k, "")
+	}
+}

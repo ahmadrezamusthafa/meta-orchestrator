@@ -146,6 +146,8 @@ func main() {
 		WSHub:           wsHub,
 		RootDir:         cwd,
 		Telemetry:       telemetryConfig(cwd),
+		TaskStorePath:   filepath.Join(cwd, ".sdlc", "tasks.json"),
+		EnableJiraSync:  true,
 	})
 	mux.Handle("/api/", apiRouter)
 
@@ -168,6 +170,9 @@ func main() {
 
 	fmt.Println("\n[Shutdown] Received termination signal, gracefully draining workers...")
 	workerPool.Stop(5 * time.Second)
+	if err := apiRouter.Close(); err != nil {
+		fmt.Printf("[Shutdown] Failed to flush task board: %v\n", err)
+	}
 	wsHub.Stop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

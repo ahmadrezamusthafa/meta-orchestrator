@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useTaskStore } from '../../stores/tasks'
 import { useWorkflowStore } from '../../stores/workflows'
 import BtnPrimary from '../common/BtnPrimary.vue'
 import { 
   Search, Plus, RotateCcw, RefreshCw, X, Download, User, 
-  LayoutGrid, LayoutList, EyeOff, Eye, ShieldAlert, CheckCircle2, PlayCircle, AlertTriangle 
+  LayoutGrid, LayoutList, EyeOff, Eye, PlayCircle, Settings2, Rows3, Columns3
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{
@@ -19,6 +19,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'open-new-task'): void
   (e: 'open-jira-import'): void
+  (e: 'open-jira-sync'): void
   (e: 'update:density', density: 'comfortable' | 'compact'): void
   (e: 'toggle-collapse-empty'): void
 }>()
@@ -27,13 +28,38 @@ const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
 const isRefreshing = ref(false)
 
+// Re-render relative times ("2m ago") without refetching.
+const now = ref(Date.now())
+let clock: ReturnType<typeof setInterval> | undefined
+onMounted(() => { clock = setInterval(() => (now.value = Date.now()), 30000) })
+onUnmounted(() => clearInterval(clock))
+
+const sync = computed(() => taskStore.jiraSync?.status || null)
+const syncLabel = computed(() => {
+  const st = sync.value
+  if (!st || !st.connected) return 'JIRA not connected'
+  if (taskStore.isSyncingJira || st.running) return 'Syncing JIRA…'
+  if (!taskStore.jiraSync?.config.enabled) return 'JIRA sync off'
+  if (st.last_error) return 'JIRA sync failed'
+  if (!st.last_run_at || st.last_run_at.startsWith('0001')) return 'JIRA sync pending'
+  const mins = Math.max(0, Math.floor((now.value - new Date(st.last_run_at).getTime()) / 60000))
+  return `JIRA synced ${mins < 1 ? 'just now' : mins < 60 ? `${mins}m ago` : `${Math.floor(mins / 60)}h ago`}`
+})
+const syncTone = computed(() => {
+  const st = sync.value
+  if (!st || !st.connected || !taskStore.jiraSync?.config.enabled) return 'bg-slate-500'
+  if (st.last_error) return 'bg-rose-400'
+  return 'bg-emerald-400'
+})
+
 const isFiltered = computed(() => {
   return (
     taskStore.searchQuery.trim() !== '' ||
     taskStore.selectedMethod !== 'All' ||
     taskStore.selectedRepo !== 'All' ||
     taskStore.selectedStatus !== 'all' ||
-    taskStore.onlyMyTasks
+    taskStore.onlyMyTasks ||
+    taskStore.selectedEpic !== 'All'
   )
 })
 
@@ -47,6 +73,7 @@ function resetFilters() {
   taskStore.selectedRepo = 'All'
   taskStore.selectedStatus = 'all'
   taskStore.onlyMyTasks = false
+  taskStore.selectedEpic = 'All'
 }
 
 function toggleDensity() {
@@ -169,15 +196,27 @@ async function handleRefresh() {
       <button
         @click="taskStore.onlyMyTasks = !taskStore.onlyMyTasks"
         type="button"
-        title="Show only tasks linked to your active JIRA user/credentials"
+        title="Show only tasks linked to a JIRA issue"
         class="h-8 px-2.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-all"
         :class="taskStore.onlyMyTasks
           ? 'bg-blue-950/80 border-blue-600 text-blue-300 shadow-sm font-semibold'
           : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'"
       >
         <User class="w-3.5 h-3.5" :class="taskStore.onlyMyTasks ? 'text-blue-400' : 'text-slate-500'" />
-        <span>My JIRA Tasks</span>
+        <span>JIRA only</span>
       </button>
+
+      <!-- Epic filter -->
+      <select
+        v-if="taskStore.epics.length > 0"
+        v-model="taskStore.selectedEpic"
+        aria-label="Filter by epic"
+        class="h-8 px-2.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 focus:outline-none focus:border-blue-500 max-w-[200px] truncate"
+      >
+        <option value="All">All epics</option>
+        <option v-for="e in taskStore.epics" :key="e.key" :value="e.key">{{ e.key }} · {{ e.name || 'Epic' }} ({{ e.count }})</option>
+        <option :value="taskStore.NO_EPIC">No epic</option>
+      </select>
 
       <!-- Reset Filters Pill -->
       <button
@@ -195,6 +234,7 @@ async function handleRefresh() {
     <div class="flex items-center gap-2">
       <!-- Focus Active / Collapse Inactive Columns Toggle -->
       <button
+        v-if="taskStore.groupBy !== 'epic'"
         @click="$emit('toggle-collapse-empty')"
         type="button"
         :title="hasCollapsedEmpty ? 'Expand all columns' : 'Collapse empty columns into rails to reduce scrolling'"
@@ -206,6 +246,22 @@ async function handleRefresh() {
         <EyeOff v-if="!hasCollapsedEmpty" class="w-3.5 h-3.5 text-purple-400" />
         <Eye v-else class="w-3.5 h-3.5 text-purple-300" />
         <span class="hidden md:inline">{{ hasCollapsedEmpty ? 'Expand All' : 'Focus Active' }}</span>
+      </button>
+
+      <!-- Group by epic (swimlanes) -->
+      <button
+        @click="taskStore.groupBy = taskStore.groupBy === 'epic' ? 'none' : 'epic'"
+        type="button"
+        :aria-pressed="taskStore.groupBy === 'epic'"
+        :title="taskStore.groupBy === 'epic' ? 'Show one column per stage' : 'Group cards into swimlanes by JIRA epic'"
+        class="h-8 px-2.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-all"
+        :class="taskStore.groupBy === 'epic'
+          ? 'bg-violet-950/70 border-violet-700/80 text-violet-300 shadow-sm'
+          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'"
+      >
+        <Rows3 v-if="taskStore.groupBy === 'epic'" class="w-3.5 h-3.5" />
+        <Columns3 v-else class="w-3.5 h-3.5" />
+        <span class="hidden md:inline">{{ taskStore.groupBy === 'epic' ? 'By epic' : 'Group by epic' }}</span>
       </button>
 
       <!-- Density Toggle Button -->
@@ -241,16 +297,39 @@ async function handleRefresh() {
         <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin text-emerald-400': isRefreshing }" />
       </button>
 
-      <!-- Import JIRA Button -->
-      <button
-        @click="$emit('open-jira-import')"
-        type="button"
-        title="Import tickets assigned to your credentials"
-        class="h-8 px-3 rounded-lg bg-blue-950/60 hover:bg-blue-900/80 border border-blue-800/80 text-blue-300 hover:text-blue-100 flex items-center gap-1.5 text-xs font-medium transition-all shadow-sm"
-      >
-        <Download class="w-3.5 h-3.5 text-blue-400" />
-        <span>Import JIRA</span>
-      </button>
+      <!-- JIRA sync status + actions -->
+      <div class="flex items-center h-8 rounded-lg border border-slate-800 bg-slate-950 overflow-hidden">
+        <button
+          @click="$emit('open-jira-sync')"
+          type="button"
+          :title="sync?.last_error || 'JIRA board sync rules'"
+          class="h-full px-2.5 flex items-center gap-1.5 text-xs text-slate-300 hover:text-slate-100 hover:bg-slate-900 transition-colors"
+        >
+          <span class="w-1.5 h-1.5 rounded-full" :class="syncTone"></span>
+          <span class="hidden lg:inline">{{ syncLabel }}</span>
+          <Settings2 class="w-3.5 h-3.5 text-slate-500" />
+        </button>
+        <button
+          v-if="sync?.connected"
+          @click="taskStore.runJiraSync()"
+          :disabled="taskStore.isSyncingJira"
+          type="button"
+          title="Sync JIRA now"
+          aria-label="Sync JIRA now"
+          class="h-full px-2 border-l border-slate-800 text-slate-400 hover:text-slate-100 hover:bg-slate-900 transition-colors"
+        >
+          <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin text-blue-400': taskStore.isSyncingJira }" />
+        </button>
+        <button
+          @click="$emit('open-jira-import')"
+          type="button"
+          title="Pick individual JIRA issues to add"
+          class="h-full px-2.5 border-l border-slate-800 text-blue-300 hover:text-blue-100 hover:bg-blue-950/60 flex items-center gap-1.5 text-xs font-medium transition-colors"
+        >
+          <Download class="w-3.5 h-3.5 text-blue-400" />
+          <span class="hidden sm:inline">Import</span>
+        </button>
+      </div>
 
       <!-- New Task Button -->
       <BtnPrimary @click="$emit('open-new-task')">

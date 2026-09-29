@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/connectors"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
@@ -231,14 +234,19 @@ func (r *Router) handleJiraIssues(w http.ResponseWriter, req *http.Request) {
 	}
 
 	issues, err := r.cfg.ConnectorsManager.SearchJiraIssues(req.Context(), query)
+	if errors.Is(err, connectors.ErrJiraNotConnected) {
+		r.writeError(w, http.StatusPreconditionFailed, err.Error())
+		return
+	}
 	if err != nil {
-		r.writeError(w, http.StatusInternalServerError, "Failed to search JIRA issues: "+err.Error())
+		r.writeError(w, http.StatusBadGateway, "Failed to search JIRA issues: "+err.Error())
 		return
 	}
 	r.writeJSON(w, http.StatusOK, issues)
 }
 
-// handleJiraImport imports a JIRA issue into Kanban as an orchestrator task.
+// handleJiraImport adds one JIRA issue to the board. An issue already on the board is not
+// duplicated: the response is 409 with the existing task.
 func (r *Router) handleJiraImport(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -250,128 +258,137 @@ func (r *Router) handleJiraImport(w http.ResponseWriter, req *http.Request) {
 		r.writeError(w, http.StatusBadRequest, "Invalid JSON payload: "+err.Error())
 		return
 	}
-
-	if importReq.IssueKey == "" {
+	key := strings.ToUpper(strings.TrimSpace(importReq.IssueKey))
+	if key == "" {
 		r.writeError(w, http.StatusBadRequest, "issue_key is required")
 		return
 	}
 
-	issue, err := r.cfg.ConnectorsManager.GetJiraIssue(req.Context(), importReq.IssueKey)
-	if err != nil {
-		r.writeError(w, http.StatusNotFound, fmt.Sprintf("JIRA issue %s not found: %v", importReq.IssueKey, err))
+	r.mu.RLock()
+	existing := cloneTask(r.jiraTaskIndexLocked()[key])
+	r.mu.RUnlock()
+	if existing != nil {
+		r.writeJSON(w, http.StatusConflict, map[string]interface{}{
+			"error": fmt.Sprintf("%s is already on the board as %s", key, existing.ID), "task": existing})
 		return
 	}
 
-	r.mu.Lock()
-	taskNum := len(r.tasks) + 8945
-	taskID := fmt.Sprintf("TASK-%d", taskNum)
+	issue, err := r.cfg.ConnectorsManager.GetJiraIssue(req.Context(), key)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, connectors.ErrJiraNotConnected) {
+			status = http.StatusPreconditionFailed
+		}
+		r.writeError(w, status, fmt.Sprintf("Could not load JIRA issue %s: %v", key, err))
+		return
+	}
 
 	startStage := importReq.StartStageID
-	if startStage == "" {
-		startStage = "prd_discovery"
-	}
-	startIndex := 0
-	switch startStage {
-	case "atdd_creation":
-		startIndex = 1
-	case "techdoc_rfc":
-		startIndex = 2
-	case "task_breakdown":
-		startIndex = 3
-	case "task_implementation":
-		startIndex = 4
-	case "e2e_validation":
-		startIndex = 5
-	case "uat_verification":
-		startIndex = 6
-	case "signoff_merge":
-		startIndex = 7
+	if importReq.ActiveSlice != nil && importReq.ActiveSlice.StartStageID != "" {
+		startStage = importReq.ActiveSlice.StartStageID
 	}
 
-	workflowID := importReq.WorkflowID
-	if workflowID == "" {
-		workflowID = "general_ai_sdlc"
+	r.mu.Lock()
+	if t := r.jiraTaskIndexLocked()[key]; t != nil { // lost a race with a concurrent import/sync
+		existing = cloneTask(t)
+		r.mu.Unlock()
+		r.writeJSON(w, http.StatusConflict, map[string]interface{}{
+			"error": fmt.Sprintf("%s is already on the board as %s", key, existing.ID), "task": existing})
+		return
 	}
-
-	selectedMethod := importReq.SelectedMethod
-	if selectedMethod == "" || selectedMethod == "Auto" {
-		selectedMethod = "BMAD"
+	delete(r.dismissedJira, key) // an explicit import overrides an earlier removal
+	task := r.newJiraTaskLocked(*issue, jiraTaskOptions{
+		WorkflowID:     importReq.WorkflowID,
+		SelectedMethod: importReq.SelectedMethod,
+		AssignedRepos:  importReq.AssignedRepos,
+		StartStageID:   startStage,
+		Source:         "import",
+	})
+	task.ActiveSlice = importReq.ActiveSlice
+	for k, v := range importReq.Metadata {
+		if _, reserved := task.Metadata[k]; !reserved {
+			task.Metadata[k] = v
+		}
 	}
-
-	assignedRepos := importReq.AssignedRepos
-	if len(assignedRepos) == 0 {
-		assignedRepos = []string{"frontend-portal", "backend-core"}
-	}
-
-	now := time.Now()
-	taskTitle := fmt.Sprintf("[%s] %s", issue.Key, issue.Summary)
-	if strings.Contains(issue.Summary, issue.Key) {
-		taskTitle = issue.Summary
-	}
-
-	newTask := &types.Task{
-		ID:                taskID,
-		WorkflowID:        workflowID,
-		Title:             taskTitle,
-		Description:       issue.Description,
-		CurrentStageID:    startStage,
-		CurrentStageIndex: startIndex,
-		State:             types.TaskStateRunning,
-		AssignedRepos:     assignedRepos,
-		ProfileName:       "orchestrator_agent",
-		SelectedMethod:    selectedMethod,
-		TokenUsage: types.TokenUsage{
-			PromptTokens:     1400,
-			CompletionTokens: 420,
-			TotalTokens:      1820,
-			EstimatedCostUSD: 0.011,
-		},
-		MaxTokenBudget: 50000,
-		ArtifactDir:    fmt.Sprintf(".sdlc/artifacts/%s", taskID),
-		Metadata: map[string]string{
-			"jira_key":         issue.Key,
-			"jira_url":         issue.URL,
-			"jira_status":      issue.Status,
-			"jira_priority":    issue.Priority,
-			"jira_assignee":    issue.Assignee,
-			"complexity":       "HIGH",
-			"router_strategy":  "BEST_PRACTICE",
-			"router_source":    "JIRA_CONNECTOR",
-			"router_rationale": fmt.Sprintf("Imported directly from JIRA %s (%s). Routed to %s.", issue.Key, issue.Status, selectedMethod),
-		},
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-
-	// Create artifact folder with imported JIRA PRD
-	taskArtifactDir := filepath.Join(r.cfg.RootDir, ".sdlc", "artifacts", taskID)
-	_ = os.MkdirAll(taskArtifactDir, 0755)
-
-	prdDoc := fmt.Sprintf("# Product Requirements Document: [%s] %s\n\n"+
-		"**Source:** [JIRA Ticket %s](%s)\n"+
-		"**Status:** %s | **Priority:** %s | **Assignee:** %s\n"+
-		"**Imported At:** %s\n\n"+
-		"## Overview & Business Context\n%s\n\n"+
-		"## Acceptance Criteria\n- [ ] Core business requirements implemented and verified\n- [ ] Automated regression tests pass\n- [ ] Technical documentation published to Confluence\n",
-		issue.Key, issue.Summary, issue.Key, issue.URL, issue.Status, issue.Priority, issue.Assignee, now.Format(time.RFC3339), issue.Description)
-
-	_ = os.WriteFile(filepath.Join(taskArtifactDir, "PRD.md"), []byte(prdDoc), 0644)
-
-	r.tasks[taskID] = newTask
+	created := cloneTask(task)
 	r.mu.Unlock()
 
-	// Broadcast WS event
-	if r.cfg.WSHub != nil {
-		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-			Type:      types.EventTaskStatus,
-			TaskID:    taskID,
-			StageID:   startStage,
-			Timestamp: now,
-			Payload:   newTask,
-		})
-	}
+	r.writeJiraPRD(created.ID, *issue)
+	r.addEntry(created.ID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
+		"Imported from JIRA %s at %s. Run the stage to start the agent, or ask it a question below.", issue.Key, created.CurrentStageID)})
+	r.saveBoardNow()
+	r.broadcastTask(created)
+	r.writeJSON(w, http.StatusCreated, created)
+}
 
-	r.writeJSON(w, http.StatusCreated, newTask)
+// handleJiraSync reads (GET) or replaces (PUT) the board sync rules.
+func (r *Router) handleJiraSync(w http.ResponseWriter, req *http.Request) {
+	mgr := r.cfg.ConnectorsManager
+	switch req.Method {
+	case http.MethodGet:
+	case http.MethodPut, http.MethodPost:
+		var cfg types.JiraSyncConfig
+		if err := json.NewDecoder(req.Body).Decode(&cfg); err != nil {
+			r.writeError(w, http.StatusBadRequest, "Invalid JSON payload: "+err.Error())
+			return
+		}
+		if cfg.DefaultStageID != "" && stageIndexOf(cfg.DefaultStageID) < 0 {
+			r.writeError(w, http.StatusBadRequest, "Unknown default stage: "+cfg.DefaultStageID)
+			return
+		}
+		for status, stage := range cfg.StatusStageMap {
+			if stageIndexOf(stage) < 0 {
+				r.writeError(w, http.StatusBadRequest, fmt.Sprintf("Unknown stage %q for JIRA status %q", stage, status))
+				return
+			}
+		}
+		if _, err := mgr.UpdateJiraSyncConfig(cfg); err != nil {
+			r.writeError(w, http.StatusInternalServerError, "Failed to save sync rules: "+err.Error())
+			return
+		}
+		r.kickJiraSync()
+	default:
+		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	r.writeJSON(w, http.StatusOK, types.JiraSyncSettings{Config: mgr.GetJiraSyncConfig(), Status: r.jiraSyncStatus()})
+}
+
+// handleJiraSyncRun syncs the board now and reports the outcome.
+func (r *Router) handleJiraSyncRun(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), time.Minute)
+	defer cancel()
+	status, err := r.syncJiraBoard(ctx)
+	settings := types.JiraSyncSettings{Config: r.cfg.ConnectorsManager.GetJiraSyncConfig(), Status: status}
+	switch {
+	case err == nil:
+		r.writeJSON(w, http.StatusOK, settings)
+	case errors.Is(err, errJiraSyncBusy):
+		r.writeJSON(w, http.StatusConflict, map[string]interface{}{"error": err.Error(), "config": settings.Config, "status": status})
+	case !status.Connected:
+		r.writeJSON(w, http.StatusPreconditionFailed, map[string]interface{}{"error": err.Error(), "config": settings.Config, "status": status})
+	default:
+		r.writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error(), "config": settings.Config, "status": status})
+	}
+}
+
+// handleJiraSyncDismissed clears (DELETE) the list of issues the operator removed, so the next
+// sync may bring them back.
+func (r *Router) handleJiraSyncDismissed(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodDelete {
+		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	r.mu.Lock()
+	r.dismissedJira = make(map[string]bool)
+	r.mu.Unlock()
+	r.saveBoardNow()
+	r.kickJiraSync()
+	r.writeJSON(w, http.StatusOK, types.JiraSyncSettings{Config: r.cfg.ConnectorsManager.GetJiraSyncConfig(), Status: r.jiraSyncStatus()})
 }
 
 // handleConfluencePublish publishes tech docs or PRDs to Confluence.

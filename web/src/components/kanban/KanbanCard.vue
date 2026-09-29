@@ -9,7 +9,7 @@ import RoutingExplainerPill from '../common/RoutingExplainerPill.vue'
 import { 
   Layers, Flame, Clock, Lock, AlertTriangle, ArrowRight, 
   ExternalLink, FileText, User, MoreVertical, Check, Copy, Terminal,
-  GitBranch, Link2, Play
+  GitBranch, Link2, Play, Trash2
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{
@@ -23,7 +23,14 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'open-console', taskId: string): void
+  (e: 'request-delete', taskId: string): void
 }>()
+
+function requestDelete(e: Event) {
+  e.stopPropagation()
+  showStageMenu.value = false
+  emit('request-delete', props.task.id)
+}
 
 const router = useRouter()
 const taskStore = useTaskStore()
@@ -95,6 +102,12 @@ const jiraUrl = computed(() => {
   if (props.task.metadata?.jira_url) return props.task.metadata.jira_url
   if (jiraKey.value) return `https://jira.atlassian.net/browse/${jiraKey.value}`
   return '#'
+})
+
+const epicLabel = computed(() => {
+  const key = props.task.metadata?.jira_epic_key
+  if (!key || key === props.task.metadata?.jira_key) return null
+  return props.task.metadata?.jira_epic_name || key
 })
 
 const confluenceUrl = computed(() => {
@@ -309,6 +322,14 @@ function moveToStage(stageId: string, e: Event) {
                   <Check v-if="s.id === task.current_stage_id" class="w-3 h-3 text-emerald-400 flex-shrink-0" />
                 </button>
               </div>
+              <button
+                @click="requestDelete"
+                type="button"
+                class="w-full text-left px-2.5 py-1.5 border-t border-slate-800 hover:bg-rose-950/60 text-rose-300 flex items-center gap-1.5 text-[11px]"
+              >
+                <Trash2 class="w-3 h-3" />
+                <span>Remove from board</span>
+              </button>
             </div>
           </div>
         </div>
@@ -449,6 +470,14 @@ function moveToStage(stageId: string, e: Event) {
                     <Check v-if="s.id === task.current_stage_id" class="w-3 h-3 text-emerald-400 flex-shrink-0" />
                   </button>
                 </div>
+                <button
+                  @click="requestDelete"
+                  type="button"
+                  class="w-full text-left px-3 py-1.5 border-t border-slate-800 hover:bg-rose-950/60 text-rose-300 flex items-center gap-1.5 text-[11px]"
+                >
+                  <Trash2 class="w-3 h-3" />
+                  <span>Remove from board</span>
+                </button>
               </div>
             </div>
           </div>
@@ -473,6 +502,15 @@ function moveToStage(stageId: string, e: Event) {
             <span>{{ jiraKey }}</span>
             <ExternalLink class="w-2.5 h-2.5 opacity-70 group-hover/jira:opacity-100" />
           </a>
+
+          <span
+            v-if="epicLabel && taskStore.groupBy !== 'epic'"
+            :title="`Epic ${task.metadata?.jira_epic_key}`"
+            class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-violet-950/70 text-violet-300 border border-violet-800/70 text-[10px] font-medium max-w-[160px]"
+          >
+            <Layers class="w-2.5 h-2.5 flex-shrink-0" />
+            <span class="truncate">{{ epicLabel }}</span>
+          </span>
 
           <a
             v-if="confluenceUrl"

@@ -9,6 +9,8 @@ const (
 	EventAgentThought   EventType = "agent.thought"
 	EventAgentTerminal  EventType = "agent.terminal"
 	EventTaskStatus     EventType = "task.status"
+	EventTaskDeleted    EventType = "task.deleted"
+	EventJiraSync       EventType = "jira.sync"
 	EventStageTransition EventType = "stage.transition"
 	EventFrustrationHalt EventType = "event.frustration_halt"
 	EventHITLRequired    EventType = "hitl.required"

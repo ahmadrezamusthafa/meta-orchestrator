@@ -2,6 +2,7 @@ import type {
   Task, TaskProcessDTO, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
   Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse,
   ConnectorsConfig, JiraConfig, ConfluenceConfig, JiraIssueDTO, ImportJiraIssueRequest,
+  JiraSyncConfig, JiraSyncSettings,
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
   UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse,
@@ -144,7 +145,19 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     })
-    if (!res.ok) throw new Error(`Failed to update task ${taskId}`)
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || `Failed to update task ${taskId}`)
+    }
+    return res.json()
+  },
+
+  async deleteTask(taskId: string): Promise<{ status: string; task_id: string }> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || `Failed to delete task ${taskId}`)
+    }
     return res.json()
   },
 
@@ -486,7 +499,43 @@ export const api = {
     const q = new URLSearchParams()
     if (query) q.set('q', query)
     const res = await fetch(`${BASE_URL}/connectors/jira/issues?${q.toString()}`)
-    if (!res.ok) throw new Error('Failed to fetch JIRA issues')
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || 'Failed to fetch JIRA issues')
+    }
+    return (await res.json()) || []
+  },
+
+  async getJiraSync(): Promise<JiraSyncSettings> {
+    const res = await fetch(`${BASE_URL}/connectors/jira/sync`)
+    if (!res.ok) throw new Error('Failed to load JIRA sync rules')
+    return res.json()
+  },
+
+  async updateJiraSync(cfg: JiraSyncConfig): Promise<JiraSyncSettings> {
+    const res = await fetch(`${BASE_URL}/connectors/jira/sync`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || 'Failed to save JIRA sync rules')
+    }
+    return res.json()
+  },
+
+  // Resolves with the sync outcome even when JIRA fails: status.last_error explains why.
+  async runJiraSync(): Promise<JiraSyncSettings> {
+    const res = await fetch(`${BASE_URL}/connectors/jira/sync/run`, { method: 'POST' })
+    const data = await res.json().catch(() => null)
+    if (!data?.status) throw new Error(data?.error || 'Failed to sync JIRA')
+    return { config: data.config, status: data.status }
+  },
+
+  async clearJiraDismissed(): Promise<JiraSyncSettings> {
+    const res = await fetch(`${BASE_URL}/connectors/jira/sync/dismissed`, { method: 'DELETE' })
+    if (!res.ok) throw new Error('Failed to restore dismissed JIRA issues')
     return res.json()
   },
 

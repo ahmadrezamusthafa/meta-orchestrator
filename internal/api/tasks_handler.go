@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -91,6 +92,10 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 			}
 			result = append(result, t)
 		}
+		if result == nil {
+			result = []*types.Task{}
+		}
+		sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
 		r.writeJSON(w, http.StatusOK, result)
 
 	case http.MethodPost:
@@ -106,8 +111,7 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 		}
 
 		r.mu.Lock()
-		taskNum := len(r.tasks) + 8945
-		taskID := fmt.Sprintf("TASK-%d", taskNum)
+		taskID := r.nextTaskIDLocked()
 
 		now := time.Now()
 		startStage := "prd_discovery"
@@ -173,18 +177,12 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 			CurrentStageIndex: startIndex,
 			State:             initialState,
 			ActiveSlice:       body.ActiveSlice,
-			AssignedRepos:     body.AssignedRepos,
+			AssignedRepos:     append([]string{}, body.AssignedRepos...),
 			Dependencies:      body.Dependencies,
 			ProfileName:       "orchestrator_agent",
 			SelectedMethod:    selectedMethod,
-			TokenUsage: types.TokenUsage{
-				PromptTokens:     1200,
-				CompletionTokens: 350,
-				TotalTokens:      1550,
-				EstimatedCostUSD: 0.009,
-			},
-			MaxTokenBudget: maxBudget,
-			ArtifactDir:    fmt.Sprintf(".sdlc/artifacts/%s", taskID),
+			MaxTokenBudget:    maxBudget,
+			ArtifactDir:       fmt.Sprintf(".sdlc/artifacts/%s", taskID),
 			Metadata: map[string]string{
 				"complexity":       body.Complexity,
 				"router_strategy":  body.RouterStrategy,
@@ -227,6 +225,7 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 		r.tasks[taskID] = newTask
 		createdCopy := cloneTask(newTask)
 		r.mu.Unlock()
+		r.saveBoardNow()
 
 		if len(unmetDeps) > 0 {
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
@@ -476,6 +475,13 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
 		r.writeJSON(w, http.StatusOK, taskSnapshot)
+	case http.MethodDelete:
+		removed, err := r.deleteTask(taskID)
+		if err != nil {
+			r.writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		r.writeJSON(w, http.StatusOK, map[string]interface{}{"status": "deleted", "task_id": taskID, "task": removed})
 	case http.MethodPatch, http.MethodPut:
 		var body struct {
 			CurrentStageID string          `json:"current_stage_id,omitempty"`
@@ -545,6 +551,7 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 		if completed {
 			r.startUnblockedDependents(taskID)
 		}
+		r.saveBoardNow()
 		taskCopy := r.taskSnapshot(taskID)
 		r.broadcastTask(taskCopy)
 

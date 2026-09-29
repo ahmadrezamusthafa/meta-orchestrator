@@ -32,6 +32,8 @@ func hermeticRouter(t *testing.T) *Router {
 	for _, p := range []string{"claude", "antigravity", "openai", "opencode"} {
 		r.clientFactory.OverrideProvider(p, stubProvider{})
 	}
+	r.seedFixtureTasks()
+	r.reconcileIdleRunning()
 	return r
 }
 

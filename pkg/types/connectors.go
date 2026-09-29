@@ -71,19 +71,19 @@ type ConnectorItem struct {
 	Category      ConnectorCategory      `json:"category"`       // e.g. "issue_tracker"
 	CategoryLabel string                 `json:"category_label"` // e.g. "Issue Tracking & Agile"
 	Description   string                 `json:"description"`
-	Icon          string                 `json:"icon"`           // icon identifier e.g. "jira", "confluence", "github", "gitlab", "bitbucket", "slack", "linear", "notion", "webhook"
-	Color         string                 `json:"color"`          // UI accent color
+	Icon          string                 `json:"icon"`  // icon identifier e.g. "jira", "confluence", "github", "gitlab", "bitbucket", "slack", "linear", "notion", "webhook"
+	Color         string                 `json:"color"` // UI accent color
 	Enabled       bool                   `json:"enabled"`
-	ConfigMode    string                 `json:"config_mode"`    // "rest", "mcp", "hybrid"
-	Status        string                 `json:"status"`         // "connected", "configured", "disabled", "unconfigured", "error"
+	ConfigMode    string                 `json:"config_mode"` // "rest", "mcp", "hybrid"
+	Status        string                 `json:"status"`      // "connected", "configured", "disabled", "unconfigured", "error"
 	BaseURL       string                 `json:"base_url"`
 	Username      string                 `json:"username"`
 	APIToken      string                 `json:"api_token"`
-	TargetEntity  string                 `json:"target_entity"`  // ProjectKey, SpaceKey, Channel, Repo
-	TargetLabel   string                 `json:"target_label"`   // e.g. "Default Project Key", "Documentation Space"
-	Capabilities  []string               `json:"capabilities"`   // e.g. ["Ticket Auto-Detect", "Issue Import", "Status Sync"]
+	TargetEntity  string                 `json:"target_entity"` // ProjectKey, SpaceKey, Channel, Repo
+	TargetLabel   string                 `json:"target_label"`  // e.g. "Default Project Key", "Documentation Space"
+	Capabilities  []string               `json:"capabilities"`  // e.g. ["Ticket Auto-Detect", "Issue Import", "Status Sync"]
 	ExtraSettings map[string]interface{} `json:"extra_settings,omitempty"`
-	MCP           *MCPConfig             `json:"mcp,omitempty"`  // MCP server integration
+	MCP           *MCPConfig             `json:"mcp,omitempty"` // MCP server integration
 	LastTestedAt  time.Time              `json:"last_tested_at,omitempty"`
 	LatencyMs     int64                  `json:"latency_ms,omitempty"`
 	ErrorMessage  string                 `json:"error_message,omitempty"`
@@ -125,6 +125,64 @@ type ConnectorsConfig struct {
 	Confluence ConfluenceConfig    `json:"confluence"`
 	Items      []*ConnectorItem    `json:"items,omitempty"`
 	Ping       ConnectorPingConfig `json:"ping"`
+	JiraSync   *JiraSyncConfig     `json:"jira_sync,omitempty"` // nil → DefaultJiraSyncConfig
+}
+
+// JiraSyncConfig holds the rules that keep the Kanban board in sync with JIRA.
+type JiraSyncConfig struct {
+	Enabled         bool              `json:"enabled"`
+	JQL             string            `json:"jql"`              // issues that belong on the board
+	IntervalSeconds int               `json:"interval_seconds"` // background sync period
+	MaxIssues       int               `json:"max_issues"`
+	WorkflowID      string            `json:"workflow_id"`
+	SelectedMethod  string            `json:"selected_method"`
+	AssignedRepos   []string          `json:"assigned_repos"`
+	DefaultStageID  string            `json:"default_stage_id"`
+	StatusStageMap  map[string]string `json:"status_stage_map,omitempty"` // JIRA status (case-insensitive) → starting stage
+	UpdateExisting  bool              `json:"update_existing"`            // refresh title/description/status of linked tasks
+	// ExcludeStatuses drops issues in these JIRA statuses (case-insensitive) on top of the enforced
+	// statusCategory != Done, for workflows whose "finished" statuses sit outside the Done category.
+	ExcludeStatuses []string `json:"exclude_statuses"`
+}
+
+// DefaultExcludedJiraStatuses are status names treated as finished work.
+var DefaultExcludedJiraStatuses = []string{"Done", "Finish", "Finished", "Closed", "Resolved", "Cancelled", "Canceled", "Won't Do"}
+
+// DefaultJiraSyncConfig syncs open issues assigned to the connected user into the first stage.
+func DefaultJiraSyncConfig() JiraSyncConfig {
+	return JiraSyncConfig{
+		Enabled:         true,
+		JQL:             "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC",
+		IntervalSeconds: 300,
+		MaxIssues:       50,
+		WorkflowID:      "general_ai_sdlc",
+		SelectedMethod:  "BMAD",
+		DefaultStageID:  "prd_discovery",
+		StatusStageMap:  map[string]string{},
+		UpdateExisting:  true,
+		ExcludeStatuses: append([]string(nil), DefaultExcludedJiraStatuses...),
+	}
+}
+
+// JiraSyncStatus reports the outcome of the most recent board sync.
+type JiraSyncStatus struct {
+	Connected   bool      `json:"connected"` // live JIRA credentials are configured
+	Running     bool      `json:"running"`
+	LastRunAt   time.Time `json:"last_run_at,omitempty"`
+	LastError   string    `json:"last_error,omitempty"`
+	Fetched     int       `json:"fetched"`
+	Created     int       `json:"created"`
+	Updated     int       `json:"updated"`
+	Skipped     int       `json:"skipped"`   // issues the operator removed from the board
+	Dismissed   int       `json:"dismissed"` // total dismissed issue keys
+	NextRunAt   time.Time `json:"next_run_at,omitempty"`
+	LinkedTasks int       `json:"linked_tasks"`
+}
+
+// JiraSyncSettings is the payload served by the board sync settings endpoint.
+type JiraSyncSettings struct {
+	Config JiraSyncConfig `json:"config"`
+	Status JiraSyncStatus `json:"status"`
 }
 
 // JiraIssueDTO represents an issue fetched or imported from JIRA.
@@ -139,6 +197,9 @@ type JiraIssueDTO struct {
 	Reporter    string `json:"reporter,omitempty"`
 	Assignee    string `json:"assignee,omitempty"`
 	Created     string `json:"created,omitempty"`
+	ParentKey   string `json:"parent_key,omitempty"`   // direct parent (epic for stories, story for sub-tasks)
+	EpicKey     string `json:"epic_key,omitempty"`     // owning epic; the issue's own key when it is an epic
+	EpicSummary string `json:"epic_summary,omitempty"` // owning epic's summary
 }
 
 // ImportJiraIssueRequest represents parameters to import a JIRA ticket into a Kanban task.
