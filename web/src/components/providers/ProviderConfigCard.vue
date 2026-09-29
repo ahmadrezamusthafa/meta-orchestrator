@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import type { ProviderDTO, OAuthStatus } from '../../types'
+import type { ProviderDTO, ProviderUsage, ProviderUsageWindow } from '../../types'
+import ProviderUsagePanel from './ProviderUsagePanel.vue'
 import { api } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import {
@@ -11,7 +12,12 @@ import {
 
 const props = defineProps<{
   provider: ProviderDTO
+  usage?: ProviderUsage
+  usageWindow: ProviderUsageWindow
+  usageLoading?: boolean
 }>()
+
+const emit = defineEmits<{ (e: 'usage-changed'): void }>()
 
 const toastStore = useToastStore()
 
@@ -177,15 +183,20 @@ async function saveSessionToken() {
   }
   isSavingSessionToken.value = true
   try {
-    await api.saveProviderConfig(props.provider.id, {
+    const res = await api.saveProviderConfig(props.provider.id, {
       session_token: sessionTokenInput.value.trim(),
       auth_method: 'session_token'
     })
     isSessionTokenConnected.value = true
-    toastStore.success(
-      `${props.provider.name} Session Configured`,
-      'Session token saved — browser session authentication active'
-    )
+    sessionTokenInput.value = ''
+    if (res?.warning) {
+      toastStore.warning(`${props.provider.name} Session Not Persisted`, res.warning)
+    } else {
+      toastStore.success(
+        `${props.provider.name} Session Configured`,
+        'Session token saved — it will survive daemon restarts'
+      )
+    }
   } catch (err: any) {
     toastStore.error('Save Failed', err.message || 'Unable to save session token')
   } finally {
@@ -767,6 +778,14 @@ async function addCustomModelToProvider() {
           </div>
         </div>
       </div>
+
+      <ProviderUsagePanel
+        :provider-id="provider.id"
+        :usage="usage"
+        :window="usageWindow"
+        :loading="usageLoading"
+        @quota-saved="emit('usage-changed')"
+      />
     </div>
   </div>
 </template>

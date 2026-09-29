@@ -135,19 +135,20 @@ func main() {
 	})
 
 	apiRouter := api.NewRouter(api.RouterConfig{
-		TaskStore:       taskStore,
-		WorkflowReg:     workflowReg,
-		ToolManager:     toolMgr,
-		ArtifactManager: artifactMgr,
-		ConfigResolver:  configResolver,
-		ProjectManager:  projectMgr,
-		SkillResolver:   skillResolver,
-		PromptRegistry:  promptReg,
-		WSHub:           wsHub,
-		RootDir:         cwd,
-		Telemetry:       telemetryConfig(cwd),
-		TaskStorePath:   filepath.Join(cwd, ".sdlc", "tasks.json"),
-		EnableJiraSync:  true,
+		TaskStore:         taskStore,
+		WorkflowReg:       workflowReg,
+		ToolManager:       toolMgr,
+		ArtifactManager:   artifactMgr,
+		ConfigResolver:    configResolver,
+		ProjectManager:    projectMgr,
+		SkillResolver:     skillResolver,
+		PromptRegistry:    promptReg,
+		WSHub:             wsHub,
+		RootDir:           cwd,
+		Telemetry:         telemetryConfig(cwd),
+		TaskStorePath:     filepath.Join(cwd, ".sdlc", "tasks.json"),
+		ProviderStatePath: filepath.Join(cwd, ".sdlc", "providers.json"),
+		EnableJiraSync:    true,
 	})
 	mux.Handle("/api/", apiRouter)
 

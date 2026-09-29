@@ -1,5 +1,5 @@
 import type { 
-  Task, TaskProcessDTO, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
+  Task, TaskProcessDTO, ToolDTO, ProviderDTO, ProviderUsage, ProviderUsageWindow, ProviderQuota, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
   Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse,
   ConnectorsConfig, JiraConfig, ConfluenceConfig, JiraIssueDTO, ImportJiraIssueRequest,
   JiraSyncConfig, JiraSyncSettings,
@@ -298,6 +298,25 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Failed to save provider config' }))
       throw new Error(err.error || 'Failed to save provider config')
+    }
+    return res.json()
+  },
+
+  async getProviderUsage(window: ProviderUsageWindow = '7d', refresh = false): Promise<{ window: ProviderUsageWindow; generated_at: string; providers: ProviderUsage[] }> {
+    const res = await fetch(`${BASE_URL}/providers/usage?window=${window}${refresh ? '&refresh=1' : ''}`)
+    if (!res.ok) throw new Error('Failed to fetch provider usage')
+    return res.json()
+  },
+
+  async saveProviderQuota(providerId: string, quota: ProviderQuota): Promise<any> {
+    const res = await fetch(`${BASE_URL}/providers/quota`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId, ...quota })
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to save quota' }))
+      throw new Error(err.error || 'Failed to save quota')
     }
     return res.json()
   },

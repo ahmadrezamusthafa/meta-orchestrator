@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -181,12 +182,13 @@ func (r *Router) handleProviders(w http.ResponseWriter, req *http.Request) {
 
 	case http.MethodPost:
 		var body struct {
-			ProviderID   string `json:"provider_id"`
-			APIKey       string `json:"api_key"`
-			SessionToken string `json:"session_token"`
-			AuthMethod   string `json:"auth_method"`
-			BaseURL      string `json:"base_url"`
-			Model        string `json:"model"`
+			ProviderID string `json:"provider_id"`
+			APIKey     string `json:"api_key"`
+			// SessionToken is a pointer so an explicit "" (clear) differs from "not sent".
+			SessionToken *string `json:"session_token"`
+			AuthMethod   string  `json:"auth_method"`
+			BaseURL      string  `json:"base_url"`
+			Model        string  `json:"model"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			r.writeError(w, http.StatusBadRequest, "Invalid JSON payload")
@@ -198,36 +200,9 @@ func (r *Router) handleProviders(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		authMethod := body.AuthMethod
-		if authMethod == "" {
-			if body.SessionToken != "" {
-				authMethod = "session_token"
-			} else {
-				authMethod = "api_key"
-			}
-		}
-
-		state := &ProviderAuthState{
-			AuthMethod: authMethod,
-			SavedAt:    time.Now(),
-		}
-
-		switch authMethod {
-		case "session_token":
-			if body.SessionToken == "" {
-				// Clearing session token — revert to api_key
-				state.AuthMethod = "api_key"
-			} else {
-				state.SessionToken = body.SessionToken
-				state.MaskedKey = maskToken(body.SessionToken)
-			}
-		case "api_key":
-			if body.APIKey != "" {
-				state.APIKey = body.APIKey
-				state.MaskedKey = maskToken(body.APIKey)
-			}
-		}
-
+		providerAuthStore.mu.Lock()
+		state := applyProviderAuthUpdate(providerAuthStore.state[body.ProviderID], body.AuthMethod, body.APIKey, body.SessionToken)
+		providerAuthStore.state[body.ProviderID] = state
 		if body.Model != "" {
 			for i := range defaultProviders {
 				if defaultProviders[i].ID == body.ProviderID {
@@ -236,18 +211,23 @@ func (r *Router) handleProviders(w http.ResponseWriter, req *http.Request) {
 				}
 			}
 		}
-
-		providerAuthStore.mu.Lock()
-		providerAuthStore.state[body.ProviderID] = state
-		providerAuthStore.mu.Unlock()
-
-		r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		saveErr := saveProviderStateLocked()
+		resp := map[string]interface{}{
 			"status":      "saved",
 			"provider_id": body.ProviderID,
 			"auth_method": state.AuthMethod,
 			"masked_key":  state.MaskedKey,
 			"updated":     state.SavedAt,
-		})
+		}
+		providerAuthStore.mu.Unlock()
+
+		if saveErr != nil {
+			// The change is live for this daemon run but will not survive a restart — say so.
+			fmt.Printf("[Providers] State not persisted: %v\n", saveErr)
+			resp["persisted"] = false
+			resp["warning"] = "saved for this session only: " + saveErr.Error()
+		}
+		r.writeJSON(w, http.StatusOK, resp)
 
 	default:
 		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -561,6 +541,50 @@ func (r *Router) handleProviderTest(w http.ResponseWriter, req *http.Request) {
 		"latency_ms":  latency,
 		"timestamp":   time.Now(),
 	})
+}
+
+// applyProviderAuthUpdate merges one POST /providers into the provider's existing auth state.
+// Fields the request leaves out keep their saved value: changing only the default model must not
+// drop a saved session token or API key.
+func applyProviderAuthUpdate(prev *ProviderAuthState, authMethod, apiKey string, sessionToken *string) *ProviderAuthState {
+	state := &ProviderAuthState{AuthMethod: "api_key"}
+	if prev != nil {
+		cp := *prev
+		state = &cp
+	}
+	if authMethod == "" && apiKey == "" && sessionToken == nil {
+		return state // e.g. a model-only update
+	}
+
+	if apiKey != "" {
+		state.APIKey = apiKey
+	}
+	if sessionToken != nil {
+		state.SessionToken = *sessionToken
+	}
+	switch {
+	case authMethod != "":
+		state.AuthMethod = authMethod
+	case sessionToken != nil && *sessionToken != "":
+		state.AuthMethod = "session_token"
+	case apiKey != "":
+		state.AuthMethod = "api_key"
+	}
+	if state.AuthMethod == "session_token" && state.SessionToken == "" {
+		state.AuthMethod = "api_key" // clearing the session token falls back to the API key
+	}
+
+	state.MaskedKey = ""
+	switch state.AuthMethod {
+	case "session_token":
+		state.MaskedKey = maskToken(state.SessionToken)
+	case "api_key":
+		if state.APIKey != "" {
+			state.MaskedKey = maskToken(state.APIKey)
+		}
+	}
+	state.SavedAt = time.Now()
+	return state
 }
 
 // maskToken masks a token for safe display, showing first 6 and last 4 chars.
