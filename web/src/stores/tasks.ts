@@ -339,46 +339,34 @@ export const useTaskStore = defineStore('tasks', () => {
     })
   }
 
-  async function executeTask(taskId: string) {
+  const pendingActions = ref<Record<string, boolean>>({})
+
+  // Runs a lifecycle action and applies the task the daemon returns — the UI never guesses the
+  // resulting state. The console shows the details; toasts only report failures.
+  async function performTaskAction(taskId: string, kind: 'run' | 'resume' | 'pause' | 'reset') {
+    if (pendingActions.value[taskId]) return
+    pendingActions.value = { ...pendingActions.value, [taskId]: true }
+    const call = { run: api.executeTask, resume: api.resumeTask, pause: api.pauseTask, reset: api.resetWorkspace }[kind]
+    const label = { run: 'Run', resume: 'Resume', pause: 'Pause', reset: 'Reset' }[kind]
     try {
-      const res = await api.executeTask(taskId)
-      toastStore.success('9Router AI Dispatched', `Task ${taskId} execution started with multi-provider routing`)
+      const res = await call(taskId)
+      if (res?.task) replaceTask(res.task)
+      else await fetchTask(taskId)
       return res
     } catch (err: any) {
-      toastStore.error('Execution Failed', err?.message || 'Failed to dispatch AI execution')
+      toastStore.error(`${label} failed`, err?.message || `Could not ${label.toLowerCase()} ${taskId}`)
+      await fetchTask(taskId)
       throw err
+    } finally {
+      const next = { ...pendingActions.value }
+      delete next[taskId]
+      pendingActions.value = next
     }
   }
 
-  async function resumeTask(taskId: string) {
-    try {
-      const res = await api.resumeTask(taskId)
-      const task = tasks.value.find(t => t.id === taskId)
-      if (task) {
-        task.state = 'RUNNING'
-      }
-      toastStore.success('Session Resumed', `Task ${taskId} execution resumed with active context`)
-      return res
-    } catch (err: any) {
-      toastStore.error('Resume Failed', err?.message || 'Failed to resume session')
-      throw err
-    }
-  }
-
-  async function pauseTask(taskId: string) {
-    try {
-      const res = await api.pauseTask(taskId)
-      const task = tasks.value.find(t => t.id === taskId)
-      if (task) {
-        task.state = 'SUSPENDED'
-      }
-      toastStore.info('Session Paused', `Task ${taskId} paused. Preserved context ready to resume.`)
-      return res
-    } catch (err: any) {
-      toastStore.error('Pause Failed', err?.message || 'Failed to pause session')
-      throw err
-    }
-  }
+  const executeTask = (taskId: string) => performTaskAction(taskId, 'run')
+  const resumeTask = (taskId: string) => performTaskAction(taskId, 'resume')
+  const pauseTask = (taskId: string) => performTaskAction(taskId, 'pause')
 
   return {
     tasks,
@@ -411,6 +399,8 @@ export const useTaskStore = defineStore('tasks', () => {
     executeTask,
     resumeTask,
     pauseTask,
+    performTaskAction,
+    pendingActions,
     injectContext,
     resetWorkspace,
     updateGate,

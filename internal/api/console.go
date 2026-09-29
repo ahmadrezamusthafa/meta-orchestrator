@@ -307,9 +307,28 @@ func shortID(id string) string {
 	return id
 }
 
-// resolveWorkDir picks a real directory for agentic providers: the task's process dir if it
-// exists, else the first assigned repo's registered path, else the orchestrator root.
+// resolveWorkDir picks a real directory for agentic providers: the task's git worktree (the
+// worktree root when several repos are assigned), else the task's process dir if it exists, else
+// the first assigned repo's registered path, else the orchestrator root.
 func (r *Router) resolveWorkDir(task *types.Task) string {
+	var ready []string
+	checkouts := map[string]bool{}
+	for _, wt := range r.ensureTaskWorktrees(context.Background(), task.ID) {
+		if wt.Exists && wt.Error == "" {
+			ready = append(ready, wt.Dir)
+			checkouts[wt.Checkout] = true
+		}
+	}
+	switch {
+	case len(ready) == 1:
+		return ready[0]
+	case len(checkouts) == 1: // several repos inside one git repository
+		for c := range checkouts {
+			return c
+		}
+	case len(ready) > 1:
+		return r.taskWorktreeRoot(task.ID)
+	}
 	r.mu.RLock()
 	proc := r.taskProcesses[task.ID]
 	r.mu.RUnlock()

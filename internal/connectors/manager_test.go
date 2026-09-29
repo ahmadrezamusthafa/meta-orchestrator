@@ -198,3 +198,18 @@ func TestIssueEpicResolution(t *testing.T) {
 		t.Fatalf("legacy Epic Link: %+v", d)
 	}
 }
+
+func TestNewDefaultExclusionsReachSavedRules(t *testing.T) {
+	mgr := NewManager(t.TempDir())
+	mgr.mu.Lock()
+	mgr.config.JiraSync = &types.JiraSyncConfig{JQL: "project = PAY", ExcludeStatuses: []string{"Done"}, DefaultsVersion: 1}
+	mgr.mu.Unlock()
+	cfg := mgr.GetJiraSyncConfig()
+	if !containsFold(cfg.ExcludeStatuses, "Won't Fix") || len(cfg.ExcludeStatuses) != 2 {
+		t.Fatalf("Won't Fix should be added to older saved rules without restoring others: %v", cfg.ExcludeStatuses)
+	}
+	saved, _ := mgr.UpdateJiraSyncConfig(types.JiraSyncConfig{JQL: "x", ExcludeStatuses: []string{"Done"}})
+	if containsFold(saved.ExcludeStatuses, "Won't Fix") || containsFold(mgr.GetJiraSyncConfig().ExcludeStatuses, "Won't Fix") {
+		t.Fatalf("an operator who removes Won't Fix keeps it removed: %v", mgr.GetJiraSyncConfig().ExcludeStatuses)
+	}
+}

@@ -128,13 +128,10 @@ onUnmounted(() => {
         </div>
         <div class="flex flex-wrap gap-x-3 gap-y-0.5">
           <span>status <span class="text-slate-200">{{ processInfo.status }}</span></span>
-          <span>pid <span class="text-slate-200">{{ processInfo.process_id || '—' }}</span></span>
           <span>step <span class="text-slate-200">{{ processInfo.current_step || '—' }}</span></span>
-          <span>cpu <span class="text-slate-200">{{ processInfo.cpu_percent }}%</span></span>
-          <span>mem <span class="text-slate-200">{{ processInfo.memory_mb }} MB</span></span>
-          <span class="flex items-center gap-1">
-            <Folder class="h-3 w-3" />
-            <span class="text-slate-200">{{ processInfo.working_dir || processInfo.container_id || '—' }}</span>
+          <span class="flex items-center gap-1 min-w-0" title="Directory the agent works in">
+            <Folder class="h-3 w-3 flex-shrink-0" />
+            <span class="text-slate-200 truncate">{{ processInfo.working_dir || 'set on first run' }}</span>
           </span>
         </div>
       </div>

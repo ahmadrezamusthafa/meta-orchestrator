@@ -222,6 +222,10 @@ func (r *Router) deleteTask(taskID string) (*types.Task, error) {
 	delete(r.console.consoles, taskID)
 	r.console.mu.Unlock()
 
+	if kept := r.removeTaskWorktrees(removed); len(kept) > 0 {
+		fmt.Printf("[Tasks] Kept worktrees with uncommitted work for deleted %s: %s\n", taskID, strings.Join(kept, ", "))
+	}
+
 	r.saveBoardNow()
 	if r.cfg.WSHub != nil {
 		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{Type: types.EventTaskDeleted, TaskID: taskID, Timestamp: time.Now(),

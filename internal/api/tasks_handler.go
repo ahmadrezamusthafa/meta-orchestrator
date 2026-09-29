@@ -29,6 +29,7 @@ type CreateTaskRequest struct {
 	MaxTokenBudget   int64             `json:"max_token_budget,omitempty"`
 	Complexity       string            `json:"complexity,omitempty"`
 	UseWorktree      bool              `json:"use_worktree,omitempty"`
+	DisableWorktree  bool              `json:"disable_worktree,omitempty"` // work directly in the source checkout
 }
 
 type InjectContextRequest struct {
@@ -189,8 +190,7 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 				"source_branch":    body.SourceBranch,
 				"router_source":    "BP",
 				"router_rationale": fmt.Sprintf("Routed via %s to %s method", body.RouterStrategy, selectedMethod),
-				"worktree_enabled": "true",
-				"worktree_branch":  fmt.Sprintf("feat/%s-worktree", strings.ToLower(taskID)),
+				"worktree_enabled": fmt.Sprint(body.UseWorktree || !body.DisableWorktree),
 			},
 			CreatedAt: now,
 			UpdatedAt: now,
@@ -207,6 +207,8 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 				newTask.Metadata["jira_url"] = r.cfg.ConnectorsManager.GetJiraURL(detectedKey)
 			}
 		}
+
+		newTask.Metadata["worktree_branch"] = plannedBranch(newTask)
 
 		if body.ActiveSlice != nil && body.ActiveSlice.ProduceVideo {
 			newTask.Metadata["video_url"] = fmt.Sprintf("/api/v1/artifacts/%s/videos/run_final.mp4", taskID)
@@ -404,25 +406,15 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			return
 
 		case "worktree":
-			if req.Method != http.MethodGet {
-				r.writeError(w, http.StatusMethodNotAllowed, "GET required for worktree")
-				return
-			}
-			branch := task.Metadata["worktree_branch"]
-			if branch == "" {
-				branch = fmt.Sprintf("feat/%s-worktree", strings.ToLower(taskID))
-			}
-			r.writeJSON(w, http.StatusOK, map[string]interface{}{
-				"task_id":            taskID,
-				"is_worktree":        true,
-				"use_worktree":       true,
-				"worktree_path":      fmt.Sprintf(".worktrees/%s", strings.ToLower(taskID)),
-				"branch":             branch,
-				"base_ref":           "main",
-				"parallel_isolation": true,
-				"status":             "ACTIVE",
-				"assigned_repos":     task.AssignedRepos,
-			})
+			r.handleTaskWorktree(w, req, taskSnapshot)
+			return
+
+		case "diff":
+			r.handleTaskDiff(w, req, taskSnapshot)
+			return
+
+		case "artifacts":
+			r.handleTaskArtifacts(w, req, taskID)
 			return
 
 		case "dependencies":
@@ -487,10 +479,24 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			CurrentStageID string          `json:"current_stage_id,omitempty"`
 			Stage          string          `json:"stage,omitempty"`
 			State          types.TaskState `json:"state,omitempty"`
+			AssignedRepos  *[]string       `json:"assigned_repos,omitempty"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			r.writeError(w, http.StatusBadRequest, "Invalid JSON payload")
 			return
+		}
+		if body.AssignedRepos != nil {
+			if err := r.assignRepos(taskID, *body.AssignedRepos); err != nil {
+				r.writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if body.CurrentStageID == "" && body.Stage == "" && body.State == "" {
+				r.saveBoardNow()
+				snap := r.taskSnapshot(taskID)
+				r.broadcastTask(snap)
+				r.writeJSON(w, http.StatusOK, snap)
+				return
+			}
 		}
 		if body.CurrentStageID == "" && body.Stage != "" {
 			body.CurrentStageID = body.Stage

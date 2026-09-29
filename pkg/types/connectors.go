@@ -143,10 +143,19 @@ type JiraSyncConfig struct {
 	// ExcludeStatuses drops issues in these JIRA statuses (case-insensitive) on top of the enforced
 	// statusCategory != Done, for workflows whose "finished" statuses sit outside the Done category.
 	ExcludeStatuses []string `json:"exclude_statuses"`
+	// DefaultsVersion records which built-in exclusions the saved rules already include, so new
+	// defaults (e.g. "Won't Fix") reach existing installs without re-adding ones the operator removed.
+	DefaultsVersion int `json:"defaults_version,omitempty"`
 }
 
+// JiraSyncDefaultsVersion is bumped whenever DefaultExcludedJiraStatuses gains an entry.
+const JiraSyncDefaultsVersion = 2
+
+// JiraStatusesAddedIn lists the default exclusions introduced by each defaults version.
+var JiraStatusesAddedIn = map[int][]string{2: {"Won't Fix"}}
+
 // DefaultExcludedJiraStatuses are status names treated as finished work.
-var DefaultExcludedJiraStatuses = []string{"Done", "Finish", "Finished", "Closed", "Resolved", "Cancelled", "Canceled", "Won't Do"}
+var DefaultExcludedJiraStatuses = []string{"Done", "Finish", "Finished", "Closed", "Resolved", "Cancelled", "Canceled", "Won't Do", "Won't Fix"}
 
 // DefaultJiraSyncConfig syncs open issues assigned to the connected user into the first stage.
 func DefaultJiraSyncConfig() JiraSyncConfig {
@@ -161,6 +170,7 @@ func DefaultJiraSyncConfig() JiraSyncConfig {
 		StatusStageMap:  map[string]string{},
 		UpdateExisting:  true,
 		ExcludeStatuses: append([]string(nil), DefaultExcludedJiraStatuses...),
+		DefaultsVersion: JiraSyncDefaultsVersion,
 	}
 }
 

@@ -222,8 +222,12 @@ func (r *Router) executeStage(run *stageRun) {
 	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method)}}, history...)
 	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: stagePrompt(task, run.feedback)})
 
+	workDir := r.resolveWorkDir(task)
+	r.mu.Lock()
+	r.getOrCreateTaskProcessLocked(taskID).WorkingDir = workDir
+	r.mu.Unlock()
 	resp, used, execErr := r.runAgentTurn(run.ctx, agentTurn{Source: "execute", TurnID: run.turnID, Task: task, Decision: decision,
-		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: r.resolveWorkDir(task), MaxTokens: 8192})
+		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, MaxTokens: 8192})
 	r.endTurn(taskID, run.turnID, resp, used)
 
 	r.settleStage(taskID, task.CurrentStageID, resp, used, execErr)
@@ -276,6 +280,10 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 	if r.telemetry != nil {
 		runRec, haveRun = r.telemetry.ttr.Finish(taskID, execErr == nil)
 		go func() { _, _ = r.recalibrate(context.Background()) }()
+	}
+
+	if execErr == nil && resp != nil {
+		r.saveStageDocument(taskID, stage, model, resp.Content)
 	}
 
 	var note string

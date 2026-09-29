@@ -2,9 +2,7 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +58,7 @@ type Router struct {
 	dismissedJira map[string]bool // JIRA keys the operator removed from the board; guarded by mu
 	jira          *jiraSyncState
 	persistMu     sync.Mutex
+	worktreeMu    sync.Mutex // serializes git worktree creation/removal
 	lastPersisted []byte
 	stop          chan struct{}
 	closeOnce     sync.Once
@@ -131,41 +130,20 @@ func NewRouter(cfg RouterConfig) *Router {
 	return r
 }
 
+// getOrCreateTaskProcessLocked returns the task's run record. A new record reflects the task as it
+// is — it never claims a process, container or resources that do not exist. Caller holds r.mu.
 func (r *Router) getOrCreateTaskProcessLocked(taskID string) *types.TaskProcessInfo {
 	if proc, ok := r.taskProcesses[taskID]; ok {
 		return proc
 	}
-
-	task := r.tasks[taskID]
-	title := taskID
-	method := "BMAD"
-	step := "Step 1 of 7: Discovery"
-	if task != nil {
-		title = task.Title
-		method = task.SelectedMethod
-		step = fmt.Sprintf("Step %d of 7: %s (%s Method)", task.CurrentStageIndex+1, task.CurrentStageID, method)
-	}
-
-	now := time.Now()
-	proc := &types.TaskProcessInfo{
-		TaskID:          taskID,
-		ProcessID:       4900 + len(r.taskProcesses),
-		Command:         fmt.Sprintf("orchestrator run-stage --task=%s --method=%s", taskID, method),
-		WorkingDir:      fmt.Sprintf("/workspaces/%s", taskID),
-		ContainerID:     fmt.Sprintf("orch-sandbox-%s", strings.ToLower(taskID)),
-		Status:          "RUNNING",
-		StartedAt:       now,
-		DurationSeconds: 120,
-		CPUPercent:      12.5,
-		MemoryMB:        96.0,
-		CurrentStep:     step,
-		ActiveAgent:     "orchestrator_agent",
-		Logs: []string{
-			fmt.Sprintf("[%s] \x1b[36m[Orchestrator]\x1b[0m Container sandbox initialized on isolated docker network.", now.Format("15:04:05")),
-			fmt.Sprintf("[%s] \x1b[32m[Task Coordinator]\x1b[0m Active background process started for %s.", now.Format("15:04:05"), title),
-			fmt.Sprintf("[%s] \x1b[34m[Process Spawn]\x1b[0m Spawned PID %d: `orchestrator run-stage --task=%s --method=%s`", now.Format("15:04:05"), 4900+len(r.taskProcesses), taskID, method),
-			fmt.Sprintf("[%s] \x1b[36m[Console Stream]\x1b[0m STDOUT / STDERR live streaming active.", now.Format("15:04:05")),
-		},
+	proc := &types.TaskProcessInfo{TaskID: taskID, Status: "IDLE", CurrentStep: "Not running", Logs: []string{}}
+	if task := r.tasks[taskID]; task != nil {
+		proc.ActiveAgent = task.SelectedMethod
+		if task.State == types.TaskStateRunning {
+			proc.Status = "RUNNING"
+			proc.StartedAt = task.UpdatedAt
+			proc.CurrentStep = "Running " + stageLabel(task.CurrentStageID)
+		}
 	}
 	r.taskProcesses[taskID] = proc
 	return proc

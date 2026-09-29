@@ -42,15 +42,71 @@ export interface Task {
   updated_at: string
 }
 
+export interface TaskRepoWorktreeDTO {
+  repo: string
+  source_path: string
+  worktree_path: string
+  checkout_path: string
+  sub_path?: string
+  branch: string
+  base_ref: string
+  exists: boolean
+  dirty: boolean
+  error?: string
+}
+
 export interface TaskWorktreeDTO {
   task_id: string
   is_worktree: boolean
+  use_worktree: boolean
   worktree_path: string
   branch: string
   base_ref: string
   parallel_isolation: boolean
-  status: string
+  status: 'PLANNED' | 'ACTIVE' | 'DISABLED' | 'NO_REPOS' | string
   assigned_repos?: string[]
+  repos?: TaskRepoWorktreeDTO[]
+  error?: string
+}
+
+export interface TaskArtifactDTO {
+  path: string
+  name: string
+  kind: 'stage_output' | 'document' | 'media' | 'other'
+  stage_id?: string
+  size: number
+  modified_at: string
+}
+
+export type DiffAgainst = 'base' | 'head'
+
+export interface DiffFileDTO {
+  path: string
+  old_path?: string
+  status: 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked'
+  additions: number
+  deletions: number
+  binary?: boolean
+}
+
+export interface RepoDiffDTO {
+  repo: string
+  branch?: string
+  base_ref?: string
+  compare_ref?: string
+  commits?: { sha: string; subject: string }[]
+  files?: DiffFileDTO[]
+  additions?: number
+  deletions?: number
+  patch?: string
+  truncated?: boolean
+  error?: string
+}
+
+export interface TaskDiffDTO {
+  task_id: string
+  against: DiffAgainst
+  repos: RepoDiffDTO[]
 }
 
 export interface TaskDependencyInfoDTO {

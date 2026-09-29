@@ -1,0 +1,136 @@
+import type { Task } from '../types'
+
+/**
+ * Single source of truth for "what is this task doing and what can I do next".
+ * Every surface (Kanban card, task header, console status bar) renders from this so they never
+ * disagree. It is derived only from the task state the daemon reports.
+ */
+
+/** Default SDLC stage order (mirrors the backend stage controller). */
+export const STAGES = [
+  'prd_discovery', 'atdd_creation', 'techdoc_rfc', 'task_breakdown',
+  'task_implementation', 'e2e_validation', 'uat_verification', 'signoff_merge',
+] as const
+
+const STAGE_NAMES: Record<string, string> = {
+  prd_discovery: 'PRD Discovery',
+  atdd_creation: 'ATDD Creation',
+  techdoc_rfc: 'Technical RFC',
+  task_breakdown: 'Task Breakdown',
+  task_implementation: 'Implementation',
+  e2e_validation: 'E2E Validation',
+  uat_verification: 'UAT Verification',
+  signoff_merge: 'Sign-off & Merge',
+}
+
+export function stageName(id?: string): string {
+  if (!id) return 'Unknown stage'
+  return STAGE_NAMES[id] || id.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+export function stagePosition(id?: string): { index: number; total: number } {
+  return { index: STAGES.indexOf((id || '') as (typeof STAGES)[number]), total: STAGES.length }
+}
+
+export type ActionKind = 'run' | 'resume' | 'pause' | 'reset' | 'review'
+export type Tone = 'active' | 'idle' | 'warn' | 'error' | 'done' | 'review' | 'waiting'
+
+export interface TaskAction {
+  kind: ActionKind
+  label: string
+  hint: string
+}
+
+export interface Lifecycle {
+  tone: Tone
+  /** Short status for badges: "Running", "Ready", "Needs review"… */
+  status: string
+  /** One-line sentence: what is happening right now. */
+  title: string
+  /** What the operator should know or do. */
+  detail: string
+  /** The single recommended next action, if any. */
+  primary?: TaskAction
+  /** True only while an agent is actually working. */
+  isRunning: boolean
+}
+
+export function taskLifecycle(task: Task | null | undefined, opts: { busy?: boolean } = {}): Lifecycle | null {
+  if (!task) return null
+  const s = stageName(task.current_stage_id)
+  const meta = task.metadata || {}
+  switch (task.state) {
+    case 'RUNNING':
+      return {
+        tone: 'active', status: 'Running', isRunning: true,
+        title: opts.busy === false ? `Starting ${s}…` : `Agent is working on ${s}`,
+        detail: 'Live activity streams in the console. Pause to stop the agent; you can resume later.',
+        primary: { kind: 'pause', label: 'Pause', hint: 'Stop the agent now. Resume later to run this stage again.' },
+      }
+    case 'PENDING':
+      return {
+        tone: 'idle', status: 'Ready', isRunning: false,
+        title: `Ready to run ${s}`,
+        detail: 'Nothing is running yet. Start the stage, or ask the agent a question first.',
+        primary: { kind: 'run', label: 'Run stage', hint: `Start the agent on ${s}.` },
+      }
+    case 'SUSPENDED':
+      return {
+        tone: 'warn', status: 'Paused', isRunning: false,
+        title: `Paused at ${s}`,
+        detail: 'Nothing is running. Resume to run this stage again with the conversation so far.',
+        primary: { kind: 'resume', label: 'Resume', hint: `Run ${s} again.` },
+      }
+    case 'FAILED':
+      return {
+        tone: 'error', status: 'Failed', isRunning: false,
+        title: `${s} failed`,
+        detail: meta.last_error || 'The last run ended with an error.',
+        primary: { kind: 'run', label: 'Retry', hint: `Run ${s} again.` },
+      }
+    case 'BLOCKED_FRUSTRATION':
+      return {
+        tone: 'error', status: 'Blocked', isRunning: false,
+        title: `Blocked at ${s} after repeated failures`,
+        detail: 'Give the agent guidance, or reset the failure counter and retry.',
+        primary: { kind: 'reset', label: 'Reset & retry', hint: 'Clear failure counters and run the stage again.' },
+      }
+    case 'WAITING_DEPENDENCY': {
+      const deps = meta.unmet_dependencies || (task.dependencies || []).join(', ')
+      return {
+        tone: 'waiting', status: 'Waiting', isRunning: false,
+        title: `Waiting for ${deps || 'prerequisite tasks'}`,
+        detail: 'Starts automatically when its prerequisites are completed.',
+      }
+    }
+    case 'WAITING_GATE_APPROVAL':
+      return {
+        tone: 'review', status: 'Needs review', isRunning: false,
+        title: `${s} is ready for your review`,
+        detail: 'Read the output, then approve to continue or reject with feedback.',
+        primary: { kind: 'review', label: 'Review', hint: 'Open the task to approve or request changes.' },
+      }
+    case 'COMPLETED':
+      return { tone: 'done', status: 'Completed', isRunning: false, title: 'Completed', detail: 'All stages were approved.' }
+    default:
+      return { tone: 'idle', status: task.state, isRunning: false, title: task.state, detail: '' }
+  }
+}
+
+export const TONE_BADGE: Record<Tone, string> = {
+  active: 'bg-sky-950/70 border-sky-700/70 text-sky-300',
+  idle: 'bg-slate-800 border-slate-700 text-slate-300',
+  warn: 'bg-amber-950/70 border-amber-700/70 text-amber-300',
+  error: 'bg-rose-950/70 border-rose-700/70 text-rose-300',
+  done: 'bg-emerald-950/70 border-emerald-700/70 text-emerald-300',
+  review: 'bg-violet-950/70 border-violet-700/70 text-violet-300',
+  waiting: 'bg-orange-950/60 border-orange-800/70 text-orange-300',
+}
+
+export const ACTION_BUTTON: Record<ActionKind, string> = {
+  run: 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500',
+  resume: 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500',
+  pause: 'bg-amber-950/80 hover:bg-amber-900 text-amber-200 border-amber-700/80',
+  reset: 'bg-rose-950/80 hover:bg-rose-900 text-rose-200 border-rose-700/80',
+  review: 'bg-violet-600 hover:bg-violet-500 text-white border-violet-500',
+}

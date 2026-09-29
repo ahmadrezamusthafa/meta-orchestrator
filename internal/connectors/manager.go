@@ -2541,6 +2541,15 @@ func (m *Manager) QueryJiraIssues(ctx context.Context, jql string, maxResults in
 
 var jqlOrderBy = regexp.MustCompile(`(?i)\s+order\s+by\s+`)
 
+func containsFold(list []string, s string) bool {
+	for _, v := range list {
+		if strings.EqualFold(strings.TrimSpace(v), s) {
+			return true
+		}
+	}
+	return false
+}
+
 // OpenOnlyJQL restricts any JQL to unfinished issues, keeping its ORDER BY clause.
 func OpenOnlyJQL(jql string) string {
 	where, order := strings.TrimSpace(jql), ""
@@ -2674,9 +2683,18 @@ func (m *Manager) GetJiraSyncConfig() types.JiraSyncConfig {
 	cfg.AssignedRepos = append([]string(nil), cfg.AssignedRepos...)
 	if cfg.ExcludeStatuses == nil { // rules saved before the field existed
 		cfg.ExcludeStatuses = append([]string(nil), types.DefaultExcludedJiraStatuses...)
+		cfg.DefaultsVersion = types.JiraSyncDefaultsVersion
 	} else {
 		cfg.ExcludeStatuses = append([]string{}, cfg.ExcludeStatuses...)
 	}
+	for v := cfg.DefaultsVersion + 1; v <= types.JiraSyncDefaultsVersion; v++ {
+		for _, st := range types.JiraStatusesAddedIn[v] {
+			if !containsFold(cfg.ExcludeStatuses, st) {
+				cfg.ExcludeStatuses = append(cfg.ExcludeStatuses, st)
+			}
+		}
+	}
+	cfg.DefaultsVersion = types.JiraSyncDefaultsVersion
 	cfg.StatusStageMap = make(map[string]string, len(m.config.JiraSync.StatusStageMap))
 	for k, v := range m.config.JiraSync.StatusStageMap {
 		cfg.StatusStageMap[k] = v
@@ -2720,6 +2738,7 @@ func (m *Manager) UpdateJiraSyncConfig(cfg types.JiraSyncConfig) (types.JiraSync
 		}
 	}
 	cfg.ExcludeStatuses = excluded
+	cfg.DefaultsVersion = types.JiraSyncDefaultsVersion // the operator has seen the current defaults
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

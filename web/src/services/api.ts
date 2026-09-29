@@ -9,7 +9,7 @@ import type {
   PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
   OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO,
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
-  TaskActivityResponse, TaskChatResponse
+  TaskActivityResponse, TaskChatResponse, TaskDiffDTO, DiffAgainst, TaskArtifactDTO
 } from '../types'
 
 
@@ -139,7 +139,7 @@ export const api = {
     return res.json()
   },
 
-  async patchTask(taskId: string, payload: { current_stage_id?: string; state?: string }): Promise<Task> {
+  async patchTask(taskId: string, payload: { current_stage_id?: string; state?: string; assigned_repos?: string[] }): Promise<Task> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -148,6 +148,23 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => null)
       throw new Error(err?.error || `Failed to update task ${taskId}`)
+    }
+    return res.json()
+  },
+
+  async getTaskArtifacts(taskId: string): Promise<{ task_id: string; artifacts: TaskArtifactDTO[] }> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/artifacts`)
+    if (!res.ok) throw new Error(`Failed to list documents for ${taskId}`)
+    return res.json()
+  },
+
+  async getTaskDiff(taskId: string, against: DiffAgainst, repo?: string): Promise<TaskDiffDTO> {
+    const q = new URLSearchParams({ against })
+    if (repo) q.set('repo', repo)
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/diff?${q.toString()}`)
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || `Failed to load changes for ${taskId}`)
     }
     return res.json()
   },
@@ -352,8 +369,13 @@ export const api = {
   },
 
   // Artifacts
-  async getArtifact(taskId: string, filename: string): Promise<{ task_id: string; filename: string; content: string }> {
-    const res = await fetch(`${BASE_URL}/artifacts/${taskId}/${filename}`)
+  async getArtifact(taskId: string, filename: string): Promise<{ task_id: string; filename: string; content: string; modified_at?: string }> {
+    const path = filename.split('/').map(encodeURIComponent).join('/')
+    const res = await fetch(`${BASE_URL}/artifacts/${encodeURIComponent(taskId)}/${path}`)
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || `Could not open ${filename}`)
+    }
     return res.json()
   },
 

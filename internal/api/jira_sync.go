@@ -86,6 +86,8 @@ func (r *Router) newJiraTaskLocked(issue types.JiraIssueDTO, opts jiraTaskOption
 		UpdatedAt: now,
 	}
 	applyJiraFields(task, issue)
+	task.Metadata["worktree_enabled"] = "true"
+	task.Metadata["worktree_branch"] = plannedBranch(task)
 	r.tasks[taskID] = task
 	return task
 }
