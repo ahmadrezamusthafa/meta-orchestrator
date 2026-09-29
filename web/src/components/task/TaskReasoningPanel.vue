@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { useAgentConsole } from '../../composables/useAgentConsole'
 import { stageName } from '../../composables/taskLifecycle'
-import { renderMarkdown } from '../../utils/markdown'
+import MarkdownView from '../common/MarkdownView.vue'
 import type { ConsoleEntry } from '../../types'
 import { BrainCircuit, Wrench, MessageSquareText, AlertTriangle, ChevronDown, ChevronRight, ArrowRightLeft, Loader2 } from 'lucide-vue-next'
 
@@ -180,8 +180,7 @@ function time(iso: string) {
                     <component :is="isOpen(e.id, true) ? ChevronDown : ChevronRight" class="w-3 h-3" />
                     <MessageSquareText class="w-3.5 h-3.5" /> {{ row.turn.source === 'execute' ? 'Stage output' : 'Answer' }}
                   </button>
-                  <div v-if="isOpen(e.id, true)" class="px-4 pb-3 prose prose-invert prose-sm max-w-none text-slate-300"
-                    v-html="renderMarkdown(e.content)"></div>
+                  <MarkdownView v-if="isOpen(e.id, true)" class="px-4 pb-3" :source="e.content" variant="compact" />
                 </div>
 
                 <!-- Error -->

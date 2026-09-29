@@ -127,20 +127,57 @@ func applyJiraFields(t *types.Task, issue types.JiraIssueDTO) bool {
 	return changed
 }
 
-// writeJiraPRD seeds the task's PRD.md from the issue so the first stage starts from real requirements.
+// writeJiraPRD seeds the task's PRD.md from the issue so the first stage starts from real
+// requirements. It is rewritten whenever a sync brings changes to the issue.
 func (r *Router) writeJiraPRD(taskID string, issue types.JiraIssueDTO) {
 	dir := filepath.Join(r.cfg.RootDir, ".sdlc", "artifacts", taskID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
-	doc := fmt.Sprintf("# Product Requirements Document: [%s] %s\n\n"+
-		"**Source:** [JIRA %s](%s)\n"+
-		"**Type:** %s | **Status:** %s | **Priority:** %s\n"+
-		"**Imported At:** %s\n\n"+
-		"## Overview & Business Context\n%s\n",
-		issue.Key, issue.Summary, issue.Key, issue.URL, issue.IssueType, issue.Status, issue.Priority,
-		time.Now().Format(time.RFC3339), issue.Description)
-	_ = os.WriteFile(filepath.Join(dir, "PRD.md"), []byte(doc), 0o644)
+	cell := func(v string) string {
+		if strings.TrimSpace(v) == "" {
+			return "—"
+		}
+		return strings.ReplaceAll(v, "|", `\|`)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s — %s\n\n", issue.Key, issue.Summary)
+	b.WriteString("| Field | Value |\n| --- | --- |\n")
+	fmt.Fprintf(&b, "| Source | [%s](%s) |\n", issue.Key, issue.URL)
+	fmt.Fprintf(&b, "| Type | %s |\n| Status | %s |\n| Priority | %s |\n", cell(issue.IssueType), cell(issue.Status), cell(issue.Priority))
+	fmt.Fprintf(&b, "| Assignee | %s |\n| Reporter | %s |\n", cell(issue.Assignee), cell(issue.Reporter))
+	if issue.EpicKey != "" && issue.EpicKey != issue.Key {
+		epic := issue.EpicKey
+		if issue.EpicSummary != "" {
+			epic += " — " + issue.EpicSummary
+		}
+		fmt.Fprintf(&b, "| Epic | %s |\n", cell(epic))
+	}
+	fmt.Fprintf(&b, "| Synced | %s |\n\n", time.Now().Format("2006-01-02 15:04 MST"))
+	b.WriteString("## Requirements\n\n")
+	if strings.TrimSpace(issue.Description) == "" {
+		b.WriteString("_The JIRA issue has no description. The PRD Discovery stage will draft the requirements._\n")
+	} else {
+		b.WriteString(demoteHeadings(issue.Description) + "\n")
+	}
+	_ = os.WriteFile(filepath.Join(dir, "PRD.md"), []byte(b.String()), 0o644)
+}
+
+// demoteHeadings nests the issue's own headings under "## Requirements" (# → ###).
+func demoteHeadings(md string) string {
+	lines := strings.Split(md, "\n")
+	inFence := false
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "```") {
+			inFence = !inFence
+		}
+		if !inFence && strings.HasPrefix(l, "#") {
+			if n := len(l) - len(strings.TrimLeft(l, "#")); n < 6 && strings.HasPrefix(l[n:], " ") {
+				lines[i] = strings.Repeat("#", min(n+2, 6)) + l[n:]
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // jiraTaskIndexLocked maps upper-cased JIRA keys to their tasks. Caller holds r.mu.
@@ -203,6 +240,7 @@ func (r *Router) syncJiraBoard(ctx context.Context) (types.JiraSyncStatus, error
 	}
 	var newTasks []created
 	var changed []*types.Task
+	var refreshed []created
 	now := time.Now().Format(time.RFC3339)
 
 	r.mu.Lock()
@@ -215,6 +253,7 @@ func (r *Router) syncJiraBoard(ctx context.Context) (types.JiraSyncStatus, error
 				existing.UpdatedAt = time.Now()
 				result.Updated++
 				changed = append(changed, cloneTask(existing))
+				refreshed = append(refreshed, created{task: existing, issue: issue})
 			}
 			continue
 		}
@@ -244,6 +283,9 @@ func (r *Router) syncJiraBoard(ctx context.Context) (types.JiraSyncStatus, error
 		r.addEntry(c.task.ID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
 			"Synced from JIRA %s (%s). Run the stage to start the agent, or ask it a question below.", c.issue.Key, c.issue.Status)})
 		r.broadcastTask(c.task)
+	}
+	for _, c := range refreshed {
+		r.writeJiraPRD(c.task.ID, c.issue)
 	}
 	for _, t := range changed {
 		r.broadcastTask(t)

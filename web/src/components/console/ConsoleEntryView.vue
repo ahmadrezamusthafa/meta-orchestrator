@@ -4,7 +4,8 @@ import type { ConsoleEntry } from '../../types'
 import ToolCallBlock from './ToolCallBlock.vue'
 import ToolResultView from './ToolResultView.vue'
 import RequestBlock from './RequestBlock.vue'
-import { formatTime, renderMarkdown, responseSummary, stateSummary } from './consoleFormat'
+import { formatTime, responseSummary, stateSummary } from './consoleFormat'
+import MarkdownView from '../common/MarkdownView.vue'
 import type { ExpandSignal } from './expandSignal'
 
 const props = defineProps<{
@@ -15,7 +16,6 @@ const props = defineProps<{
 
 const thinkingOpen = ref(false)
 
-const html = computed(() => (props.entry.kind === 'assistant' ? renderMarkdown(props.entry.content) : ''))
 const streaming = computed(() => props.entry.status === 'streaming')
 const cancelled = computed(() => props.entry.status === 'cancelled')
 const title = computed(() => formatTime(props.entry.created_at))
@@ -49,7 +49,7 @@ const stateColor = computed(() => STATE_COLORS[props.entry.state?.to || ''] || '
     <div v-else-if="entry.kind === 'assistant'" class="flex gap-2 text-sm">
       <span class="w-3 flex-shrink-0 select-none pt-px font-mono text-slate-200" aria-hidden="true">⏺</span>
       <div class="min-w-0 flex-1">
-        <div class="console-md text-slate-200" v-html="html"></div>
+        <MarkdownView :source="entry.content" variant="compact" class="text-slate-200" />
         <span v-if="streaming" class="inline-block h-4 w-1.5 translate-y-0.5 animate-pulse bg-slate-400" aria-hidden="true"></span>
         <div v-if="cancelled" class="font-mono text-[13px] text-rose-400/80">⎿  Interrupted by user</div>
       </div>
@@ -117,62 +117,3 @@ const stateColor = computed(() => STATE_COLORS[props.entry.state?.to || ''] || '
   </div>
 </template>
 
-<style scoped>
-.console-md {
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-.console-md :deep(p) { margin: 0 0 0.5rem; }
-.console-md :deep(p:last-child) { margin-bottom: 0; }
-.console-md :deep(h1),
-.console-md :deep(h2),
-.console-md :deep(h3),
-.console-md :deep(h4) {
-  font-weight: 600;
-  color: #f1f5f9;
-  margin: 0.75rem 0 0.35rem;
-}
-.console-md :deep(h1) { font-size: 1.05rem; }
-.console-md :deep(h2) { font-size: 1rem; }
-.console-md :deep(h3),
-.console-md :deep(h4) { font-size: 0.9rem; }
-.console-md :deep(ul),
-.console-md :deep(ol) { margin: 0.25rem 0 0.5rem; padding-left: 1.25rem; }
-.console-md :deep(ul) { list-style: disc; }
-.console-md :deep(ol) { list-style: decimal; }
-.console-md :deep(li) { margin: 0.1rem 0; }
-.console-md :deep(code) {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 0.85em;
-  color: #c4b5fd;
-  background: rgba(30, 41, 59, 0.6);
-  padding: 0.05rem 0.3rem;
-  border-radius: 0.25rem;
-}
-.console-md :deep(pre) {
-  background: #0b0f17;
-  border: 1px solid #1e293b;
-  border-radius: 0.375rem;
-  padding: 0.6rem 0.75rem;
-  overflow-x: auto;
-  margin: 0.4rem 0 0.6rem;
-}
-.console-md :deep(pre code) {
-  background: transparent;
-  padding: 0;
-  color: #cbd5e1;
-  font-size: 0.8rem;
-}
-.console-md :deep(blockquote) {
-  border-left: 2px solid #334155;
-  padding-left: 0.75rem;
-  color: #94a3b8;
-  margin: 0.4rem 0;
-}
-.console-md :deep(a) { color: #7dd3fc; text-decoration: underline; }
-.console-md :deep(table) { border-collapse: collapse; margin: 0.4rem 0; font-size: 0.8rem; }
-.console-md :deep(th),
-.console-md :deep(td) { border: 1px solid #1e293b; padding: 0.2rem 0.5rem; }
-.console-md :deep(hr) { border-color: #1e293b; margin: 0.6rem 0; }
-.console-md :deep(img) { max-width: 100%; }
-</style>

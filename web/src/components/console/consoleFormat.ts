@@ -1,49 +1,7 @@
-import { Marked } from 'marked'
-import type { Token } from 'marked'
 import type { ConsoleEntry } from '../../types'
 
-// ---------------------------------------------------------------------------
-// Markdown: untrusted model output. Raw HTML is escaped (never rendered) and
-// link/image targets are restricted to safe schemes.
-// ---------------------------------------------------------------------------
-
-export function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-const SAFE_LINK = /^(https?:|mailto:|#|\/(?!\/))/i
-const SAFE_IMAGE = /^https:/i
-
-const md = new Marked({
-  gfm: true,
-  breaks: true,
-  renderer: {
-    html({ text }) {
-      return escapeHtml(text)
-    },
-  },
-  walkTokens(token: Token) {
-    if (token.type === 'link') {
-      if (!SAFE_LINK.test(token.href || '')) token.href = '#'
-    } else if (token.type === 'image') {
-      if (!SAFE_IMAGE.test(token.href || '')) token.href = ''
-    }
-  },
-})
-
-export function renderMarkdown(src: string | undefined): string {
-  if (!src) return ''
-  try {
-    return md.parse(src, { async: false }) as string
-  } catch {
-    return `<pre>${escapeHtml(src)}</pre>`
-  }
-}
+// Markdown rendering lives in utils/markdown (one sanitizer for every surface).
+export { escapeHtml, renderMarkdown } from '../../utils/markdown'
 
 // ---------------------------------------------------------------------------
 // Number / unit formatting

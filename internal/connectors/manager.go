@@ -66,37 +66,6 @@ func resolveEnvValue(keys ...string) (string, string) {
 	return "", ""
 }
 
-// parseJiraDescription extracts plain text whether the description is a string, nil, or an Atlassian Document Format (ADF) map.
-func parseJiraDescription(raw interface{}) string {
-	if raw == nil {
-		return ""
-	}
-	if s, ok := raw.(string); ok {
-		return s
-	}
-	if m, ok := raw.(map[string]interface{}); ok {
-		var sb strings.Builder
-		extractADFText(m, &sb)
-		return strings.TrimSpace(sb.String())
-	}
-	return ""
-}
-
-func extractADFText(node map[string]interface{}, sb *strings.Builder) {
-	if t, ok := node["type"].(string); ok && t == "text" {
-		if text, ok := node["text"].(string); ok {
-			sb.WriteString(text)
-		}
-	}
-	if content, ok := node["content"].([]interface{}); ok {
-		for _, child := range content {
-			if childMap, ok := child.(map[string]interface{}); ok {
-				extractADFText(childMap, sb)
-			}
-		}
-	}
-}
-
 // Manager orchestrates third-party tool integrations like JIRA, Confluence, and the modular catalog.
 type Manager struct {
 	mu            sync.RWMutex

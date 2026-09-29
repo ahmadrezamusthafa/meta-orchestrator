@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../../services/api'
 import { useTaskStore } from '../../stores/tasks'
 import { useToastStore } from '../../stores/toast'
-import { renderMarkdown } from '../../utils/markdown'
+import MarkdownView from '../common/MarkdownView.vue'
 import { STAGES, stageName, stagePosition, taskLifecycle, TONE_BADGE } from '../../composables/taskLifecycle'
 import type { Task, TaskArtifactDTO, TaskDependencyInfoDTO } from '../../types'
 import {
@@ -40,7 +40,6 @@ const copied = ref(false)
 const meta = computed(() => props.task.metadata || {})
 const life = computed(() => taskLifecycle(props.task)!)
 const current = computed(() => stagePosition(props.task.current_stage_id).index)
-const description = computed(() => renderMarkdown(props.task.description))
 const stageDocs = computed(() => Object.fromEntries(artifacts.value.filter((a) => a.kind === 'stage_output').map((a) => [a.stage_id!, a])))
 const documents = computed(() => artifacts.value.filter((a) => a.kind !== 'stage_output'))
 const budget = computed(() => {
@@ -143,7 +142,7 @@ onMounted(loadArtifacts)
             <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Requirements</h3>
             <span class="text-[11px] text-slate-500">{{ meta.jira_key ? `From JIRA ${meta.jira_key}` : 'Written when the task was created' }}</span>
           </header>
-          <div v-if="description" class="prose prose-invert prose-sm max-w-none text-slate-300" v-html="description"></div>
+          <MarkdownView v-if="task.description?.trim()" :source="task.description" />
           <p v-else class="text-xs text-slate-500">
             No description. Add requirements as guidance below so the agent knows what "done" means.
           </p>
@@ -239,7 +238,7 @@ onMounted(loadArtifacts)
 
     <!-- Document viewer -->
     <div v-if="viewer" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm" @click.self="viewer = null" @keydown.esc="viewer = null">
-      <div role="dialog" aria-modal="true" :aria-label="viewer.path" class="w-full max-w-3xl max-h-[85vh] flex flex-col bg-slate-900 border border-slate-800 rounded-xl shadow-2xl">
+      <div role="dialog" aria-modal="true" :aria-label="viewer.path" class="w-full max-w-5xl max-h-[88vh] flex flex-col bg-slate-900 border border-slate-800 rounded-xl shadow-2xl">
         <header class="px-5 py-3 border-b border-slate-800 flex items-center gap-2">
           <FileText class="w-4 h-4 text-slate-400" />
           <span class="font-mono text-xs text-slate-200 truncate">{{ viewer.path }}</span>
@@ -253,11 +252,11 @@ onMounted(loadArtifacts)
             </button>
           </div>
         </header>
-        <div class="flex-1 overflow-y-auto p-5">
+        <div class="flex-1 overflow-y-auto px-8 py-6">
           <p v-if="viewer.loading" class="text-xs text-slate-500 animate-pulse">Loading…</p>
           <p v-else-if="viewer.error" class="text-xs text-rose-300">{{ viewer.error }}</p>
           <pre v-else-if="viewer.raw" class="text-xs text-slate-300 whitespace-pre-wrap">{{ viewer.content }}</pre>
-          <div v-else class="prose prose-invert prose-sm max-w-none text-slate-300" v-html="renderMarkdown(viewer.content)"></div>
+          <MarkdownView v-else :source="viewer.content" toc />
         </div>
       </div>
     </div>
