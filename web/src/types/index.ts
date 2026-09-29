@@ -200,6 +200,63 @@ export interface ProviderDTO {
   supports_oauth: boolean
 }
 
+export interface ProviderUsageTotals {
+  calls: number
+  prompt_tokens: number
+  completion_tokens: number
+  cached_tokens: number
+  total_tokens: number
+  cost_usd: number
+}
+
+export interface ProviderModelUsage extends ProviderUsageTotals {
+  model: string
+}
+
+export interface ProviderQuota {
+  monthly_token_limit: number
+  monthly_cost_limit_usd: number
+}
+
+export interface ProviderQuotaStatus extends ProviderQuota {
+  token_percent?: number
+  cost_percent?: number
+  exceeded: boolean
+}
+
+export interface ProviderLimitWindow {
+  id: string
+  label: string
+  used_percent: number
+  resets_at?: string
+  models?: string[]
+}
+
+/** Provider-reported plan usage (what `claude /usage` or Antigravity's quota view shows). */
+export interface ProviderLimits {
+  provider_id: string
+  status: 'ok' | 'unavailable' | 'stale' | 'error'
+  source: string
+  plan?: string
+  message?: string
+  windows: ProviderLimitWindow[]
+  fetched_at: string
+}
+
+export interface ProviderUsage {
+  provider_id: string
+  limits?: ProviderLimits
+  window: ProviderUsageTotals
+  last_24h: ProviderUsageTotals
+  month_to_date: ProviderUsageTotals
+  models: ProviderModelUsage[]
+  last_used_at?: string
+  quota: ProviderQuotaStatus
+  source: string
+}
+
+export type ProviderUsageWindow = '24h' | '7d' | '30d'
+
 export interface OAuthStatus {
   provider_id: string
   auth_method: 'api_key' | 'oauth' | 'session_token'
@@ -770,7 +827,10 @@ export interface ConsoleRequestInfo {
 }
 
 export interface ConsoleUsageInfo {
+  /** Model that actually answered. */
   model: string
+  /** Router's pick, present only when it differs from `model`. */
+  routed_model?: string
   provider: string
   prompt_tokens: number
   completion_tokens: number

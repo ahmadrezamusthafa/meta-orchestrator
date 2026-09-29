@@ -208,7 +208,7 @@ func (r *Router) executeStage(run *stageRun) {
 			t.Metadata = map[string]string{}
 		}
 		t.Metadata["router_strategy"] = decision.Strategy
-		t.Metadata["active_model"] = decision.Model
+		t.Metadata["active_model"] = decision.Model // routed pick; replaced by the served model once the stage answers
 		t.Metadata["router_reasoning"] = decision.Reasoning
 		t.Metadata["task_type"] = taskType
 		t.SelectedMethod = decision.Method
@@ -355,7 +355,7 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 		note = fmt.Sprintf("✗ %s failed: %v\nRun the stage again to retry, or ask the agent about the failure below.", stage, execErr)
 	default:
 		r.setTaskState(task, types.TaskStateWaitingGateApproval)
-		task.Metadata["active_model"] = model
+		task.Metadata["active_model"] = servedModel(model, resp)
 		proc.Status = "IDLE"
 		proc.CurrentStep = "Awaiting review of " + stage
 		if next := nextStage(stage); next != "" {

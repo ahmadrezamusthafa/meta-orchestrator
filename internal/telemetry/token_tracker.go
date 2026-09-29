@@ -18,12 +18,15 @@ type CallMeta struct {
 	StageID  string `json:"stage_id,omitempty"`
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
-	Tier     string `json:"tier"`
-	Method   string `json:"method"`
-	Profile  string `json:"profile,omitempty"`
-	Repo     string `json:"repo"`
-	Category string `json:"category"`
-	Shadow   bool   `json:"shadow,omitempty"` // true for shadow-benchmark replays
+	// ServedModel is the model the provider reports actually answering, when it differs from the
+	// routed Model (e.g. the Claude Code CLI runs its own configured model).
+	ServedModel string `json:"served_model,omitempty"`
+	Tier        string `json:"tier"`
+	Method      string `json:"method"`
+	Profile     string `json:"profile,omitempty"`
+	Repo        string `json:"repo"`
+	Category    string `json:"category"`
+	Shadow      bool   `json:"shadow,omitempty"` // true for shadow-benchmark replays
 }
 
 // TokenEvent is the payload of a telemetry.tokens.consumed event.

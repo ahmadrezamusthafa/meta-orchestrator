@@ -193,7 +193,7 @@ func (r *Router) endTurn(taskID, turnID string, resp *llm.LLMResponse, model str
 		if resp.SessionID != "" {
 			c.sessionID = resp.SessionID
 		}
-		c.model = model
+		c.model = servedModel(model, resp)
 	}
 }
 
@@ -251,8 +251,11 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 				Tool: &types.ConsoleTool{ID: ev.ToolID, IsError: ev.IsError}})
 		case llm.StreamSession:
 			if ev.Model != "" || ev.SessionID != "" {
-				r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: t.TurnID,
-					Content: strings.TrimSpace(fmt.Sprintf("Session %s · model %s", shortID(ev.SessionID), ev.Model))})
+				content := strings.TrimSpace(fmt.Sprintf("Session %s · model %s", shortID(ev.SessionID), ev.Model))
+				if ev.Model != "" && !sameModel(chain[0], ev.Model) {
+					content += fmt.Sprintf(" (router picked %s; the provider CLI uses its own configured model)", chain[0])
+				}
+				r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: t.TurnID, Content: content})
 			}
 		}
 	}
@@ -284,8 +287,12 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 		if len(t.Task.AssignedRepos) > 0 {
 			repo = t.Task.AssignedRepos[0]
 		}
+		served := ""
+		if m := servedModel(used, resp); m != used {
+			served = m
+		}
 		ev := r.telemetry.tracker.Record(telemetry.CallMeta{TaskID: taskID, StageID: t.Task.CurrentStageID, Model: used,
-			Provider: resp.Provider, Tier: t.Decision.Tier, Method: t.Decision.Method, Repo: repo, Category: t.TaskType}, resp.TokenUsage)
+			ServedModel: served, Provider: resp.Provider, Tier: t.Decision.Tier, Method: t.Decision.Method, Repo: repo, Category: t.TaskType}, resp.TokenUsage)
 		cost = ev.CostUSD
 		resp.TokenUsage.EstimatedCostUSD = cost
 	}
@@ -293,16 +300,30 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 	if dur == 0 {
 		dur = time.Since(start).Milliseconds()
 	}
-	model := used
-	if resp.Model != "" && !strings.HasSuffix(used, "/"+resp.Model) {
-		model = fmt.Sprintf("%s (%s)", used, resp.Model)
+	model, routed := servedModel(used, resp), ""
+	if model != used {
+		routed = used
 	}
 	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindResponse, TurnID: t.TurnID, Usage: &types.ConsoleUsage{
-		Model: model, Provider: resp.Provider, PromptTokens: resp.TokenUsage.PromptTokens,
+		Model: model, RoutedModel: routed, Provider: resp.Provider, PromptTokens: resp.TokenUsage.PromptTokens,
 		CompletionTokens: resp.TokenUsage.CompletionTokens, CachedTokens: resp.TokenUsage.CachedTokens,
 		CostUSD: cost, DurationMS: dur, FinishReason: resp.FinishReason, SessionID: resp.SessionID,
 	}})
 	return resp, used, nil
+}
+
+// servedModel is the model that actually answered: the provider-reported one when known, else the
+// routed "provider/model" string. The CLI's placeholder "claude-code" does not count as known.
+func servedModel(used string, resp *llm.LLMResponse) string {
+	if resp == nil || resp.Model == "" || resp.Model == "claude-code" || sameModel(used, resp.Model) {
+		return used
+	}
+	return resp.Model
+}
+
+// sameModel reports whether a routed "provider/model" string names the given bare model.
+func sameModel(routed, model string) bool {
+	return routed == model || strings.HasSuffix(routed, "/"+model)
 }
 
 func shortID(id string) string {
