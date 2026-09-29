@@ -109,6 +109,62 @@ async function copyPath(path: string) {
   }
 }
 
+const SIGN: Record<string, string> = { add: '+', del: '-', ctx: ' ' }
+const copiedPatch = ref('')
+
+// Split view: a selection stays on the side it started on, like GitHub.
+function pickSide(e: MouseEvent) {
+  const cell = (e.target as HTMLElement).closest('td[data-side]') as HTMLElement | null
+  const table = e.currentTarget as HTMLElement
+  if (cell) table.dataset.selectSide = cell.dataset.side
+}
+
+// Copy exactly the selected code: no line numbers, +/- signs or cell separators, and in split
+// view only the side being selected. Indentation is preserved.
+function onCopy(e: ClipboardEvent) {
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return
+  const range = sel.getRangeAt(0)
+  const root = e.currentTarget as HTMLElement
+  const tables = Array.from(root.querySelectorAll('table.gh-diff')).filter((t) => range.intersectsNode(t))
+  if (!tables.length) return // selection is outside the diff tables; let the browser copy it
+  const lines: string[] = []
+  for (const table of tables) {
+    const side = (table as HTMLElement).dataset.selectSide
+    const selector = table.classList.contains('gh-split') ? `td.gh-code[data-side="${side || 'right'}"]` : 'td.gh-code'
+    for (const cell of Array.from(table.querySelectorAll(selector))) {
+      if (!range.intersectsNode(cell) || cell.classList.contains('gh-empty')) continue
+      const part = document.createRange()
+      part.selectNodeContents(cell)
+      if (cell.contains(range.startContainer)) part.setStart(range.startContainer, range.startOffset)
+      if (cell.contains(range.endContainer)) part.setEnd(range.endContainer, range.endOffset)
+      lines.push(part.toString())
+    }
+  }
+  if (!lines.length) return
+  e.preventDefault()
+  e.clipboardData?.setData('text/plain', lines.join('\n'))
+}
+
+// The unified patch of one file, as git produced it.
+function patchText(path: string): string {
+  const patch = current.value?.patch || ''
+  const start = patch.indexOf(`diff --git a/`)
+  if (start < 0) return ''
+  const chunks = patch.slice(start).split(/\n(?=diff --git )/)
+  return chunks.find((c) => c.split('\n')[0].endsWith(` b/${path}`)) || ''
+}
+
+async function copyPatch(path: string) {
+  try {
+    await navigator.clipboard.writeText(patchText(path).trimEnd() + '\n')
+    copiedPatch.value = path
+    setTimeout(() => (copiedPatch.value = ''), 1400)
+  } catch {
+    /* clipboard unavailable */
+  }
+}
+
 const tooLarge = (path: string) => (patches.value[path]?.lineCount || 0) > MAX_RENDERED_LINES && !showLarge.value[path]
 const hunkText = (header: string) => header.replace(/^(@@[^@]*@@)(.*)$/, '$1  $2').trim()
 
@@ -219,7 +275,7 @@ onMounted(load)
       </nav>
 
       <!-- Files -->
-      <div class="flex-1 min-w-0 overflow-auto p-4 space-y-4">
+      <div class="flex-1 min-w-0 overflow-auto p-4 space-y-4" @copy="onCopy">
         <div v-if="current.truncated" class="p-2.5 rounded-md border border-[#bb800966] bg-[#bb80091a] text-[11px] text-[#e3b341]">
           This diff is too large to show in full; some files are omitted. Open the worktree to review everything.
         </div>
@@ -242,6 +298,10 @@ onMounted(load)
             </span>
             <button type="button" @click="copyPath(f.path)" :aria-label="`Copy path ${f.path}`" class="p-1 rounded text-[#9198a1] hover:text-[#e6edf3]">
               <Check v-if="copiedPath === f.path" class="w-3.5 h-3.5 text-[#3fb950]" /><Copy v-else class="w-3.5 h-3.5" />
+            </button>
+            <button v-if="patchText(f.path)" type="button" @click="copyPatch(f.path)" :title="`Copy the diff of ${f.path}`"
+              class="px-1.5 py-0.5 rounded text-[11px] text-[#9198a1] hover:text-[#e6edf3] hover:bg-[#21262d]">
+              {{ copiedPatch === f.path ? 'Copied' : 'Copy diff' }}
             </button>
             <span v-if="f.status === 'untracked' || f.status === 'added'" class="px-1.5 rounded-full border border-[#238636]/60 text-[#3fb950] text-[10px]">new</span>
             <span v-else-if="f.status === 'deleted'" class="px-1.5 rounded-full border border-[#da3633]/60 text-[#f85149] text-[10px]">deleted</span>
@@ -266,9 +326,9 @@ onMounted(load)
                 <template v-for="(row, i) in unifiedRows(patches[f.path])" :key="i">
                   <tr v-if="row.type === 'hunk'" class="gh-hunk"><td colspan="3">{{ hunkText(row.header) }}</td></tr>
                   <tr v-else-if="row.type === 'line'" :class="`gh-${row.line.kind}`">
-                    <td class="gh-num">{{ row.line.oldNo ?? '' }}</td>
-                    <td class="gh-num">{{ row.line.newNo ?? '' }}</td>
-                    <td class="gh-code"><span class="gh-sign">{{ row.line.kind === 'add' ? '+' : row.line.kind === 'del' ? '-' : ' ' }}</span><template
+                    <td class="gh-num" :data-n="row.line.oldNo ?? ''"></td>
+                    <td class="gh-num" :data-n="row.line.newNo ?? ''"></td>
+                    <td class="gh-code" :data-sign="SIGN[row.line.kind]"><template
                       v-for="(s, j) in row.line.segments" :key="j"><span v-if="s.hl" class="gh-word">{{ s.text }}</span><template v-else>{{ s.text }}</template></template></td>
                   </tr>
                 </template>
@@ -276,18 +336,18 @@ onMounted(load)
             </table>
 
             <!-- Split -->
-            <table v-else class="gh-diff gh-split gh-wrap w-full">
+            <table v-else class="gh-diff gh-split gh-wrap w-full" @mousedown="pickSide">
               <colgroup><col class="gh-numcol" /><col /><col class="gh-numcol" /><col /></colgroup>
               <tbody>
                 <template v-for="(row, i) in splitRows(patches[f.path])" :key="i">
                   <tr v-if="row.type === 'hunk'" class="gh-hunk"><td colspan="4">{{ hunkText(row.header) }}</td></tr>
                   <tr v-else-if="row.type === 'pair'">
                     <template v-for="(side, si) in [row.left, row.right]" :key="si">
-                      <td class="gh-num" :class="side ? (side.kind === 'ctx' ? '' : `gh-${side.kind}`) : 'gh-empty'">
-                        {{ side ? (si === 0 ? side.oldNo : side.newNo) ?? '' : '' }}
-                      </td>
-                      <td class="gh-code" :class="[side ? (side.kind === 'ctx' ? '' : `gh-${side.kind}`) : 'gh-empty', si === 0 ? 'gh-split-left' : '']"><template v-if="side"><span
-                        class="gh-sign">{{ side.kind === 'add' ? '+' : side.kind === 'del' ? '-' : ' ' }}</span><template v-for="(s, j) in side.segments" :key="j"><span
+                      <td class="gh-num" :data-side="si === 0 ? 'left' : 'right'" :class="side ? (side.kind === 'ctx' ? '' : `gh-${side.kind}`) : 'gh-empty'"
+                        :data-n="side ? ((si === 0 ? side.oldNo : side.newNo) ?? '') : ''"></td>
+                      <td class="gh-code" :data-side="si === 0 ? 'left' : 'right'" :data-sign="side ? SIGN[side.kind] : ''"
+                        :class="[side ? (side.kind === 'ctx' ? '' : `gh-${side.kind}`) : 'gh-empty', si === 0 ? 'gh-split-left' : '']"><template
+                        v-if="side"><template v-for="(s, j) in side.segments" :key="j"><span
                         v-if="s.hl" class="gh-word">{{ s.text }}</span><template v-else>{{ s.text }}</template></template></template></td>
                     </template>
                   </tr>
@@ -306,23 +366,28 @@ onMounted(load)
 .gh-diff { table-layout: fixed; border-collapse: collapse; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 20px; color: #e6edf3; background: #0d1117; }
 .gh-diff td { padding: 0; vertical-align: top; }
 .gh-numcol { width: 56px; }
+/* Line numbers and +/- signs are drawn by CSS so they are never part of a text selection. */
+.gh-num::before { content: attr(data-n); }
+.gh-code::before { content: attr(data-sign); position: absolute; left: 8px; color: #9198a1; user-select: none; }
+tr.gh-add .gh-code::before, td.gh-add.gh-code::before { color: #3fb950; }
+tr.gh-del .gh-code::before, td.gh-del.gh-code::before { color: #f85149; }
+.gh-split[data-select-side='left'] td[data-side='right'],
+.gh-split[data-select-side='right'] td[data-side='left'] { user-select: none; }
+.gh-code ::selection, .gh-code::selection { background: rgba(56, 139, 253, 0.4); }
 .gh-num {
   padding: 0 10px !important; text-align: right; color: #6e7681; user-select: none; white-space: nowrap;
   font-size: 12px;
 }
 .gh-code { padding: 0 10px 0 22px !important; white-space: pre; position: relative; }
 .gh-wrap .gh-code { white-space: pre-wrap; overflow-wrap: anywhere; }
-.gh-sign { position: absolute; left: 8px; user-select: none; color: #9198a1; }
 .gh-hunk td { background: rgba(56, 139, 253, 0.1); color: #9198a1; padding: 4px 10px !important; white-space: pre-wrap; }
 
 tr.gh-add .gh-code, td.gh-code.gh-add { background: rgba(46, 160, 67, 0.15); }
 tr.gh-add .gh-num, td.gh-num.gh-add { background: rgba(63, 185, 80, 0.3); color: #e6edf3; }
-tr.gh-add .gh-sign, td.gh-add .gh-sign { color: #3fb950; }
 tr.gh-add .gh-word, td.gh-add .gh-word { background: rgba(46, 160, 67, 0.4); border-radius: 2px; }
 
 tr.gh-del .gh-code, td.gh-code.gh-del { background: rgba(248, 81, 73, 0.1); }
 tr.gh-del .gh-num, td.gh-num.gh-del { background: rgba(248, 81, 73, 0.3); color: #e6edf3; }
-tr.gh-del .gh-sign, td.gh-del .gh-sign { color: #f85149; }
 tr.gh-del .gh-word, td.gh-del .gh-word { background: rgba(248, 81, 73, 0.4); border-radius: 2px; }
 
 td.gh-empty { background: rgba(110, 118, 129, 0.1); }

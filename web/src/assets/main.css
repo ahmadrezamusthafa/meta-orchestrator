@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Content is selectable everywhere; controls are not, so double-clicking a button never
+   highlights its label. */
+@layer base {
+  button, [role='tab'], [role='menuitem'], label:has(> input[type='checkbox']) { user-select: none; }
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
