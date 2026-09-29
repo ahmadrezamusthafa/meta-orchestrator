@@ -2,7 +2,6 @@
 import { ref } from 'vue'
 import type { Task, WorkflowStage } from '../../types'
 import { useTaskStore } from '../../stores/tasks'
-import { useToastStore } from '../../stores/toast'
 import KanbanCard from './KanbanCard.vue'
 import KanbanColumnEmpty from './KanbanColumnEmpty.vue'
 import KanbanCardSkeleton from './KanbanCardSkeleton.vue'
@@ -26,10 +25,10 @@ const emit = defineEmits<{
   (e: 'toggle-collapse', stageId: string): void
   (e: 'quick-add', stageId: string): void
   (e: 'open-console', taskId: string): void
+  (e: 'request-delete', taskId: string): void
 }>()
 
 const taskStore = useTaskStore()
-const toastStore = useToastStore()
 const isDragOver = ref(false)
 
 function handleDrop(e: DragEvent) {
@@ -37,7 +36,6 @@ function handleDrop(e: DragEvent) {
   const taskId = e.dataTransfer?.getData('text/plain')
   if (taskId) {
     taskStore.moveTaskToStage(taskId, props.stage.id)
-    toastStore.info('Stage Updated', `Moved ${taskId} to ${props.stage.name}`)
   }
 }
 </script>
@@ -197,6 +195,7 @@ function handleDrop(e: DragEvent) {
           :density="density"
           :all-stages="allStages"
           @open-console="(id) => emit('open-console', id)"
+          @request-delete="(id) => emit('request-delete', id)"
         />
       </template>
 

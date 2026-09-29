@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
-import type { Task, TaskState } from '../types'
+import { ref, computed, watch } from 'vue'
+import type { Task, JiraSyncSettings, JiraSyncConfig } from '../types'
 import { api } from '../services/api'
 import { wsService } from '../services/websocket'
 import { useToastStore } from './toast'
@@ -16,9 +16,35 @@ export const useTaskStore = defineStore('tasks', () => {
   const selectedStatus = ref<'all' | 'running' | 'gate' | 'blocked' | 'completed' | 'waiting_dep'>('all')
   const onlyMyTasks = ref(false)
 
+  const NO_EPIC = '__none'
+  const GROUP_KEY = 'mo.kanban.groupBy'
+  const readGroup = (): 'none' | 'epic' => {
+    try { return localStorage.getItem(GROUP_KEY) === 'epic' ? 'epic' : 'none' } catch { return 'none' }
+  }
+  const groupBy = ref<'none' | 'epic'>(readGroup())
+  watch(groupBy, (v) => { try { localStorage.setItem(GROUP_KEY, v) } catch { /* storage unavailable */ } })
+  const selectedEpic = ref<string>('All') // 'All' | NO_EPIC | epic key
+
+  const jiraSync = ref<JiraSyncSettings | null>(null)
+  const isSyncingJira = ref(false)
+
   // Available methods & repos for toolbar
   const availableMethods = ['All', 'BMAD', 'Supervisor', 'ReAct', 'Superpower']
-  const availableRepos = ['All', 'frontend-portal', 'backend-core', 'api-contracts']
+  const availableRepos = computed(() => {
+    const repos = new Set<string>()
+    tasks.value.forEach((t) => (t.assigned_repos || []).forEach((r) => repos.add(r)))
+    return ['All', ...Array.from(repos).sort()]
+  })
+
+  // JIRA keys already on the board, for de-duplicating imports.
+  const jiraKeysOnBoard = computed(() => {
+    const keys = new Map<string, string>()
+    tasks.value.forEach((t) => {
+      const k = t.metadata?.jira_key
+      if (k) keys.set(k.toUpperCase(), t.id)
+    })
+    return keys
+  })
 
   // Filtered tasks
   const filteredTasks = computed(() => {
@@ -27,12 +53,13 @@ export const useTaskStore = defineStore('tasks', () => {
         const q = searchQuery.value.toLowerCase()
         const matchesTitle = t.title.toLowerCase().includes(q)
         const matchesId = t.id.toLowerCase().includes(q)
-        if (!matchesTitle && !matchesId) return false
+        const matchesJira = (t.metadata?.jira_key || '').toLowerCase().includes(q)
+        if (!matchesTitle && !matchesId && !matchesJira) return false
       }
       if (selectedMethod.value !== 'All' && t.selected_method !== selectedMethod.value) {
         return false
       }
-      if (selectedRepo.value !== 'All' && !t.assigned_repos.includes(selectedRepo.value)) {
+      if (selectedRepo.value !== 'All' && !(t.assigned_repos || []).includes(selectedRepo.value)) {
         return false
       }
       if (selectedStatus.value !== 'all') {
@@ -42,9 +69,10 @@ export const useTaskStore = defineStore('tasks', () => {
         if (selectedStatus.value === 'waiting_dep' && t.state !== 'WAITING_DEPENDENCY') return false
         if (selectedStatus.value === 'completed' && t.state !== 'COMPLETED') return false
       }
-      if (onlyMyTasks.value) {
-        const hasJira = !!t.metadata?.jira_key || /\b([A-Z]{2,10}-\d+)\b/.test(t.title)
-        if (!hasJira && t.state === 'COMPLETED') return false
+      if (onlyMyTasks.value && !t.metadata?.jira_key) return false
+      if (selectedEpic.value !== 'All') {
+        const epic = t.metadata?.jira_epic_key || NO_EPIC
+        if (epic !== selectedEpic.value) return false
       }
       return true
     })
@@ -91,6 +119,45 @@ export const useTaskStore = defineStore('tasks', () => {
       map[stage].push(task)
     })
     return map
+  })
+
+  // Epics present on the board, for the filter and swimlane headers.
+  const epics = computed(() => {
+    const map = new Map<string, { key: string; name: string; url: string; count: number }>()
+    tasks.value.forEach((t) => {
+      const key = t.metadata?.jira_epic_key
+      if (!key) return
+      const e = map.get(key) || { key, name: '', url: '', count: 0 }
+      e.count++
+      if (!e.name && t.metadata?.jira_epic_name) e.name = t.metadata.jira_epic_name
+      if (!e.url && t.metadata?.jira_url) e.url = t.metadata.jira_url.replace(/\/browse\/[^/]+$/, `/browse/${key}`)
+      map.set(key, e)
+    })
+    return Array.from(map.values()).sort((a, b) => (a.name || a.key).localeCompare(b.name || b.key))
+  })
+
+  // Swimlanes: one row per epic (plus "No epic"), each split by stage.
+  const swimlanes = computed(() => {
+    const lanes = new Map<string, { key: string; name: string; url: string; total: number; completed: number; byStage: Record<string, Task[]> }>()
+    const meta = new Map(epics.value.map((e) => [e.key, e]))
+    filteredTasks.value.forEach((task) => {
+      const key = task.metadata?.jira_epic_key || NO_EPIC
+      let lane = lanes.get(key)
+      if (!lane) {
+        const e = meta.get(key)
+        lane = { key, name: key === NO_EPIC ? 'No epic' : e?.name || key, url: e?.url || '', total: 0, completed: 0, byStage: {} }
+        lanes.set(key, lane)
+      }
+      const stage = task.current_stage_id || 'prd_discovery'
+      ;(lane.byStage[stage] ||= []).push(task)
+      lane.total++
+      if (task.state === 'COMPLETED') lane.completed++
+    })
+    return Array.from(lanes.values()).sort((a, b) => {
+      if (a.key === NO_EPIC) return 1
+      if (b.key === NO_EPIC) return -1
+      return a.name.localeCompare(b.name)
+    })
   })
 
   // Frustrated tasks count for global header badge
@@ -167,73 +234,100 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
-  function moveTaskToStage(taskId: string, targetStageId: string) {
+  function replaceTask(updated: Task) {
+    const idx = tasks.value.findIndex((t) => t.id === updated.id)
+    if (idx !== -1) tasks.value[idx] = updated
+    else tasks.value.unshift(updated)
+  }
+
+  // Moves a card optimistically; the daemon decides the resulting state (dependencies, gates) and
+  // the card snaps back if it refuses the move.
+  async function moveTaskToStage(taskId: string, targetStageId: string) {
     const task = tasks.value.find((t) => t.id === taskId)
-    if (!task) return
+    if (!task || task.current_stage_id === targetStageId) return
+    if (task.state === 'RUNNING') {
+      toastStore.warning('Task is running', `Pause ${task.id} before moving it to another stage.`)
+      return
+    }
+    const previous = { ...task }
     task.current_stage_id = targetStageId
-
-    // Automatically synchronize gate status based on target stage
-    const gateStages = ['techdoc_rfc', 'signoff_merge', 'hotfix_validation']
-    if (gateStages.includes(targetStageId)) {
-      task.state = 'WAITING_GATE_APPROVAL'
-    } else if (task.state === 'WAITING_GATE_APPROVAL' || task.state === 'WAITING_DEPENDENCY') {
-      task.state = 'RUNNING'
+    try {
+      replaceTask(await api.patchTask(taskId, { current_stage_id: targetStageId }))
+    } catch (err: any) {
+      replaceTask(previous)
+      toastStore.error('Move rejected', err?.message || `Could not move ${taskId}`)
     }
+  }
 
-    // Check task dependencies if advancing to implementation or execution
-    if (['task_implementation', 'e2e_validation', 'uat_verification', 'signoff_merge'].includes(targetStageId)) {
-      const unmet = (task.dependencies || []).filter(depId => {
-        const dep = tasks.value.find(t => t.id === depId)
-        return !dep || dep.state !== 'COMPLETED'
-      })
-      if (unmet.length > 0) {
-        task.state = 'WAITING_DEPENDENCY'
-        if (!task.metadata) task.metadata = {}
-        task.metadata.unmet_dependencies = unmet.join(',')
-        toastStore.warning(
-          'Dependency Prerequisite Required',
-          `Task ${task.id} is held in WAITING_DEPENDENCY until prerequisite ${unmet.join(', ')} is COMPLETED.`
-        )
+  async function deleteTask(taskId: string) {
+    const idx = tasks.value.findIndex((t) => t.id === taskId)
+    const removed = idx !== -1 ? tasks.value[idx] : null
+    if (idx !== -1) tasks.value.splice(idx, 1)
+    try {
+      await api.deleteTask(taskId)
+      if (activeTaskId.value === taskId) activeTaskId.value = null
+      const key = removed?.metadata?.jira_key
+      toastStore.success('Task removed', key
+        ? `${taskId} removed. JIRA sync will not re-add ${key}; import it again to bring it back.`
+        : `${taskId} removed from the board.`)
+    } catch (err: any) {
+      if (removed) tasks.value.splice(idx, 0, removed)
+      toastStore.error('Delete failed', err?.message || `Could not delete ${taskId}`)
+    }
+  }
+
+  async function fetchJiraSync() {
+    try {
+      jiraSync.value = await api.getJiraSync()
+    } catch (e) {
+      console.debug('Failed to load JIRA sync status', e)
+    }
+  }
+
+  async function runJiraSync(opts: { silent?: boolean } = {}) {
+    if (isSyncingJira.value) return
+    isSyncingJira.value = true
+    try {
+      const res = await api.runJiraSync()
+      jiraSync.value = res
+      const st = res.status
+      if (st.last_error) {
+        if (!opts.silent) toastStore.error('JIRA sync failed', st.last_error)
+      } else if (!opts.silent || st.created > 0) {
+        toastStore.success('JIRA synced', st.created || st.updated
+          ? `${st.created} new, ${st.updated} updated from ${st.fetched} matching issues.`
+          : `Board is up to date (${st.fetched} matching issues).`)
       }
+      await fetchTasks()
+    } catch (err: any) {
+      if (!opts.silent) toastStore.error('JIRA sync failed', err?.message || 'Unknown error')
+    } finally {
+      isSyncingJira.value = false
     }
+  }
 
-    // If task is completed, check if any dependent tasks can now be unblocked
-    if (task.state === 'COMPLETED' || targetStageId === 'signoff_merge') {
-      tasks.value.forEach(other => {
-        if (other.dependencies?.includes(task.id) && other.state === 'WAITING_DEPENDENCY') {
-          const remainingUnmet = other.dependencies.filter(dId => {
-            const d = tasks.value.find(t => t.id === dId)
-            return !d || d.state !== 'COMPLETED'
-          })
-          if (remainingUnmet.length === 0) {
-            other.state = 'RUNNING'
-            if (other.metadata) delete other.metadata.unmet_dependencies
-            toastStore.success(
-              'Dependency Resolved',
-              `Prerequisites for ${other.id} are now complete! Worktree unblocked and ready for execution.`
-            )
-          }
-        }
-      })
-    }
+  async function saveJiraSync(cfg: JiraSyncConfig) {
+    jiraSync.value = await api.updateJiraSync(cfg)
+    return jiraSync.value
+  }
 
-    // Persist to backend
-    api.patchTask(taskId, { current_stage_id: targetStageId, state: task.state }).catch((err) => {
-      console.debug('Failed to sync stage change with backend', err)
-    })
+  async function restoreDismissedJira() {
+    jiraSync.value = await api.clearJiraDismissed()
   }
 
   // Subscribe to live WebSocket events
+  let wsSubscribed = false
   function initWebSocketSync() {
+    if (wsSubscribed) return // the board view re-mounts; one listener is enough
+    wsSubscribed = true
     wsService.subscribe((event) => {
       if (event.type === 'task.status' && event.payload) {
-        const updated = event.payload as Task
-        const idx = tasks.value.findIndex((t) => t.id === updated.id)
-        if (idx !== -1) {
-          tasks.value[idx] = updated
-        } else {
-          tasks.value.unshift(updated)
-        }
+        replaceTask(event.payload as Task)
+      } else if (event.type === 'task.deleted' && event.task_id) {
+        tasks.value = tasks.value.filter((t) => t.id !== event.task_id)
+      } else if (event.type === 'jira.sync' && event.payload) {
+        if (jiraSync.value) jiraSync.value = { ...jiraSync.value, status: event.payload }
+        else fetchJiraSync()
       } else if (event.type === 'frustration.halt' && event.task_id) {
         const task = tasks.value.find((t) => t.id === event.task_id)
         if (task) {
@@ -245,46 +339,34 @@ export const useTaskStore = defineStore('tasks', () => {
     })
   }
 
-  async function executeTask(taskId: string) {
+  const pendingActions = ref<Record<string, boolean>>({})
+
+  // Runs a lifecycle action and applies the task the daemon returns — the UI never guesses the
+  // resulting state. The console shows the details; toasts only report failures.
+  async function performTaskAction(taskId: string, kind: 'run' | 'resume' | 'pause' | 'reset') {
+    if (pendingActions.value[taskId]) return
+    pendingActions.value = { ...pendingActions.value, [taskId]: true }
+    const call = { run: api.executeTask, resume: api.resumeTask, pause: api.pauseTask, reset: api.resetWorkspace }[kind]
+    const label = { run: 'Run', resume: 'Resume', pause: 'Pause', reset: 'Reset' }[kind]
     try {
-      const res = await api.executeTask(taskId)
-      toastStore.success('9Router AI Dispatched', `Task ${taskId} execution started with multi-provider routing`)
+      const res = await call(taskId)
+      if (res?.task) replaceTask(res.task)
+      else await fetchTask(taskId)
       return res
     } catch (err: any) {
-      toastStore.error('Execution Failed', err?.message || 'Failed to dispatch AI execution')
+      toastStore.error(`${label} failed`, err?.message || `Could not ${label.toLowerCase()} ${taskId}`)
+      await fetchTask(taskId)
       throw err
+    } finally {
+      const next = { ...pendingActions.value }
+      delete next[taskId]
+      pendingActions.value = next
     }
   }
 
-  async function resumeTask(taskId: string) {
-    try {
-      const res = await api.resumeTask(taskId)
-      const task = tasks.value.find(t => t.id === taskId)
-      if (task) {
-        task.state = 'RUNNING'
-      }
-      toastStore.success('Session Resumed', `Task ${taskId} execution resumed with active context`)
-      return res
-    } catch (err: any) {
-      toastStore.error('Resume Failed', err?.message || 'Failed to resume session')
-      throw err
-    }
-  }
-
-  async function pauseTask(taskId: string) {
-    try {
-      const res = await api.pauseTask(taskId)
-      const task = tasks.value.find(t => t.id === taskId)
-      if (task) {
-        task.state = 'SUSPENDED'
-      }
-      toastStore.info('Session Paused', `Task ${taskId} paused. Preserved context ready to resume.`)
-      return res
-    } catch (err: any) {
-      toastStore.error('Pause Failed', err?.message || 'Failed to pause session')
-      throw err
-    }
-  }
+  const executeTask = (taskId: string) => performTaskAction(taskId, 'run')
+  const resumeTask = (taskId: string) => performTaskAction(taskId, 'resume')
+  const pauseTask = (taskId: string) => performTaskAction(taskId, 'pause')
 
   return {
     tasks,
@@ -303,16 +385,31 @@ export const useTaskStore = defineStore('tasks', () => {
     tasksByStage,
     frustratedTaskCount,
     totalTokensBurned,
+    jiraSync,
+    isSyncingJira,
+    groupBy,
+    selectedEpic,
+    epics,
+    swimlanes,
+    NO_EPIC,
+    jiraKeysOnBoard,
     fetchTasks,
     fetchTask,
     createTask,
     executeTask,
     resumeTask,
     pauseTask,
+    performTaskAction,
+    pendingActions,
     injectContext,
     resetWorkspace,
     updateGate,
     moveTaskToStage,
+    deleteTask,
+    fetchJiraSync,
+    runJiraSync,
+    saveJiraSync,
+    restoreDismissedJira,
     initWebSocketSync,
   }
 })

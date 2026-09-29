@@ -54,6 +54,9 @@ type openAIResponse struct {
 		PromptTokens     int64 `json:"prompt_tokens"`
 		CompletionTokens int64 `json:"completion_tokens"`
 		TotalTokens      int64 `json:"total_tokens"`
+		PromptDetails    struct {
+			CachedTokens int64 `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
@@ -167,6 +170,7 @@ func (d *OpenAIDriver) Complete(ctx context.Context, req *LLMRequest) (*LLMRespo
 		TokenUsage: types.TokenUsage{
 			PromptTokens:     promptTokens,
 			CompletionTokens: completionTokens,
+			CachedTokens:     parsed.Usage.PromptDetails.CachedTokens,
 			TotalTokens:      promptTokens + completionTokens,
 			EstimatedCostUSD: float64(promptTokens)*0.000005 + float64(completionTokens)*0.000015,
 		},

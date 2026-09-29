@@ -42,6 +42,7 @@ type Task struct {
 type TokenUsage struct {
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`
+	CachedTokens     int64   `json:"cached_tokens,omitempty"` // subset of PromptTokens served from provider prompt cache
 	TotalTokens      int64   `json:"total_tokens"`
 	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
 }
@@ -50,6 +51,7 @@ type TokenUsage struct {
 type TaskProfile struct {
 	WorkflowID       string   `json:"workflow_id"`
 	Complexity       string   `json:"complexity"` // "LOW", "MEDIUM", "HIGH", "CRITICAL"
+	TaskType         string   `json:"task_type,omitempty"` // recurring category, e.g. "crud", "migration"
 	IdentifiedRepos  []string `json:"identified_repos"`
 	RecommendedModel string   `json:"recommended_model"`
 	Method           string   `json:"method"`

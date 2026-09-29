@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -23,7 +24,31 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/worker"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
+	"github.com/redis/go-redis/v9"
 )
+
+// telemetryConfig wires Phase 4 telemetry. Shadow benchmarking is opt-in (MO_SHADOW_ENABLED=true)
+// because every sweep makes paid LLM calls; REDIS_ADDR enables the Redis routing weight table.
+func telemetryConfig(cwd string) api.TelemetryConfig {
+	tc := api.TelemetryConfig{
+		DataDir:      filepath.Join(cwd, ".sdlc", "telemetry"),
+		EnableShadow: os.Getenv("MO_SHADOW_ENABLED") == "true",
+	}
+	if pricing := filepath.Join(cwd, "configs", "pricing.json"); fileExists(pricing) {
+		tc.PricingFile = pricing
+	}
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		tc.Redis = redis.NewClient(&redis.Options{Addr: addr})
+	}
+	fmt.Printf("[Telemetry] Datastore: %s | Shadow benchmarking: %v | Redis weights: %v\n",
+		tc.DataDir, tc.EnableShadow, tc.Redis != nil)
+	return tc
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
 
 func main() {
 	fmt.Println("================================================================")
@@ -120,6 +145,9 @@ func main() {
 		PromptRegistry:  promptReg,
 		WSHub:           wsHub,
 		RootDir:         cwd,
+		Telemetry:       telemetryConfig(cwd),
+		TaskStorePath:   filepath.Join(cwd, ".sdlc", "tasks.json"),
+		EnableJiraSync:  true,
 	})
 	mux.Handle("/api/", apiRouter)
 
@@ -142,6 +170,9 @@ func main() {
 
 	fmt.Println("\n[Shutdown] Received termination signal, gracefully draining workers...")
 	workerPool.Stop(5 * time.Second)
+	if err := apiRouter.Close(); err != nil {
+		fmt.Printf("[Shutdown] Failed to flush task board: %v\n", err)
+	}
 	wsHub.Stop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

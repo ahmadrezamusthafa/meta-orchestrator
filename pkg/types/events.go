@@ -9,11 +9,15 @@ const (
 	EventAgentThought   EventType = "agent.thought"
 	EventAgentTerminal  EventType = "agent.terminal"
 	EventTaskStatus     EventType = "task.status"
+	EventTaskDeleted    EventType = "task.deleted"
+	EventJiraSync       EventType = "jira.sync"
 	EventStageTransition EventType = "stage.transition"
 	EventFrustrationHalt EventType = "event.frustration_halt"
 	EventHITLRequired    EventType = "hitl.required"
 	EventToolProgress   EventType = "tool.install.progress"
 	EventConnectorStatus EventType = "connector.status"
+	EventTelemetryTokens EventType = "telemetry.tokens.consumed"
+	EventRouterMatrixUpdated EventType = "router.matrix.updated"
 )
 
 // OrchestratorEvent encapsulates payload broadcast via Redis and WebSocket.

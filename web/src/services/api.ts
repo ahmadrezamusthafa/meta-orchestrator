@@ -2,11 +2,14 @@ import type {
   Task, TaskProcessDTO, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
   Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse,
   ConnectorsConfig, JiraConfig, ConfluenceConfig, JiraIssueDTO, ImportJiraIssueRequest,
+  JiraSyncConfig, JiraSyncSettings,
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
   UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse,
   PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
-  OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO
+  OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO,
+  BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
+  TaskActivityResponse, TaskChatResponse, TaskDiffDTO, DiffAgainst, TaskArtifactDTO
 } from '../types'
 
 
@@ -55,6 +58,53 @@ export const api = {
     return res.json()
   },
 
+  // Agent Console (structured activity transcript)
+  async getTaskActivity(taskId: string, after?: string): Promise<TaskActivityResponse> {
+    const query = new URLSearchParams()
+    if (after) query.set('after', after)
+    const qs = query.toString()
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/activity${qs ? `?${qs}` : ''}`)
+    if (!res.ok) throw new Error(`Failed to fetch activity for task ${taskId}`)
+    return res.json()
+  },
+
+  async clearTaskActivity(taskId: string): Promise<{ status: string }> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/activity`, {
+      method: 'DELETE'
+    })
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      throw new Error(errData?.error || `Failed to clear activity for task ${taskId}`)
+    }
+    return res.json()
+  },
+
+  async sendTaskChat(taskId: string, message: string, model?: string): Promise<TaskChatResponse> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(model ? { message, model } : { message })
+    })
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      const err = new Error(errData?.error || `Failed to send message (HTTP ${res.status})`) as Error & { status?: number }
+      err.status = res.status
+      throw err
+    }
+    return res.json()
+  },
+
+  async cancelTaskChat(taskId: string): Promise<{ status: 'cancelled' | 'idle' | string }> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/chat/cancel`, {
+      method: 'POST'
+    })
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      throw new Error(errData?.error || `Failed to cancel turn for task ${taskId}`)
+    }
+    return res.json()
+  },
+
   async resumeTask(taskId: string): Promise<any> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/resume`, {
       method: 'POST'
@@ -89,13 +139,42 @@ export const api = {
     return res.json()
   },
 
-  async patchTask(taskId: string, payload: { current_stage_id?: string; state?: string }): Promise<Task> {
+  async patchTask(taskId: string, payload: { current_stage_id?: string; state?: string; assigned_repos?: string[] }): Promise<Task> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     })
-    if (!res.ok) throw new Error(`Failed to update task ${taskId}`)
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || `Failed to update task ${taskId}`)
+    }
+    return res.json()
+  },
+
+  async getTaskArtifacts(taskId: string): Promise<{ task_id: string; artifacts: TaskArtifactDTO[] }> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/artifacts`)
+    if (!res.ok) throw new Error(`Failed to list documents for ${taskId}`)
+    return res.json()
+  },
+
+  async getTaskDiff(taskId: string, against: DiffAgainst, repo?: string): Promise<TaskDiffDTO> {
+    const q = new URLSearchParams({ against })
+    if (repo) q.set('repo', repo)
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/diff?${q.toString()}`)
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || `Failed to load changes for ${taskId}`)
+    }
+    return res.json()
+  },
+
+  async deleteTask(taskId: string): Promise<{ status: string; task_id: string }> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || `Failed to delete task ${taskId}`)
+    }
     return res.json()
   },
 
@@ -248,8 +327,24 @@ export const api = {
     return res.json()
   },
 
-  async getBenchmarks(): Promise<{ total_cells: number; matrix: BenchmarkCellDTO[] }> {
+  async getBenchmarks(): Promise<BenchmarksResponseDTO> {
     const res = await fetch(`${BASE_URL}/benchmarks`)
+    if (!res.ok) throw new Error('Failed to fetch benchmark matrix')
+    return res.json()
+  },
+
+  // Telemetry & Analytics (Phase 4)
+  async getTelemetrySummary(window: TelemetryWindow, repo = ''): Promise<TelemetrySummaryDTO> {
+    const query = new URLSearchParams({ window, repo })
+    const res = await fetch(`${BASE_URL}/telemetry/summary?${query.toString()}`)
+    if (!res.ok) throw new Error('Failed to fetch telemetry summary')
+    return res.json()
+  },
+
+  async getTelemetryTrends(window: TelemetryWindow, repo = ''): Promise<TelemetryTrendsDTO> {
+    const query = new URLSearchParams({ window, repo })
+    const res = await fetch(`${BASE_URL}/telemetry/trends?${query.toString()}`)
+    if (!res.ok) throw new Error('Failed to fetch telemetry trends')
     return res.json()
   },
 
@@ -274,8 +369,13 @@ export const api = {
   },
 
   // Artifacts
-  async getArtifact(taskId: string, filename: string): Promise<{ task_id: string; filename: string; content: string }> {
-    const res = await fetch(`${BASE_URL}/artifacts/${taskId}/${filename}`)
+  async getArtifact(taskId: string, filename: string): Promise<{ task_id: string; filename: string; content: string; modified_at?: string }> {
+    const path = filename.split('/').map(encodeURIComponent).join('/')
+    const res = await fetch(`${BASE_URL}/artifacts/${encodeURIComponent(taskId)}/${path}`)
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || `Could not open ${filename}`)
+    }
     return res.json()
   },
 
@@ -421,7 +521,43 @@ export const api = {
     const q = new URLSearchParams()
     if (query) q.set('q', query)
     const res = await fetch(`${BASE_URL}/connectors/jira/issues?${q.toString()}`)
-    if (!res.ok) throw new Error('Failed to fetch JIRA issues')
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || 'Failed to fetch JIRA issues')
+    }
+    return (await res.json()) || []
+  },
+
+  async getJiraSync(): Promise<JiraSyncSettings> {
+    const res = await fetch(`${BASE_URL}/connectors/jira/sync`)
+    if (!res.ok) throw new Error('Failed to load JIRA sync rules')
+    return res.json()
+  },
+
+  async updateJiraSync(cfg: JiraSyncConfig): Promise<JiraSyncSettings> {
+    const res = await fetch(`${BASE_URL}/connectors/jira/sync`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg)
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || 'Failed to save JIRA sync rules')
+    }
+    return res.json()
+  },
+
+  // Resolves with the sync outcome even when JIRA fails: status.last_error explains why.
+  async runJiraSync(): Promise<JiraSyncSettings> {
+    const res = await fetch(`${BASE_URL}/connectors/jira/sync/run`, { method: 'POST' })
+    const data = await res.json().catch(() => null)
+    if (!data?.status) throw new Error(data?.error || 'Failed to sync JIRA')
+    return { config: data.config, status: data.status }
+  },
+
+  async clearJiraDismissed(): Promise<JiraSyncSettings> {
+    const res = await fetch(`${BASE_URL}/connectors/jira/sync/dismissed`, { method: 'DELETE' })
+    if (!res.ok) throw new Error('Failed to restore dismissed JIRA issues')
     return res.json()
   },
 

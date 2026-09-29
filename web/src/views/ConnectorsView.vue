@@ -1386,23 +1386,9 @@ onUnmounted(() => {
                       </div>
                     </div>
 
-                    <div 
-                      @click="selectedConnector.extra_settings!.auto_sync_status = !selectedConnector.extra_settings!.auto_sync_status"
-                      class="flex items-center justify-between p-3.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition select-none"
-                    >
-                      <div>
-                        <div class="text-xs font-medium text-slate-200">Auto-Sync Stage Transitions to JIRA Status</div>
-                        <div class="text-[11px] text-slate-400">Advances JIRA issue workflow as pipeline stages complete.</div>
-                      </div>
-                      <div 
-                        class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
-                        :class="selectedConnector.extra_settings?.auto_sync_status ? 'bg-emerald-500 shadow-sm shadow-emerald-950' : 'bg-slate-700'"
-                      >
-                        <span 
-                          class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out"
-                          :class="selectedConnector.extra_settings?.auto_sync_status ? 'translate-x-4' : 'translate-x-0'"
-                        />
-                      </div>
+                    <div class="p-3.5 rounded-xl bg-slate-950 border border-slate-800">
+                      <div class="text-xs font-medium text-slate-200">Read-only JIRA access</div>
+                      <div class="text-[11px] text-slate-400">Pipeline stages are tracked in Meta-Orchestrator only. Moving or completing a task never changes the JIRA issue's status or fields.</div>
                     </div>
 
                     <div>

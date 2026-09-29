@@ -8,6 +8,7 @@ import RegistriesSettingsView from '../views/RegistriesSettingsView.vue'
 import ProjectSetupView from '../views/ProjectSetupView.vue'
 import ConnectorsView from '../views/ConnectorsView.vue'
 import SkillsView from '../views/SkillsView.vue'
+import AnalyticsView from '../views/AnalyticsView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -32,6 +33,11 @@ const router = createRouter({
       name: 'task-detail',
       component: TaskDetailView,
       props: true,
+    },
+    {
+      path: '/analytics',
+      name: 'analytics',
+      component: AnalyticsView,
     },
     {
       path: '/tools',

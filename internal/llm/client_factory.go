@@ -18,7 +18,12 @@ type ClientFactory struct {
 	cfg          *config.OrchestratorConfig
 	providers    map[string]ProviderClient
 	credResolver CredentialResolver
+	usageObs     UsageObserver
+	overrides    map[string]ProviderClient
 }
+
+// UsageObserver is notified after every successful completion (telemetry instrumentation hook).
+type UsageObserver func(modelStr string, resp *LLMResponse)
 
 // NewClientFactory creates a factory wired to the active configuration.
 func NewClientFactory(cfg *config.OrchestratorConfig) *ClientFactory {
@@ -39,6 +44,24 @@ func (f *ClientFactory) SetCredentialResolver(resolver CredentialResolver) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.credResolver = resolver
+}
+
+// OverrideProvider pins a client for a provider name, taking precedence over configured and
+// credential-resolved drivers (test doubles, sandboxed shadow replays).
+func (f *ClientFactory) OverrideProvider(name string, client ProviderClient) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.overrides == nil {
+		f.overrides = make(map[string]ProviderClient)
+	}
+	f.overrides[name] = client
+}
+
+// SetUsageObserver registers a hook invoked with each successful completion's response.
+func (f *ClientFactory) SetUsageObserver(obs UsageObserver) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.usageObs = obs
 }
 
 func (f *ClientFactory) initializeDrivers() {
@@ -76,6 +99,10 @@ func (f *ClientFactory) GetClient(modelStr string) (ProviderClient, string, erro
 	// Normalize provider name aliases
 	if providerName == "chatgpt" {
 		providerName = "openai"
+	}
+
+	if client, ok := f.overrides[providerName]; ok {
+		return client, modelID, nil
 	}
 
 	// If credential resolver is provided, update client with latest credentials
@@ -132,6 +159,12 @@ func (f *ClientFactory) ExecuteWithFallbackChain(
 		req.Model = modelID
 		resp, completeErr := client.Complete(ctx, req)
 		if completeErr == nil {
+			f.mu.RLock()
+			obs := f.usageObs
+			f.mu.RUnlock()
+			if obs != nil && resp != nil {
+				obs(modelStr, resp)
+			}
 			return resp, modelStr, nil
 		}
 

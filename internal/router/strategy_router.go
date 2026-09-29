@@ -41,11 +41,25 @@ type RouterSettings struct {
 type RoutingDecision struct {
 	Strategy       string   `json:"strategy"` // "best_practice", "priority_sequence", "cost_optimized", "latency_optimized", "round_robin", "custom"
 	Model          string   `json:"model"`
+	Tier           string   `json:"tier,omitempty"`    // "tier1".."tier3" when the decision came from tier mapping
+	RuleID         string   `json:"rule_id,omitempty"` // matched custom rule identifier
 	FallbackChain  []string `json:"fallback_chain"` // 9router priority ordered fallback sequence
 	Method         string   `json:"method"`
 	TokenBudget    int64    `json:"token_budget"`
 	Reasoning      string   `json:"reasoning"`
 	RequiresDocker bool     `json:"requires_docker"`
+}
+
+// TierAdvisor supplies calibrated tier overrides for best-practice routing (see router/feedback).
+// currentTier is the tier best practice picked; ok=false keeps it.
+type TierAdvisor interface {
+	AdviseTier(taskType, complexity, stageID, currentTier string) (tier string, reason string, ok bool)
+}
+
+// MethodAdvisor supplies the empirically optimal method (and tier) per stage and complexity,
+// e.g. the shadow benchmark's best_methods_matrix. ok=false keeps best practice.
+type MethodAdvisor interface {
+	AdviseMethod(stageID, complexity string) (method string, tier string, reason string, ok bool)
 }
 
 // Router dispatches requests according to configured strategy.
@@ -55,6 +69,8 @@ type Router struct {
 	mode          RouterMode
 	priorityChain []PriorityModelItem
 	roundRobinIdx int
+	advisor       TierAdvisor
+	methodAdvisor MethodAdvisor
 }
 
 // NewRouter creates a new router instance.
@@ -139,8 +155,28 @@ func (r *Router) GetSettings() RouterSettings {
 	}
 }
 
+// SetTierAdvisor installs the dynamic weight calibrator used by best-practice routing.
+func (r *Router) SetTierAdvisor(a TierAdvisor) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.advisor = a
+}
+
+// SetMethodAdvisor installs the benchmark-driven method matrix used by best-practice routing.
+func (r *Router) SetMethodAdvisor(a MethodAdvisor) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.methodAdvisor = a
+}
+
 // Route decides the optimal model and execution method for a given task stage and complexity.
 func (r *Router) Route(stageID string, complexity string, repoTypes []string) *RoutingDecision {
+	return r.RouteForTask(stageID, complexity, "", repoTypes)
+}
+
+// RouteForTask is Route with the task category, which lets calibrated weights adjust
+// best-practice tiering for recurring task types.
+func (r *Router) RouteForTask(stageID string, complexity string, taskType string, repoTypes []string) *RoutingDecision {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -150,7 +186,7 @@ func (r *Router) Route(stageID string, complexity string, repoTypes []string) *R
 		if decision != nil {
 			return decision
 		}
-		return r.routeBestPractice(stageID, complexity, repoTypes)
+		return r.applyAdvisor(r.routeBestPractice(stageID, complexity, repoTypes), stageID, complexity, taskType)
 	}
 
 	// Handle configured router mode
@@ -164,8 +200,56 @@ func (r *Router) Route(stageID string, complexity string, repoTypes []string) *R
 	case ModeRoundRobin:
 		return r.routeRoundRobin(stageID, complexity)
 	default:
-		return r.routeBestPractice(stageID, complexity, repoTypes)
+		return r.applyAdvisor(r.routeBestPractice(stageID, complexity, repoTypes), stageID, complexity, taskType)
 	}
+}
+
+// modelForTier maps a tier to its configured model.
+func (r *Router) modelForTier(tier string) string {
+	switch tier {
+	case "tier1":
+		return r.cfg.ModelTiers.Tier1Reasoning
+	case "tier2":
+		return r.cfg.ModelTiers.Tier2CodeGen
+	case "tier3":
+		return r.cfg.ModelTiers.Tier3LogParse
+	}
+	return ""
+}
+
+// applyAdvisor layers the benchmark method matrix and then calibrated tier weights
+// (including admin locks, which therefore win) over a best-practice decision.
+func (r *Router) applyAdvisor(d *RoutingDecision, stageID, complexity, taskType string) *RoutingDecision {
+	if d == nil {
+		return d
+	}
+	if r.methodAdvisor != nil {
+		if method, tier, reason, ok := r.methodAdvisor.AdviseMethod(stageID, complexity); ok {
+			d.Method = method
+			if model := r.modelForTier(tier); model != "" {
+				d.Tier = tier
+				d.Model = model
+				d.FallbackChain = r.buildFallbackChain(model)
+			}
+			d.Reasoning = fmt.Sprintf("%s | %s", d.Reasoning, reason)
+		}
+	}
+	if r.advisor == nil || taskType == "" {
+		return d
+	}
+	tier, reason, ok := r.advisor.AdviseTier(taskType, strings.ToUpper(complexity), stageID, d.Tier)
+	if !ok || tier == d.Tier {
+		return d
+	}
+	model := r.modelForTier(tier)
+	if model == "" {
+		return d
+	}
+	d.Tier = tier
+	d.Model = model
+	d.FallbackChain = r.buildFallbackChain(model)
+	d.Reasoning = fmt.Sprintf("%s | Calibrated: %s", d.Reasoning, reason)
+	return d
 }
 
 func (r *Router) routePrioritySequence(stageID string, complexity string) *RoutingDecision {
@@ -346,6 +430,7 @@ func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes 
 	}
 
 	var model string
+	var tier string
 	var method string
 	var budget int64
 	var reasoning string
@@ -353,19 +438,19 @@ func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes 
 
 	switch normStage {
 	case "INTAKE_PRD", "TECH_DOC_RFC", "CONTRACT_SPEC":
-		model = r.cfg.ModelTiers.Tier1Reasoning
+		model, tier = r.cfg.ModelTiers.Tier1Reasoning, "tier1"
 		method = "bmad"
 		budget = 120000
 		reasoning = "Best practice: Tier 1 high-reasoning model paired with BMAD product/architecture methodology"
 
 	case "REPO_DISCOVERY", "TASK_BREAKDOWN":
-		model = r.cfg.ModelTiers.Tier1Reasoning
+		model, tier = r.cfg.ModelTiers.Tier1Reasoning, "tier1"
 		method = "supervisor"
 		budget = 80000
 		reasoning = "Best practice: Tier 1 model with Supervisor role for dependency mapping and atomic task decomposition"
 
 	case "ATDD_RED_PHASE", "MOCK_ATDD":
-		model = r.cfg.ModelTiers.Tier1Reasoning
+		model, tier = r.cfg.ModelTiers.Tier1Reasoning, "tier1"
 		method = "bmad"
 		budget = 100000
 		requiresDocker = true
@@ -373,12 +458,12 @@ func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes 
 
 	case "IMPLEMENTATION_GREEN", "PATCH_IMPLEMENTATION", "CODEGEN_IMPLEMENT":
 		if normComplexity == "HIGH" || normComplexity == "CRITICAL" {
-			model = r.cfg.ModelTiers.Tier1Reasoning
+			model, tier = r.cfg.ModelTiers.Tier1Reasoning, "tier1"
 			method = "bmad"
 			budget = 200000
 			reasoning = fmt.Sprintf("Best practice: Complex task (%s) routed to Tier 1 with BMAD developer/QA pairing", normComplexity)
 		} else {
-			model = r.cfg.ModelTiers.Tier2CodeGen
+			model, tier = r.cfg.ModelTiers.Tier2CodeGen, "tier2"
 			method = "react"
 			budget = 100000
 			reasoning = fmt.Sprintf("Best practice: Standard task (%s) routed to Tier 2 with fast ReAct iteration", normComplexity)
@@ -386,7 +471,7 @@ func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes 
 		requiresDocker = true
 
 	case "E2E_AUTOMATION", "UAT_EVIDENCE", "VERIFY_REGRESSION", "CONTRACT_VERIFY":
-		model = r.cfg.ModelTiers.Tier2CodeGen
+		model, tier = r.cfg.ModelTiers.Tier2CodeGen, "tier2"
 		method = "superpower"
 		budget = 90000
 		requiresDocker = true
@@ -394,7 +479,7 @@ func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes 
 
 	default:
 		// Default fallback
-		model = r.cfg.ModelTiers.Tier2CodeGen
+		model, tier = r.cfg.ModelTiers.Tier2CodeGen, "tier2"
 		method = "react"
 		budget = 50000
 		reasoning = "Default best-practice fallback for custom stage"
@@ -409,6 +494,7 @@ func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes 
 	return &RoutingDecision{
 		Strategy:       "best_practice",
 		Model:          model,
+		Tier:           tier,
 		FallbackChain:  fallbackChain,
 		Method:         method,
 		TokenBudget:    budget,
@@ -443,7 +529,7 @@ func (r *Router) routeCustom(stageID string, complexity string, repoTypes []stri
 
 	// Simple declarative rule matching (e.g. "stage:ATDD_RED_PHASE -> model:openai/gpt-4o,method:bmad")
 	lines := strings.Split(rules, "\n")
-	for _, line := range lines {
+	for lineNo, line := range lines {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "#") || line == "" {
 			continue
@@ -463,6 +549,7 @@ func (r *Router) routeCustom(stageID string, complexity string, repoTypes []stri
 				Model:          r.cfg.ModelTiers.Tier1Reasoning,
 				Method:         "react",
 				TokenBudget:    r.cfg.Router.MaxTokenBudget,
+				RuleID:         fmt.Sprintf("rule-%d", lineNo+1),
 				Reasoning:      fmt.Sprintf("Matched custom user rule: %s", line),
 				RequiresDocker: true,
 			}

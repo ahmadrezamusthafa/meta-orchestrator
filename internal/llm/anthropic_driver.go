@@ -20,6 +20,7 @@ type AnthropicDriver struct {
 	sessionToken string
 	baseURL      string
 	httpClient   *http.Client
+	cliPath      string
 }
 
 // NewAnthropicDriver creates a new Claude driver.
@@ -59,6 +60,9 @@ type anthropicResponse struct {
 	Usage struct {
 		InputTokens  int64 `json:"input_tokens"`
 		OutputTokens int64 `json:"output_tokens"`
+		// Anthropic reports cache reads/writes separately from input_tokens.
+		CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
 	Error *struct {
 		Type    string `json:"type"`
@@ -177,7 +181,9 @@ func (d *AnthropicDriver) completeViaAPI(ctx context.Context, req *LLMRequest, m
 		}
 	}
 
-	promptTokens := parsed.Usage.InputTokens
+	// Normalize to the OpenAI convention: prompt tokens include cached tokens.
+	cachedTokens := parsed.Usage.CacheReadInputTokens
+	promptTokens := parsed.Usage.InputTokens + cachedTokens + parsed.Usage.CacheCreationInputTokens
 	if promptTokens == 0 {
 		promptTokens = d.CountTokens(req)
 	}
@@ -194,6 +200,7 @@ func (d *AnthropicDriver) completeViaAPI(ctx context.Context, req *LLMRequest, m
 		TokenUsage: types.TokenUsage{
 			PromptTokens:     promptTokens,
 			CompletionTokens: completionTokens,
+			CachedTokens:     cachedTokens,
 			TotalTokens:      promptTokens + completionTokens,
 			EstimatedCostUSD: float64(promptTokens)*0.000003 + float64(completionTokens)*0.000015,
 		},

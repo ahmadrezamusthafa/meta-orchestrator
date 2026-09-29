@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -63,37 +64,6 @@ func resolveEnvValue(keys ...string) (string, string) {
 		}
 	}
 	return "", ""
-}
-
-// parseJiraDescription extracts plain text whether the description is a string, nil, or an Atlassian Document Format (ADF) map.
-func parseJiraDescription(raw interface{}) string {
-	if raw == nil {
-		return ""
-	}
-	if s, ok := raw.(string); ok {
-		return s
-	}
-	if m, ok := raw.(map[string]interface{}); ok {
-		var sb strings.Builder
-		extractADFText(m, &sb)
-		return strings.TrimSpace(sb.String())
-	}
-	return ""
-}
-
-func extractADFText(node map[string]interface{}, sb *strings.Builder) {
-	if t, ok := node["type"].(string); ok && t == "text" {
-		if text, ok := node["text"].(string); ok {
-			sb.WriteString(text)
-		}
-	}
-	if content, ok := node["content"].([]interface{}); ok {
-		for _, child := range content {
-			if childMap, ok := child.(map[string]interface{}); ok {
-				extractADFText(childMap, sb)
-			}
-		}
-	}
 }
 
 // Manager orchestrates third-party tool integrations like JIRA, Confluence, and the modular catalog.
@@ -2362,202 +2332,254 @@ func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig
 	return res
 }
 
-// SearchJiraIssues queries JIRA issues or returns curated project tickets matching search/project.
-func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.JiraIssueDTO, error) {
-	token, _ := m.ResolveToken("jira", "")
-	username, _ := m.ResolveUsername("jira", "")
-	baseURL := m.ResolveBaseURL("jira", "", username)
+// ErrJiraNotConnected is returned when JIRA has no live credentials, so no issue data can be real.
+var ErrJiraNotConnected = errors.New("JIRA is not connected: set base URL, username and API token in Connectors")
 
+// jiraIssueFields is the JIRA REST shape shared by search and single-issue lookups.
+type jiraIssueFields struct {
+	Key    string `json:"key"`
+	Fields struct {
+		Summary     string      `json:"summary"`
+		Description interface{} `json:"description"`
+		Status      struct {
+			Name string `json:"name"`
+		} `json:"status"`
+		Priority struct {
+			Name string `json:"name"`
+		} `json:"priority"`
+		IssueType jiraIssueType `json:"issuetype"`
+		Assignee  *struct {
+			DisplayName  string `json:"displayName"`
+			EmailAddress string `json:"emailAddress"`
+			Name         string `json:"name"`
+		} `json:"assignee"`
+		Reporter *struct {
+			DisplayName  string `json:"displayName"`
+			EmailAddress string `json:"emailAddress"`
+		} `json:"reporter"`
+		Created string `json:"created"`
+		Parent  *struct {
+			Key    string `json:"key"`
+			Fields struct {
+				Summary   string        `json:"summary"`
+				IssueType jiraIssueType `json:"issuetype"`
+			} `json:"fields"`
+		} `json:"parent"`
+		// Legacy "Epic Link" on company-managed projects. customfield_10014 is the usual Jira Cloud
+		// ID but instances can differ; "parent" is the primary source.
+		EpicLink interface{} `json:"customfield_10014"`
+	} `json:"fields"`
+}
+
+type jiraIssueType struct {
+	Name           string `json:"name"`
+	HierarchyLevel *int   `json:"hierarchyLevel"`
+}
+
+func (t jiraIssueType) isEpic() bool {
+	if t.HierarchyLevel != nil {
+		return *t.HierarchyLevel == 1
+	}
+	return strings.EqualFold(t.Name, "Epic")
+}
+
+// jiraIssueFieldList is requested on every search and lookup.
+const jiraIssueFieldList = "key,summary,description,status,priority,issuetype,assignee,reporter,created,parent,customfield_10014"
+
+func (it jiraIssueFields) toDTO(baseURL string) types.JiraIssueDTO {
+	assignee := ""
+	if a := it.Fields.Assignee; a != nil {
+		switch {
+		case a.DisplayName != "":
+			assignee = a.DisplayName
+		case a.EmailAddress != "":
+			assignee = a.EmailAddress
+		default:
+			assignee = a.Name
+		}
+	}
+	reporter := ""
+	if rp := it.Fields.Reporter; rp != nil {
+		reporter = rp.DisplayName
+		if reporter == "" {
+			reporter = rp.EmailAddress
+		}
+	}
+	dto := types.JiraIssueDTO{
+		Key:         it.Key,
+		Summary:     it.Fields.Summary,
+		Description: parseJiraDescription(it.Fields.Description),
+		Status:      it.Fields.Status.Name,
+		Priority:    it.Fields.Priority.Name,
+		IssueType:   it.Fields.IssueType.Name,
+		URL:         fmt.Sprintf("%s/browse/%s", baseURL, it.Key),
+		Assignee:    assignee,
+		Reporter:    reporter,
+		Created:     it.Fields.Created,
+	}
+	switch p := it.Fields.Parent; {
+	case it.Fields.IssueType.isEpic():
+		dto.EpicKey, dto.EpicSummary = it.Key, it.Fields.Summary
+	case p != nil && p.Key != "":
+		dto.ParentKey = p.Key
+		if p.Fields.IssueType.isEpic() {
+			dto.EpicKey, dto.EpicSummary = p.Key, p.Fields.Summary
+		}
+	}
+	if link, ok := it.Fields.EpicLink.(string); ok && dto.EpicKey == "" && link != "" {
+		dto.EpicKey = link
+	}
+	return dto
+}
+
+// jiraCredentials resolves live JIRA credentials; ok is false when any piece is missing.
+func (m *Manager) jiraCredentials() (baseURL, username, token string, ok bool) {
+	token, _ = m.ResolveToken("jira", "")
+	username, _ = m.ResolveUsername("jira", "")
+	m.mu.RLock()
+	configured := m.config.Jira.BaseURL
+	m.mu.RUnlock()
+	baseURL = strings.TrimRight(strings.TrimSpace(m.ResolveBaseURL("jira", configured, username)), "/")
+	ok = token != "" && username != "" && baseURL != "" && !strings.Contains(baseURL, "mock")
+	return
+}
+
+// JiraConnected reports whether live JIRA credentials are configured.
+func (m *Manager) JiraConnected() bool {
+	_, _, _, ok := m.jiraCredentials()
+	return ok
+}
+
+// QueryJiraIssues runs a JQL search against the live JIRA API.
+func (m *Manager) QueryJiraIssues(ctx context.Context, jql string, maxResults int) ([]types.JiraIssueDTO, error) {
+	baseURL, username, token, ok := m.jiraCredentials()
+	if !ok {
+		return nil, ErrJiraNotConnected
+	}
+	if maxResults <= 0 || maxResults > 100 {
+		maxResults = 50
+	}
+	q := url.Values{"jql": {jql}, "fields": {jiraIssueFieldList}, "maxResults": {fmt.Sprint(maxResults)}}.Encode()
+	endpoints := []string{
+		baseURL + "/rest/api/3/search/jql?" + q, // Jira Cloud
+		baseURL + "/rest/api/2/search?" + q,     // Jira Server / Data Center
+	}
+	var lastErr error
+	for _, endpoint := range endpoints {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.SetBasicAuth(username, token)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "Meta-Orchestrator")
+		resp, err := m.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var result struct {
+			Issues []jiraIssueFields `json:"issues"`
+		}
+		decodeErr := error(nil)
+		if resp.StatusCode == http.StatusOK {
+			decodeErr = json.NewDecoder(resp.Body).Decode(&result)
+		}
+		resp.Body.Close()
+		switch {
+		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+			return nil, fmt.Errorf("JIRA rejected the credentials (HTTP %d)", resp.StatusCode)
+		case resp.StatusCode == http.StatusBadRequest:
+			lastErr = fmt.Errorf("JIRA rejected the JQL query (HTTP 400): %s", jql)
+			continue
+		case resp.StatusCode != http.StatusOK:
+			lastErr = fmt.Errorf("JIRA search returned HTTP %d", resp.StatusCode)
+			continue
+		case decodeErr != nil:
+			lastErr = fmt.Errorf("unreadable JIRA search response: %w", decodeErr)
+			continue
+		}
+		list := make([]types.JiraIssueDTO, 0, len(result.Issues))
+		for _, it := range result.Issues {
+			list = append(list, it.toDTO(baseURL))
+		}
+		return list, nil
+	}
+	return nil, lastErr
+}
+
+var jqlOrderBy = regexp.MustCompile(`(?i)\s+order\s+by\s+`)
+
+func containsFold(list []string, s string) bool {
+	for _, v := range list {
+		if strings.EqualFold(strings.TrimSpace(v), s) {
+			return true
+		}
+	}
+	return false
+}
+
+// OpenOnlyJQL restricts any JQL to unfinished issues, keeping its ORDER BY clause.
+func OpenOnlyJQL(jql string) string {
+	where, order := strings.TrimSpace(jql), ""
+	// Pad so a leading "ORDER BY" also matches; padded index i is where[i-1], so where[loc[0]:]
+	// starts inside the matched whitespace.
+	if loc := jqlOrderBy.FindStringIndex(" " + where); loc != nil {
+		order = strings.TrimSpace(where[loc[0]:])
+		where = strings.TrimSpace(where[:loc[0]])
+	}
+	if where == "" {
+		where = "statusCategory != Done"
+	} else {
+		where = "(" + where + ") AND statusCategory != Done"
+	}
+	if order != "" {
+		return where + " " + order
+	}
+	return where
+}
+
+// QueryOpenJiraIssues runs jql limited to unfinished issues and drops any whose status name is in
+// excludeStatuses (case-insensitive), for workflows with finished statuses outside the Done category.
+func (m *Manager) QueryOpenJiraIssues(ctx context.Context, jql string, maxResults int, excludeStatuses []string) ([]types.JiraIssueDTO, error) {
+	issues, err := m.QueryJiraIssues(ctx, OpenOnlyJQL(jql), maxResults)
+	if err != nil || len(excludeStatuses) == 0 {
+		return issues, err
+	}
+	excluded := make(map[string]bool, len(excludeStatuses))
+	for _, st := range excludeStatuses {
+		excluded[strings.ToLower(strings.TrimSpace(st))] = true
+	}
+	open := issues[:0]
+	for _, is := range issues {
+		if !excluded[strings.ToLower(strings.TrimSpace(is.Status))] {
+			open = append(open, is)
+		}
+	}
+	return open, nil
+}
+
+// SearchJiraIssues lists issues assigned to the connected user, optionally filtered by a key or text.
+func (m *Manager) SearchJiraIssues(ctx context.Context, query string) ([]types.JiraIssueDTO, error) {
 	m.mu.RLock()
 	proj := m.config.Jira.ProjectKey
 	m.mu.RUnlock()
 
-	cleanBaseURL := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if cleanBaseURL == "" {
-		cleanBaseURL = "https://jira.atlassian.net"
+	jqlParts := []string{"assignee = currentUser()"}
+	baseURL, _, _, _ := m.jiraCredentials()
+	// "PAY" is the placeholder key shipped in the default config; never scope a real Cloud site by it.
+	if proj != "" && !(proj == "PAY" && strings.Contains(baseURL, "atlassian.net")) {
+		jqlParts = append(jqlParts, fmt.Sprintf("project = %q", proj))
 	}
-
-	// Live API search if live credentials exist
-	if token != "" && username != "" && !strings.Contains(cleanBaseURL, "mock") {
-		var jqlParts []string
-		if proj != "" && !(proj == "PAY" && strings.Contains(cleanBaseURL, "atlassian.net")) {
-			jqlParts = append(jqlParts, fmt.Sprintf("project = %s", proj))
-		}
-		// Strictly scope to tickets assigned to current user
-		jqlParts = append(jqlParts, "assignee = currentUser()")
-
-		cleanQuery := strings.TrimSpace(query)
-		if cleanQuery != "" {
-			if m.DetectJiraKey(cleanQuery) != "" {
-				jqlParts = append(jqlParts, fmt.Sprintf("(key = \"%s\" OR text ~ \"%s\")", cleanQuery, cleanQuery))
-			} else {
-				jqlParts = append(jqlParts, fmt.Sprintf("text ~ \"%s\"", cleanQuery))
-			}
-		}
-		jql := strings.Join(jqlParts, " AND ") + " ORDER BY updated DESC"
-
-		fieldsParam := "fields=key,summary,description,status,priority,issuetype,assignee,reporter,created"
-		searchEndpoints := []string{
-			fmt.Sprintf("%s/rest/api/3/search/jql?jql=%s&%s&maxResults=50", cleanBaseURL, url.QueryEscape(jql), fieldsParam),
-			fmt.Sprintf("%s/rest/api/2/search?jql=%s&maxResults=50", cleanBaseURL, url.QueryEscape(jql)),
-		}
-
-		for _, endpoint := range searchEndpoints {
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-			if err != nil {
-				continue
-			}
-			req.SetBasicAuth(username, token)
-			req.Header.Set("Accept", "application/json")
-			req.Header.Set("User-Agent", "Meta-Orchestrator")
-
-			resp, err := m.client.Do(req)
-			if err != nil {
-				continue
-			}
-			if resp.StatusCode == http.StatusOK {
-				defer resp.Body.Close()
-				var searchResult struct {
-					Issues []struct {
-						Key    string `json:"key"`
-						Fields struct {
-							Summary     string      `json:"summary"`
-							Description interface{} `json:"description"`
-							Status      struct {
-								Name string `json:"name"`
-							} `json:"status"`
-							Priority struct {
-								Name string `json:"name"`
-							} `json:"priority"`
-							IssueType struct {
-								Name string `json:"name"`
-							} `json:"issuetype"`
-							Assignee *struct {
-								DisplayName  string `json:"displayName"`
-								EmailAddress string `json:"emailAddress"`
-								Name         string `json:"name"`
-							} `json:"assignee"`
-							Reporter *struct {
-								DisplayName  string `json:"displayName"`
-								EmailAddress string `json:"emailAddress"`
-							} `json:"reporter"`
-							Created string `json:"created"`
-						} `json:"fields"`
-					} `json:"issues"`
-				}
-				if json.NewDecoder(resp.Body).Decode(&searchResult) == nil && len(searchResult.Issues) > 0 {
-					var list []types.JiraIssueDTO
-					for _, it := range searchResult.Issues {
-						assigneeName := username
-						if it.Fields.Assignee != nil {
-							if it.Fields.Assignee.DisplayName != "" {
-								assigneeName = it.Fields.Assignee.DisplayName
-							} else if it.Fields.Assignee.EmailAddress != "" {
-								assigneeName = it.Fields.Assignee.EmailAddress
-							} else if it.Fields.Assignee.Name != "" {
-								assigneeName = it.Fields.Assignee.Name
-							}
-						}
-						reporterName := ""
-						if it.Fields.Reporter != nil {
-							if it.Fields.Reporter.DisplayName != "" {
-								reporterName = it.Fields.Reporter.DisplayName
-							} else if it.Fields.Reporter.EmailAddress != "" {
-								reporterName = it.Fields.Reporter.EmailAddress
-							}
-						}
-						list = append(list, types.JiraIssueDTO{
-							Key:         it.Key,
-							Summary:     it.Fields.Summary,
-							Description: parseJiraDescription(it.Fields.Description),
-							Status:      it.Fields.Status.Name,
-							Priority:    it.Fields.Priority.Name,
-							IssueType:   it.Fields.IssueType.Name,
-							URL:         fmt.Sprintf("%s/browse/%s", cleanBaseURL, it.Key),
-							Assignee:    assigneeName,
-							Reporter:    reporterName,
-							Created:     it.Fields.Created,
-						})
-					}
-					return list, nil
-				}
-			} else {
-				resp.Body.Close()
-			}
+	if q := strings.TrimSpace(query); q != "" {
+		q = strings.ReplaceAll(q, `"`, `\"`)
+		if m.DetectJiraKey(q) != "" {
+			jqlParts = append(jqlParts, fmt.Sprintf(`(key = "%s" OR text ~ "%s")`, q, q))
+		} else {
+			jqlParts = append(jqlParts, fmt.Sprintf(`text ~ "%s"`, q))
 		}
 	}
-
-	userAssignee := username
-	if userAssignee == "" {
-		userAssignee = "currentUser()"
-	}
-
-	// Curated enterprise mock tickets for instant operator readiness (assigned to active user)
-	mockIssues := []types.JiraIssueDTO{
-		{
-			Key:         fmt.Sprintf("%s-1044", proj),
-			Summary:     "Implement Apple Pay & Google Pay Express Checkout in mobile web gateway",
-			Description: "As a checkout customer, I want 1-tap mobile payment so conversion rate increases on Safari and Chrome.",
-			Status:      "To Do",
-			Priority:    "High",
-			IssueType:   "Story",
-			URL:         fmt.Sprintf("%s/browse/%s-1044", cleanBaseURL, proj),
-			Reporter:    "sarah.product@acme.corp",
-			Assignee:    userAssignee,
-			Created:     "2026-09-25",
-		},
-		{
-			Key:         fmt.Sprintf("%s-1045", proj),
-			Summary:     "Idempotent Webhook Delivery for Recurring Stripe Subscriptions",
-			Description: "Prevent duplicate charges on network retry spikes by verifying event ID in Redis before mutating database.",
-			Status:      "To Do",
-			Priority:    "Highest",
-			IssueType:   "Bug",
-			URL:         fmt.Sprintf("%s/browse/%s-1045", cleanBaseURL, proj),
-			Reporter:    "alex.eng@acme.corp",
-			Assignee:    userAssignee,
-			Created:     "2026-09-26",
-		},
-		{
-			Key:         fmt.Sprintf("%s-1046", proj),
-			Summary:     "PCI-DSS v4.0 Compliance Tokenization & Key Rotation Service",
-			Description: "Implement automated KMS key rotation for client-side card encryption tokens.",
-			Status:      "To Do",
-			Priority:    "Medium",
-			IssueType:   "Task",
-			URL:         fmt.Sprintf("%s/browse/%s-1046", cleanBaseURL, proj),
-			Reporter:    "security-lead@acme.corp",
-			Assignee:    userAssignee,
-			Created:     "2026-09-26",
-		},
-		{
-			Key:         fmt.Sprintf("%s-1047", proj),
-			Summary:     "GraphQL Settlement Batch Query Timeout under High Volume",
-			Description: "Optimize SQL index on settlement_transactions to eliminate 504 Gateway Timeouts.",
-			Status:      "To Do",
-			Priority:    "High",
-			IssueType:   "Bug",
-			URL:         fmt.Sprintf("%s/browse/%s-1047", cleanBaseURL, proj),
-			Reporter:    "david.sre@acme.corp",
-			Assignee:    userAssignee,
-			Created:     "2026-09-27",
-		},
-	}
-
-	if query == "" {
-		return mockIssues, nil
-	}
-
-	qLower := strings.ToLower(query)
-	var filtered []types.JiraIssueDTO
-	for _, issue := range mockIssues {
-		if strings.Contains(strings.ToLower(issue.Key), qLower) ||
-			strings.Contains(strings.ToLower(issue.Summary), qLower) ||
-			strings.Contains(strings.ToLower(issue.Description), qLower) {
-			filtered = append(filtered, issue)
-		}
-	}
-	return filtered, nil
+	return m.QueryOpenJiraIssues(ctx, strings.Join(jqlParts, " AND ")+" ORDER BY updated DESC", 50, m.GetJiraSyncConfig().ExcludeStatuses)
 }
 
 // DetectJiraKey parses text and returns detected JIRA issue key if found.
@@ -2579,115 +2601,118 @@ func (m *Manager) GetJiraURL(key string) string {
 	return fmt.Sprintf("%s/browse/%s", cleanURL, key)
 }
 
-// GetJiraIssue retrieves details for a single JIRA issue by key.
+// GetJiraIssue retrieves a single issue from the live JIRA API.
 func (m *Manager) GetJiraIssue(ctx context.Context, key string) (*types.JiraIssueDTO, error) {
 	key = strings.ToUpper(strings.TrimSpace(key))
-	token, _ := m.ResolveToken("jira", "")
-	username, _ := m.ResolveUsername("jira", "")
-	baseURL := m.ResolveBaseURL("jira", "", username)
-	cleanBaseURL := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-
-	if token != "" && username != "" && cleanBaseURL != "" && !strings.Contains(cleanBaseURL, "mock") {
-		fieldsParam := "fields=key,summary,description,status,priority,issuetype,assignee,reporter,created"
-		issueEndpoints := []string{
-			fmt.Sprintf("%s/rest/api/3/issue/%s?%s", cleanBaseURL, key, fieldsParam),
-			fmt.Sprintf("%s/rest/api/2/issue/%s?%s", cleanBaseURL, key, fieldsParam),
+	baseURL, username, token, ok := m.jiraCredentials()
+	if !ok {
+		return nil, ErrJiraNotConnected
+	}
+	fields := "fields=" + jiraIssueFieldList
+	endpoints := []string{
+		fmt.Sprintf("%s/rest/api/3/issue/%s?%s", baseURL, url.PathEscape(key), fields),
+		fmt.Sprintf("%s/rest/api/2/issue/%s?%s", baseURL, url.PathEscape(key), fields),
+	}
+	lastErr := fmt.Errorf("issue %s not found", key)
+	for _, endpoint := range endpoints {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
 		}
-		for _, endpoint := range issueEndpoints {
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-			if err != nil {
-				continue
-			}
-			req.SetBasicAuth(username, token)
-			req.Header.Set("Accept", "application/json")
-			req.Header.Set("User-Agent", "Meta-Orchestrator")
+		req.SetBasicAuth(username, token)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "Meta-Orchestrator")
+		resp, err := m.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var it jiraIssueFields
+		if resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&it) == nil && it.Key != "" {
+			resp.Body.Close()
+			dto := it.toDTO(baseURL)
+			return &dto, nil
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, fmt.Errorf("JIRA rejected the credentials (HTTP %d)", resp.StatusCode)
+		}
+	}
+	return nil, lastErr
+}
 
-			resp, err := m.client.Do(req)
-			if err == nil && resp.StatusCode == http.StatusOK {
-				defer resp.Body.Close()
-				var it struct {
-					Key    string `json:"key"`
-					Fields struct {
-						Summary     string      `json:"summary"`
-						Description interface{} `json:"description"`
-						Status      struct {
-							Name string `json:"name"`
-						} `json:"status"`
-						Priority struct {
-							Name string `json:"name"`
-						} `json:"priority"`
-						IssueType struct {
-							Name string `json:"name"`
-						} `json:"issuetype"`
-						Assignee *struct {
-							DisplayName  string `json:"displayName"`
-							EmailAddress string `json:"emailAddress"`
-							Name         string `json:"name"`
-						} `json:"assignee"`
-						Reporter *struct {
-							DisplayName  string `json:"displayName"`
-							EmailAddress string `json:"emailAddress"`
-						} `json:"reporter"`
-						Created string `json:"created"`
-					} `json:"fields"`
-				}
-				if json.NewDecoder(resp.Body).Decode(&it) == nil && it.Key != "" {
-					assigneeName := username
-					if it.Fields.Assignee != nil {
-						if it.Fields.Assignee.DisplayName != "" {
-							assigneeName = it.Fields.Assignee.DisplayName
-						} else if it.Fields.Assignee.EmailAddress != "" {
-							assigneeName = it.Fields.Assignee.EmailAddress
-						} else if it.Fields.Assignee.Name != "" {
-							assigneeName = it.Fields.Assignee.Name
-						}
-					}
-					reporterName := ""
-					if it.Fields.Reporter != nil {
-						if it.Fields.Reporter.DisplayName != "" {
-							reporterName = it.Fields.Reporter.DisplayName
-						} else if it.Fields.Reporter.EmailAddress != "" {
-							reporterName = it.Fields.Reporter.EmailAddress
-						}
-					}
-					return &types.JiraIssueDTO{
-						Key:         it.Key,
-						Summary:     it.Fields.Summary,
-						Description: parseJiraDescription(it.Fields.Description),
-						Status:      it.Fields.Status.Name,
-						Priority:    it.Fields.Priority.Name,
-						IssueType:   it.Fields.IssueType.Name,
-						URL:         fmt.Sprintf("%s/browse/%s", cleanBaseURL, it.Key),
-						Assignee:    assigneeName,
-						Reporter:    reporterName,
-						Created:     it.Fields.Created,
-					}, nil
-				}
-			}
-			if resp != nil {
-				resp.Body.Close()
+// GetJiraSyncConfig returns the board sync rules, falling back to defaults.
+func (m *Manager) GetJiraSyncConfig() types.JiraSyncConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.config.JiraSync == nil {
+		return types.DefaultJiraSyncConfig()
+	}
+	cfg := *m.config.JiraSync
+	cfg.AssignedRepos = append([]string(nil), cfg.AssignedRepos...)
+	if cfg.ExcludeStatuses == nil { // rules saved before the field existed
+		cfg.ExcludeStatuses = append([]string(nil), types.DefaultExcludedJiraStatuses...)
+		cfg.DefaultsVersion = types.JiraSyncDefaultsVersion
+	} else {
+		cfg.ExcludeStatuses = append([]string{}, cfg.ExcludeStatuses...)
+	}
+	for v := cfg.DefaultsVersion + 1; v <= types.JiraSyncDefaultsVersion; v++ {
+		for _, st := range types.JiraStatusesAddedIn[v] {
+			if !containsFold(cfg.ExcludeStatuses, st) {
+				cfg.ExcludeStatuses = append(cfg.ExcludeStatuses, st)
 			}
 		}
 	}
+	cfg.DefaultsVersion = types.JiraSyncDefaultsVersion
+	cfg.StatusStageMap = make(map[string]string, len(m.config.JiraSync.StatusStageMap))
+	for k, v := range m.config.JiraSync.StatusStageMap {
+		cfg.StatusStageMap[k] = v
+	}
+	return cfg
+}
 
-	issues, err := m.SearchJiraIssues(ctx, key)
-	if err == nil {
-		for _, issue := range issues {
-			if strings.EqualFold(issue.Key, key) {
-				return &issue, nil
-			}
+// UpdateJiraSyncConfig validates and persists the board sync rules.
+func (m *Manager) UpdateJiraSyncConfig(cfg types.JiraSyncConfig) (types.JiraSyncConfig, error) {
+	def := types.DefaultJiraSyncConfig()
+	cfg.JQL = strings.TrimSpace(cfg.JQL)
+	if cfg.JQL == "" {
+		cfg.JQL = def.JQL
+	}
+	if cfg.IntervalSeconds < 60 {
+		cfg.IntervalSeconds = 60
+	}
+	if cfg.MaxIssues <= 0 || cfg.MaxIssues > 100 {
+		cfg.MaxIssues = def.MaxIssues
+	}
+	if cfg.WorkflowID == "" {
+		cfg.WorkflowID = def.WorkflowID
+	}
+	if cfg.SelectedMethod == "" {
+		cfg.SelectedMethod = def.SelectedMethod
+	}
+	if cfg.DefaultStageID == "" {
+		cfg.DefaultStageID = def.DefaultStageID
+	}
+	normalized := make(map[string]string, len(cfg.StatusStageMap))
+	for status, stage := range cfg.StatusStageMap {
+		if s := strings.ToLower(strings.TrimSpace(status)); s != "" && stage != "" {
+			normalized[s] = stage
 		}
 	}
-	// Fallback dynamic ticket if not in curated list
-	return &types.JiraIssueDTO{
-		Key:         strings.ToUpper(key),
-		Summary:     fmt.Sprintf("Task implementation for %s", strings.ToUpper(key)),
-		Description: fmt.Sprintf("Detailed implementation and acceptance testing criteria for %s.", strings.ToUpper(key)),
-		Status:      "To Do",
-		Priority:    "Medium",
-		IssueType:   "Story",
-		URL:         m.GetJiraURL(strings.ToUpper(key)),
-	}, nil
+	cfg.StatusStageMap = normalized
+	excluded := []string{} // non-nil: an emptied list stays empty instead of reverting to defaults
+	for _, st := range cfg.ExcludeStatuses {
+		if st = strings.TrimSpace(st); st != "" {
+			excluded = append(excluded, st)
+		}
+	}
+	cfg.ExcludeStatuses = excluded
+	cfg.DefaultsVersion = types.JiraSyncDefaultsVersion // the operator has seen the current defaults
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.config.JiraSync = &cfg
+	return cfg, m.save()
 }
 
 // PublishToConfluence publishes a technical document, PRD, or ATDD report directly to Confluence.

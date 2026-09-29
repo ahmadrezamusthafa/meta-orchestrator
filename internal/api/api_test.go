@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/shadow"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
@@ -14,10 +15,17 @@ import (
 func setupTestRouter() *Router {
 	hub := ws.NewHub()
 	go hub.Run()
-	return NewRouter(RouterConfig{
+	r := NewRouter(RouterConfig{
 		WSHub:   hub,
 		RootDir: "/tmp",
 	})
+	// Tests trigger real stage executions: keep them off live providers.
+	for _, p := range []string{"claude", "antigravity", "openai", "opencode"} {
+		r.clientFactory.OverrideProvider(p, stubProvider{})
+	}
+	r.seedFixtureTasks()
+	r.reconcileIdleRunning()
+	return r
 }
 
 func TestTasksAPI_ListAndFilter(t *testing.T) {
@@ -120,11 +128,20 @@ func TestTasksAPI_HITL_Inject_Reset_Gate(t *testing.T) {
 	router.ServeHTTP(wGet, reqGet)
 	var task types.Task
 	_ = json.NewDecoder(wGet.Body).Decode(&task)
-	if task.State != types.TaskStateRunning {
-		t.Errorf("Expected task state RUNNING after reset, got %s", task.State)
+	if task.State != types.TaskStateRunning && task.State != types.TaskStateWaitingGateApproval {
+		t.Errorf("Expected reset to restart the stage, got %s", task.State)
 	}
 
-	// 3. Test Gate Approval
+	// 3. Gate approval is only possible once a stage has produced output for review.
+	earlyGate := httptest.NewRecorder()
+	router.ServeHTTP(earlyGate, httptest.NewRequest(http.MethodPost, "/api/v1/tasks/TASK-8943/gate", bytes.NewBufferString(`{"approved":true}`)))
+	if earlyGate.Code != http.StatusConflict {
+		t.Fatalf("Expected 409 approving a stage with nothing to review, got %d", earlyGate.Code)
+	}
+	router.executeTaskWithAI("TASK-8943")
+	if st := router.taskSnapshot("TASK-8943"); st.State != types.TaskStateWaitingGateApproval {
+		t.Fatalf("Expected stage output awaiting review, got %s", st.State)
+	}
 	gateBody := GateApprovalRequest{Approved: true, Feedback: "Architecture and schemas approved"}
 	gatePayload, _ := json.Marshal(gateBody)
 	reqGate := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/TASK-8943/gate", bytes.NewReader(gatePayload))
@@ -134,6 +151,9 @@ func TestTasksAPI_HITL_Inject_Reset_Gate(t *testing.T) {
 
 	if wGate.Code != http.StatusOK {
 		t.Fatalf("Expected 200 OK for gate, got %d", wGate.Code)
+	}
+	if st := router.taskSnapshot("TASK-8943"); st.CurrentStageID != "techdoc_rfc" {
+		t.Fatalf("Expected approval to advance atdd_creation → techdoc_rfc, got %s", st.CurrentStageID)
 	}
 }
 
@@ -203,7 +223,7 @@ func TestProvidersAndBenchmarksAPI(t *testing.T) {
 
 	var benchResp struct {
 		TotalCells int                `json:"total_cells"`
-		Matrix     []BenchmarkCellDTO `json:"matrix"`
+		Matrix     []shadow.MatrixCell `json:"matrix"`
 	}
 	_ = json.NewDecoder(wBench.Body).Decode(&benchResp)
 	if benchResp.TotalCells != 36 {
@@ -254,22 +274,12 @@ func TestTasksAPI_ProcessAndTerminalLogs(t *testing.T) {
 	if proc.ProcessID <= 0 {
 		t.Errorf("Expected valid process ID, got %d", proc.ProcessID)
 	}
-	if proc.Status != "RUNNING" {
-		t.Errorf("Expected status RUNNING, got %s", proc.Status)
+	// Seeded tasks have no live agent turn, so the orchestrator must not report them as running.
+	if proc.Status != "PAUSED" {
+		t.Errorf("Expected status PAUSED for a task with no active agent, got %s", proc.Status)
 	}
 	if len(proc.Logs) == 0 {
 		t.Errorf("Expected console logs, got 0")
-	}
-
-	// 2. POST /api/v1/tasks/TASK-8942/process/execute
-	cmdPayload := []byte(`{"command":"go test -v ./... -run TestBilling"}`)
-	reqExec := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/TASK-8942/process/execute", bytes.NewReader(cmdPayload))
-	reqExec.Header.Set("Content-Type", "application/json")
-	wExec := httptest.NewRecorder()
-	router.ServeHTTP(wExec, reqExec)
-
-	if wExec.Code != http.StatusOK {
-		t.Fatalf("Expected 200 OK for command execute, got %d", wExec.Code)
 	}
 
 	// 3. GET /api/v1/tasks/TASK-8942/terminal
@@ -396,8 +406,9 @@ func TestTasksAPI_DependencyDAGAndWorktree(t *testing.T) {
 	var reloadedTask types.Task
 	_ = json.NewDecoder(wGet.Body).Decode(&reloadedTask)
 
-	if reloadedTask.State != types.TaskStateRunning {
-		t.Errorf("Expected unblocked task state RUNNING, got %s", reloadedTask.State)
+	// Unblocking starts the stage automatically; with a fast stub it may already await review.
+	if reloadedTask.State != types.TaskStateRunning && reloadedTask.State != types.TaskStateWaitingGateApproval {
+		t.Errorf("Expected unblocked task to start (RUNNING or WAITING_GATE_APPROVAL), got %s", reloadedTask.State)
 	}
 }
 

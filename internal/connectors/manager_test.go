@@ -11,11 +11,17 @@ import (
 )
 
 func TestConnectorsManager(t *testing.T) {
+	isolateJiraEnv(t)
 	tempDir := t.TempDir()
 	mgr := NewManager(tempDir)
 
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/search") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"issues":[{"key":"PAY-7","fields":{"summary":"Real issue","status":{"name":"To Do"}}}]}`))
+			return
+		}
 		if strings.Contains(r.URL.Path, "myself") {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"displayName": "DevOps Engineer", "key": "devops"}`))
@@ -68,9 +74,15 @@ func TestConnectorsManager(t *testing.T) {
 	}
 
 	// 5. Test JIRA issue search
+	if _, err := NewManager(t.TempDir()).SearchJiraIssues(context.Background(), ""); err != ErrJiraNotConnected {
+		t.Fatalf("Expected ErrJiraNotConnected without credentials, got %v", err)
+	}
+	if err := mgr.UpdateJira(cfg.Jira); err != nil {
+		t.Fatalf("UpdateJira: %v", err)
+	}
 	issues, err := mgr.SearchJiraIssues(context.Background(), "")
-	if err != nil || len(issues) == 0 {
-		t.Fatalf("Expected mock JIRA issues to be returned, got err: %v, count: %d", err, len(issues))
+	if err != nil || len(issues) != 1 || issues[0].Key != "PAY-7" {
+		t.Fatalf("Expected the live JIRA issue, got err: %v, issues: %+v", err, issues)
 	}
 
 	// 6. Test JIRA key detection
@@ -127,4 +139,77 @@ func TestConnectorsManager(t *testing.T) {
 	}
 
 	mgr.StopPeriodicPinger()
+}
+
+// isolateJiraEnv hides the developer's real JIRA credentials so tests only ever talk to httptest servers.
+func isolateJiraEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{"JIRA_EMAIL", "JIRA_USERNAME", "ATLASSIAN_EMAIL", "JIRA_API_TOKEN", "JIRA_TOKEN",
+		"ATLASSIAN_API_TOKEN", "JIRA_URL", "JIRA_BASE_URL", "CONFLUENCE_EMAIL", "CONFLUENCE_USERNAME",
+		"CONFLUENCE_API_TOKEN", "CONFLUENCE_TOKEN", "CONFLUENCE_URL", "CONFLUENCE_BASE_URL"} {
+		t.Setenv(k, "")
+	}
+}
+
+func TestOpenOnlyJQL(t *testing.T) {
+	cases := map[string]string{
+		"":                                    "statusCategory != Done",
+		"assignee = currentUser()":            "(assignee = currentUser()) AND statusCategory != Done",
+		"project = PAY ORDER BY updated DESC": "(project = PAY) AND statusCategory != Done ORDER BY updated DESC",
+		"project = PAY order  by rank":        "(project = PAY) AND statusCategory != Done order  by rank",
+		"ORDER BY created":                    "statusCategory != Done ORDER BY created",
+	}
+	for in, want := range cases {
+		if got := OpenOnlyJQL(in); got != want {
+			t.Errorf("OpenOnlyJQL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestIssueEpicResolution(t *testing.T) {
+	one := 1
+	var story jiraIssueFields
+	story.Key = "PAY-2"
+	story.Fields.Parent = &struct {
+		Key    string `json:"key"`
+		Fields struct {
+			Summary   string        `json:"summary"`
+			IssueType jiraIssueType `json:"issuetype"`
+		} `json:"fields"`
+	}{Key: "PAY-1"}
+	story.Fields.Parent.Fields.Summary = "Checkout revamp"
+	story.Fields.Parent.Fields.IssueType = jiraIssueType{Name: "Epic", HierarchyLevel: &one}
+	if d := story.toDTO("https://x"); d.EpicKey != "PAY-1" || d.EpicSummary != "Checkout revamp" || d.ParentKey != "PAY-1" {
+		t.Fatalf("story under epic: %+v", d)
+	}
+
+	var epic jiraIssueFields
+	epic.Key = "PAY-1"
+	epic.Fields.Summary = "Checkout revamp"
+	epic.Fields.IssueType = jiraIssueType{Name: "Epic"}
+	if d := epic.toDTO("https://x"); d.EpicKey != "PAY-1" {
+		t.Fatalf("an epic groups under itself: %+v", d)
+	}
+
+	var legacy jiraIssueFields
+	legacy.Key = "PAY-3"
+	legacy.Fields.EpicLink = "PAY-9"
+	if d := legacy.toDTO("https://x"); d.EpicKey != "PAY-9" {
+		t.Fatalf("legacy Epic Link: %+v", d)
+	}
+}
+
+func TestNewDefaultExclusionsReachSavedRules(t *testing.T) {
+	mgr := NewManager(t.TempDir())
+	mgr.mu.Lock()
+	mgr.config.JiraSync = &types.JiraSyncConfig{JQL: "project = PAY", ExcludeStatuses: []string{"Done"}, DefaultsVersion: 1}
+	mgr.mu.Unlock()
+	cfg := mgr.GetJiraSyncConfig()
+	if !containsFold(cfg.ExcludeStatuses, "Won't Fix") || len(cfg.ExcludeStatuses) != 2 {
+		t.Fatalf("Won't Fix should be added to older saved rules without restoring others: %v", cfg.ExcludeStatuses)
+	}
+	saved, _ := mgr.UpdateJiraSyncConfig(types.JiraSyncConfig{JQL: "x", ExcludeStatuses: []string{"Done"}})
+	if containsFold(saved.ExcludeStatuses, "Won't Fix") || containsFold(mgr.GetJiraSyncConfig().ExcludeStatuses, "Won't Fix") {
+		t.Fatalf("an operator who removes Won't Fix keeps it removed: %v", mgr.GetJiraSyncConfig().ExcludeStatuses)
+	}
 }

@@ -21,3 +21,5 @@ bin/
 workspaces/
 .sdlc/
 .mcp.json
+# Phase 4 telemetry tables (may contain task titles / identifiers)
+.sdlc/telemetry/

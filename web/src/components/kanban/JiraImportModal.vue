@@ -4,6 +4,7 @@ import { api } from '../../services/api'
 import { useTaskStore } from '../../stores/tasks'
 import { useWorkflowStore } from '../../stores/workflows'
 import { useToastStore } from '../../stores/toast'
+import { useProjectStore } from '../../stores/projects'
 import type { JiraIssueDTO } from '../../types'
 import { X, Search, Check, Download, AlertCircle, ExternalLink, RefreshCw, User, ShieldCheck, Zap, Layers } from 'lucide-vue-next'
 
@@ -15,6 +16,8 @@ const emit = defineEmits<{
 const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
 const toastStore = useToastStore()
+const projectStore = useProjectStore()
+const loadError = ref('')
 
 const searchQuery = ref('')
 const issues = ref<JiraIssueDTO[]>([])
@@ -27,9 +30,31 @@ const jiraUsername = ref('')
 const selectedWorkflowId = ref('general_ai_sdlc')
 const selectedMethod = ref('BMAD')
 const startStageId = ref('prd_discovery')
-const selectedRepos = ref<string[]>(['frontend-portal', 'backend-core'])
+const selectedRepos = ref<string[]>([])
 
-const availableRepos = ['frontend-portal', 'backend-core', 'api-contracts', 'automation-tests']
+const availableRepos = computed(() => {
+  const names = new Set<string>(projectStore.activeRepos.map((r: any) => r.name))
+  selectedRepos.value.forEach((r) => names.add(r))
+  return Array.from(names)
+})
+
+function boardTaskFor(issue: JiraIssueDTO) {
+  return taskStore.jiraKeysOnBoard.get(issue.key.toUpperCase()) || null
+}
+
+// Start from the sync rules so manual imports and synced issues land the same way.
+async function loadDefaults() {
+  if (!taskStore.jiraSync) await taskStore.fetchJiraSync()
+  const cfg = taskStore.jiraSync?.config
+  if (cfg) {
+    selectedWorkflowId.value = cfg.workflow_id || selectedWorkflowId.value
+    selectedMethod.value = cfg.selected_method || selectedMethod.value
+    startStageId.value = cfg.default_stage_id || startStageId.value
+    if (cfg.assigned_repos?.length) selectedRepos.value = [...cfg.assigned_repos]
+  }
+  if (!projectStore.projects.length) await projectStore.fetchProjects()
+  if (!selectedRepos.value.length) selectedRepos.value = projectStore.activeRepos.map((r: any) => r.name)
+}
 
 async function loadJiraConfig() {
   try {
@@ -44,28 +69,30 @@ async function loadJiraConfig() {
 
 async function fetchIssues() {
   isLoading.value = true
+  loadError.value = ''
   try {
     const list = await api.getJiraIssues(searchQuery.value)
     issues.value = list
-    if (list.length > 0 && !selectedIssue.value) {
-      selectedIssue.value = list[0]
+    if (!selectedIssue.value || boardTaskFor(selectedIssue.value)) {
+      selectedIssue.value = list.find((i) => !boardTaskFor(i)) || null
     }
   } catch (err: any) {
-    toastStore.error('JIRA Error', err.message || 'Failed to fetch issues')
+    issues.value = []
+    selectedIssue.value = null
+    loadError.value = err.message || 'Failed to fetch issues'
   } finally {
     isLoading.value = false
   }
 }
 
 function selectIssue(issue: JiraIssueDTO) {
+  if (boardTaskFor(issue)) return
   selectedIssue.value = issue
 }
 
 function toggleRepo(repo: string) {
   if (selectedRepos.value.includes(repo)) {
-    if (selectedRepos.value.length > 1) {
-      selectedRepos.value = selectedRepos.value.filter(r => r !== repo)
-    }
+    selectedRepos.value = selectedRepos.value.filter(r => r !== repo)
   } else {
     selectedRepos.value.push(repo)
   }
@@ -82,7 +109,7 @@ async function handleImport() {
       assigned_repos: selectedRepos.value,
       start_stage_id: startStageId.value
     })
-    toastStore.success('Imported from JIRA', `Task ${task.id} (${selectedIssue.value.key}) created on Kanban`)
+    toastStore.success('Imported from JIRA', `${selectedIssue.value.key} added to the board as ${task.id}`)
     await taskStore.fetchTasks()
     emit('imported', task.id)
     emit('close')
@@ -104,7 +131,7 @@ async function quickImport(issue: JiraIssueDTO, e?: Event) {
       assigned_repos: selectedRepos.value,
       start_stage_id: startStageId.value
     })
-    toastStore.success('Quick Imported', `Task ${task.id} (${issue.key}) added to Kanban`)
+    toastStore.success('Imported from JIRA', `${issue.key} added to the board as ${task.id}`)
     await taskStore.fetchTasks()
     emit('imported', task.id)
     emit('close')
@@ -115,8 +142,9 @@ async function quickImport(issue: JiraIssueDTO, e?: Event) {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadJiraConfig()
+  await loadDefaults()
   fetchIssues()
 })
 </script>
@@ -150,7 +178,7 @@ onMounted(() => {
       <!-- Credential & JQL Status Bar -->
       <div class="px-6 py-2.5 bg-blue-950/20 border-b border-blue-900/30 flex items-center justify-between text-xs flex-wrap gap-2">
         <div class="flex items-center gap-2 text-slate-300">
-          <div class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
+          <div class="w-2 h-2 rounded-full" :class="loadError ? 'bg-rose-400' : 'bg-emerald-400'"></div>
           <span class="text-slate-400">Assigned to:</span>
           <span class="font-mono font-semibold text-blue-300 px-2 py-0.5 rounded bg-blue-950/80 border border-blue-800/60 flex items-center gap-1.5">
             <User class="w-3 h-3 text-blue-400" />
@@ -199,18 +227,24 @@ onMounted(() => {
           <div v-if="isLoading" class="p-8 text-center text-xs text-slate-400 animate-pulse bg-slate-950/40 rounded-lg border border-slate-800/80">
             Querying JIRA API for tickets assigned to {{ jiraUsername || 'currentUser()' }}...
           </div>
+          <div v-else-if="loadError" class="p-6 text-center text-xs bg-rose-950/20 rounded-lg border border-rose-900/50 text-rose-200 space-y-2">
+            <p>{{ loadError }}</p>
+            <router-link to="/connectors" class="inline-block underline text-rose-100 hover:text-white" @click="$emit('close')">Open Connectors</router-link>
+          </div>
           <div v-else-if="issues.length === 0" class="p-8 text-center text-xs text-slate-400 bg-slate-950/60 rounded-lg border border-slate-800">
-            No assigned JIRA tickets found matching criteria.
+            No assigned JIRA issues match this search.
           </div>
           <div v-else class="grid grid-cols-1 gap-2 max-h-56 overflow-y-auto pr-1">
             <div
               v-for="issue in issues"
               :key="issue.key"
               @click="selectIssue(issue)"
-              class="p-3 rounded-lg border transition-all cursor-pointer flex items-center justify-between group/row"
-              :class="selectedIssue?.key === issue.key
-                ? 'bg-blue-950/40 border-blue-600/80 shadow-sm ring-1 ring-blue-500/30'
-                : 'bg-slate-950 border-slate-800/80 hover:border-slate-700 hover:bg-slate-900/60'"
+              class="p-3 rounded-lg border transition-all flex items-center justify-between group/row"
+              :class="boardTaskFor(issue)
+                ? 'bg-slate-950/40 border-slate-800/60 opacity-60 cursor-default'
+                : selectedIssue?.key === issue.key
+                  ? 'bg-blue-950/40 border-blue-600/80 shadow-sm ring-1 ring-blue-500/30 cursor-pointer'
+                  : 'bg-slate-950 border-slate-800/80 hover:border-slate-700 hover:bg-slate-900/60 cursor-pointer'"
             >
               <div class="flex items-center gap-3 overflow-hidden mr-3">
                 <span class="px-2 py-0.5 rounded font-mono text-[11px] font-semibold bg-blue-950 text-blue-300 border border-blue-800/60 flex-shrink-0">
@@ -238,8 +272,16 @@ onMounted(() => {
               </div>
 
               <div class="flex items-center gap-2 flex-shrink-0">
+                <span
+                  v-if="boardTaskFor(issue)"
+                  class="h-7 px-2.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[11px] font-mono flex items-center"
+                  :title="`Already on the board as ${boardTaskFor(issue)}`"
+                >
+                  On board · {{ boardTaskFor(issue) }}
+                </span>
                 <!-- 1-Click Quick Import Button -->
                 <button
+                  v-else
                   @click="quickImport(issue, $event)"
                   :disabled="importingKey === issue.key"
                   type="button"
@@ -317,6 +359,7 @@ onMounted(() => {
 
           <div>
             <label class="block text-xs font-medium text-slate-300 mb-1.5">Assigned Repositories</label>
+            <p v-if="availableRepos.length === 0" class="text-[11px] text-slate-500">No repositories registered — assign them later from the task.</p>
             <div class="flex flex-wrap gap-1.5">
               <button
                 v-for="repo in availableRepos"

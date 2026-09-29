@@ -42,15 +42,71 @@ export interface Task {
   updated_at: string
 }
 
+export interface TaskRepoWorktreeDTO {
+  repo: string
+  source_path: string
+  worktree_path: string
+  checkout_path: string
+  sub_path?: string
+  branch: string
+  base_ref: string
+  exists: boolean
+  dirty: boolean
+  error?: string
+}
+
 export interface TaskWorktreeDTO {
   task_id: string
   is_worktree: boolean
+  use_worktree: boolean
   worktree_path: string
   branch: string
   base_ref: string
   parallel_isolation: boolean
-  status: string
+  status: 'PLANNED' | 'ACTIVE' | 'DISABLED' | 'NO_REPOS' | string
   assigned_repos?: string[]
+  repos?: TaskRepoWorktreeDTO[]
+  error?: string
+}
+
+export interface TaskArtifactDTO {
+  path: string
+  name: string
+  kind: 'stage_output' | 'document' | 'media' | 'other'
+  stage_id?: string
+  size: number
+  modified_at: string
+}
+
+export type DiffAgainst = 'base' | 'head'
+
+export interface DiffFileDTO {
+  path: string
+  old_path?: string
+  status: 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked'
+  additions: number
+  deletions: number
+  binary?: boolean
+}
+
+export interface RepoDiffDTO {
+  repo: string
+  branch?: string
+  base_ref?: string
+  compare_ref?: string
+  commits?: { sha: string; subject: string }[]
+  files?: DiffFileDTO[]
+  additions?: number
+  deletions?: number
+  patch?: string
+  truncated?: boolean
+  error?: string
+}
+
+export interface TaskDiffDTO {
+  task_id: string
+  against: DiffAgainst
+  repos: RepoDiffDTO[]
 }
 
 export interface TaskDependencyInfoDTO {
@@ -208,6 +264,18 @@ export interface BenchmarkCellDTO {
   fpvr_percent: number
   avg_tokens: number
   avg_duration_s: number
+  // Phase 4 shadow-benchmark fields (optional for backward compatibility)
+  model_tier?: string
+  avg_cost_usd?: number
+  score?: number
+  samples?: number
+}
+
+export interface BenchmarksResponseDTO {
+  total_cells: number
+  generated_at?: string
+  source?: 'shadow_benchmark' | 'default' | string
+  matrix: BenchmarkCellDTO[]
 }
 
 export interface PromptItemDTO {
@@ -434,6 +502,42 @@ export interface JiraIssueDTO {
   reporter?: string
   assignee?: string
   created?: string
+  parent_key?: string
+  epic_key?: string
+  epic_summary?: string
+}
+
+export interface JiraSyncConfig {
+  enabled: boolean
+  jql: string
+  interval_seconds: number
+  max_issues: number
+  workflow_id: string
+  selected_method: string
+  assigned_repos: string[] | null
+  default_stage_id: string
+  status_stage_map?: Record<string, string> | null
+  update_existing: boolean
+  exclude_statuses: string[] | null
+}
+
+export interface JiraSyncStatus {
+  connected: boolean
+  running: boolean
+  last_run_at?: string
+  last_error?: string
+  fetched: number
+  created: number
+  updated: number
+  skipped: number
+  dismissed: number
+  next_run_at?: string
+  linked_tasks: number
+}
+
+export interface JiraSyncSettings {
+  config: JiraSyncConfig
+  status: JiraSyncStatus
 }
 
 export interface ImportJiraIssueRequest {
@@ -537,5 +641,180 @@ export interface CheckPathCompatibilityResponse {
   error?: string
 }
 
+// ─── Phase 4: Telemetry & Analytics ────────────────────────────────────────
 
+export type TelemetryWindow = '24h' | '7d' | '30d' | 'all'
 
+export interface TelemetryTotalsDTO {
+  runs: number
+  prompt_tokens: number
+  completion_tokens: number
+  cached_tokens: number
+  total_tokens: number
+  cost_usd: number
+  fpvr_percent: number
+  mttr_seconds: number
+}
+
+export interface TelemetryCategoryDTO {
+  category: string
+  runs: number
+  avg_tpf_tokens: number
+  avg_cost_usd: number
+  fpvr_percent: number
+}
+
+export interface LeaderboardEntryDTO {
+  model: string
+  tier: string
+  tasks_completed: number
+  fpvr_percent: number
+  avg_tpf_tokens: number
+  avg_cost_usd: number
+  avg_ttr_seconds: number
+}
+
+export interface MethodStatDTO {
+  method: string
+  runs: number
+  total_cost_usd: number
+  avg_cost_usd: number
+  avg_tpf_tokens: number
+  fpvr_percent: number
+  avg_ttr_seconds: number
+}
+
+export interface RepoStabilityDTO {
+  repo: string
+  runs: number
+  failure_loops: number
+  avg_test_iterations: number
+  flakiness_index: number // 0..1
+}
+
+export interface TelemetrySummaryDTO {
+  window: TelemetryWindow | string
+  repo: string
+  generated_at: string
+  query_latency_ms: number
+  totals: TelemetryTotalsDTO
+  by_category: TelemetryCategoryDTO[]
+  leaderboard: LeaderboardEntryDTO[]
+  methods: MethodStatDTO[]
+  stability: RepoStabilityDTO[]
+  repos: string[]
+}
+
+export interface TokenBurnPointDTO {
+  date: string
+  prompt_tokens: number
+  completion_tokens: number
+  cached_tokens: number
+  cost_usd: number
+}
+
+export interface MttrPointDTO {
+  date: string
+  runs: number
+  mttr_seconds: number
+  fpvr_percent: number
+}
+
+export interface TelemetryTrendsDTO {
+  window: TelemetryWindow | string
+  bucket: string
+  burn: TokenBurnPointDTO[]
+  mttr: MttrPointDTO[]
+}
+
+// ---------------------------------------------------------------------------
+// Agent Console (structured activity transcript) — .superpowers/console/contract.md
+// ---------------------------------------------------------------------------
+
+export type ConsoleEntryKind =
+  | 'user'
+  | 'assistant'
+  | 'thinking'
+  | 'tool_use'
+  | 'tool_result'
+  | 'request'
+  | 'response'
+  | 'system'
+  | 'error'
+  | 'state'
+
+export type ConsoleEntryStatus = 'streaming' | 'done' | 'error' | 'cancelled'
+
+export interface ConsoleToolInfo {
+  id: string
+  name: string
+  input?: Record<string, any>
+  is_error?: boolean
+}
+
+export interface ConsoleMessage {
+  role: string
+  content: string
+}
+
+export interface ConsoleRequestInfo {
+  model: string
+  method: string
+  strategy: string
+  fallback_chain?: string[]
+  messages?: ConsoleMessage[]
+  session_id?: string
+  source?: 'chat' | 'execute' | string
+}
+
+export interface ConsoleUsageInfo {
+  model: string
+  provider: string
+  prompt_tokens: number
+  completion_tokens: number
+  cached_tokens: number
+  cost_usd: number
+  duration_ms: number
+  finish_reason: string
+  session_id?: string
+}
+
+export interface ConsoleStateInfo {
+  from: string
+  to: string
+  stage?: string
+}
+
+export interface ConsoleEntry {
+  id: string
+  task_id: string
+  turn_id?: string
+  kind: ConsoleEntryKind
+  content?: string
+  status?: ConsoleEntryStatus
+  tool?: ConsoleToolInfo
+  request?: ConsoleRequestInfo
+  usage?: ConsoleUsageInfo
+  state?: ConsoleStateInfo
+  created_at: string
+  updated_at?: string
+}
+
+export interface TaskActivityResponse {
+  entries: ConsoleEntry[]
+  busy: boolean
+  active_turn_id: string
+  session_id: string
+  model: string
+}
+
+export interface TaskChatResponse {
+  turn_id: string
+  entry_id: string
+}
+
+export interface ConsoleActivityDelta {
+  id: string
+  delta: string
+  kind: 'assistant' | 'thinking'
+}
