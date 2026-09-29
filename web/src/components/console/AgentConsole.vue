@@ -394,8 +394,21 @@ const promptPlaceholder = computed(() =>
 
         <!-- Footer status line -->
         <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-1 font-mono text-[11px] text-slate-600">
-          <span :class="c.selectedModel.value ? 'text-violet-400/80' : ''" title="model that answered last">
-            {{ c.currentModel.value || 'auto' }}
+          <span
+            v-if="c.awaitingModel.value"
+            class="text-amber-400/80"
+            :title="`Router picked ${c.routedModel.value}. The model that actually answers is shown once the provider reports it.`"
+          >
+            routing → {{ c.routedModel.value }}…
+          </span>
+          <span
+            v-else
+            :class="c.selectedModel.value ? 'text-violet-400/80' : ''"
+            :title="c.routedDiffers.value
+              ? `Answered by ${c.currentModel.value}. The router picked ${c.routedModel.value}, but the provider CLI runs its own configured model.`
+              : 'model that answered last'"
+          >
+            {{ c.currentModel.value || 'auto' }}<span v-if="c.routedDiffers.value" class="text-slate-700"> (routed {{ c.routedModel.value }})</span>
           </span>
           <span aria-hidden="true">·</span>
           <span :title="c.sessionId.value || 'no session yet'">session {{ shortId(c.sessionId.value) }}</span>

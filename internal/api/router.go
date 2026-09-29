@@ -12,6 +12,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/quota"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
@@ -37,6 +38,12 @@ type RouterConfig struct {
 	Telemetry         TelemetryConfig
 	// TaskStorePath is the JSON file holding the Kanban board. Empty keeps tasks in memory only.
 	TaskStorePath string
+	// ProviderStatePath is the JSON file holding provider credentials, default models and quotas.
+	// Empty keeps them in memory only, so they are lost on restart.
+	ProviderStatePath string
+	// QuotaFetchers read provider-side plan limits per provider id. Nil uses the local Claude Code
+	// and Antigravity logins (quota.DefaultFetchers); tests pass an empty map to stay offline.
+	QuotaFetchers map[string]quota.Fetcher
 	// EnableJiraSync runs the background JIRA → board sync using the rules in connectors.json.
 	EnableJiraSync bool
 }
@@ -53,6 +60,8 @@ type Router struct {
 	clientFactory  *llm.ClientFactory
 	telemetry      *telemetrySubsystem
 	console        *consoleHub
+	quota          *quota.Service
+	connections    *connectionChecker
 
 	taskSeq       int             // last allocated TASK-N; guarded by mu
 	dismissedJira map[string]bool // JIRA keys the operator removed from the board; guarded by mu
@@ -96,6 +105,7 @@ func NewRouter(cfg RouterConfig) *Router {
 
 	stratRouter := router.NewRouter(orchCfg)
 	budgTracker := router.NewBudgetTracker()
+	loadProviderState(cfg.ProviderStatePath)
 	clFactory := llm.NewClientFactory(orchCfg)
 	clFactory.SetCredentialResolver(func(providerID string) (apiKey string, sessionToken string, authMethod string) {
 		providerAuthStore.mu.RLock()
@@ -115,11 +125,13 @@ func NewRouter(cfg RouterConfig) *Router {
 		budgetTracker:  budgTracker,
 		clientFactory:  clFactory,
 		console:        newConsoleHub(),
+		quota:          quota.NewService(quotaFetchers(cfg.QuotaFetchers), time.Minute),
 		dismissedJira:  make(map[string]bool),
 		jira:           newJiraSyncState(),
 		approvals:      newApprovalHub(),
 		stop:           make(chan struct{}),
 	}
+	r.connections = newConnectionChecker(r.quota)
 	r.initTelemetry()
 	r.loadBoard()
 	r.reconcileIdleRunning()
@@ -158,6 +170,9 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/tools/", r.handleToolAction)
 	r.mux.HandleFunc("/api/v1/providers", r.handleProviders)
 	r.mux.HandleFunc("/api/v1/providers/test", r.handleProviderTest)
+	r.mux.HandleFunc("/api/v1/providers/usage", r.handleProviderUsage)
+	r.mux.HandleFunc("/api/v1/providers/quota", r.handleProviderQuota)
+	r.mux.HandleFunc("/api/v1/providers/connection", r.handleProviderConnections)
 	r.mux.HandleFunc("/api/v1/router/settings", r.handleRouterSettings)
 	r.mux.HandleFunc("/api/v1/router/models", r.handleRegisterModel)
 	r.mux.HandleFunc("/api/v1/providers/oauth/initiate", r.handleOAuthInitiate)
@@ -253,4 +268,11 @@ func (r *Router) startBackgroundProcessMonitor() {
 			r.mu.Unlock()
 		}
 	}()
+}
+
+func quotaFetchers(f map[string]quota.Fetcher) map[string]quota.Fetcher {
+	if f == nil {
+		return quota.DefaultFetchers()
+	}
+	return f
 }

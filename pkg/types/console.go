@@ -59,7 +59,10 @@ type ConsoleRequest struct {
 
 // ConsoleUsage records what came back.
 type ConsoleUsage struct {
+	// Model is the model that actually answered; RoutedModel is what the router asked for, set
+	// only when the two differ.
 	Model            string  `json:"model"`
+	RoutedModel      string  `json:"routed_model,omitempty"`
 	Provider         string  `json:"provider"`
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`

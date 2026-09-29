@@ -48,7 +48,7 @@ const roleClass: Record<string, string> = {
     </button>
     <div v-if="expanded && entry.request" class="ml-3 mt-1 space-y-1 border-l border-slate-800 pl-3">
       <div class="text-slate-500">
-        <span class="text-slate-600">model</span> {{ entry.request.model || '—' }}
+        <span class="text-slate-600" title="the router's pick; the response line shows the model that actually answered">routed model</span> {{ entry.request.model || '—' }}
         <span class="text-slate-700">·</span>
         <span class="text-slate-600">method</span> {{ entry.request.method || '—' }}
         <span class="text-slate-700">·</span>

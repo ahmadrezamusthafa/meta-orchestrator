@@ -1,5 +1,5 @@
 import type { 
-  Task, TaskProcessDTO, ToolDTO, ProviderDTO, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
+  Task, TaskProcessDTO, ToolDTO, ProviderDTO, ProviderUsage, ProviderUsageWindow, ProviderQuota, ProviderConnection, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
   Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse,
   ConnectorsConfig, JiraConfig, ConfluenceConfig, JiraIssueDTO, ImportJiraIssueRequest,
   JiraSyncConfig, JiraSyncSettings,
@@ -280,6 +280,12 @@ export const api = {
     return res.json()
   },
 
+  async getProviderConnections(refresh = false): Promise<{ connections: Record<string, ProviderConnection> }> {
+    const res = await fetch(`${BASE_URL}/providers/connection${refresh ? '?refresh=1' : ''}`)
+    if (!res.ok) throw new Error('Failed to check provider connections')
+    return res.json()
+  },
+
   async testProvider(providerId: string): Promise<any> {
     const res = await fetch(`${BASE_URL}/providers/test`, {
       method: 'POST',
@@ -289,7 +295,7 @@ export const api = {
     return res.json()
   },
 
-  async saveProviderConfig(providerId: string, config: { api_key?: string; base_url?: string; model?: string; session_token?: string; auth_method?: string }): Promise<any> {
+  async saveProviderConfig(providerId: string, config: { api_key?: string; clear_api_key?: boolean; base_url?: string; model?: string; session_token?: string; auth_method?: string }): Promise<any> {
     const res = await fetch(`${BASE_URL}/providers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -298,6 +304,25 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Failed to save provider config' }))
       throw new Error(err.error || 'Failed to save provider config')
+    }
+    return res.json()
+  },
+
+  async getProviderUsage(window: ProviderUsageWindow = '7d', refresh = false): Promise<{ window: ProviderUsageWindow; generated_at: string; providers: ProviderUsage[] }> {
+    const res = await fetch(`${BASE_URL}/providers/usage?window=${window}${refresh ? '&refresh=1' : ''}`)
+    if (!res.ok) throw new Error('Failed to fetch provider usage')
+    return res.json()
+  },
+
+  async saveProviderQuota(providerId: string, quota: ProviderQuota): Promise<any> {
+    const res = await fetch(`${BASE_URL}/providers/quota`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId, ...quota })
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to save quota' }))
+      throw new Error(err.error || 'Failed to save quota')
     }
     return res.json()
   },

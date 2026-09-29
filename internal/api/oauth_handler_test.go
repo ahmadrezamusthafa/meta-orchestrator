@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/quota"
 )
 
 func TestOAuthEndpoints(t *testing.T) {
@@ -207,7 +209,10 @@ func TestOAuthProvidersList_Contains_ExpectedProviders(t *testing.T) {
 }
 
 func TestSessionTokenPersistence(t *testing.T) {
+	isolateProviderState(t, "")
 	router := NewRouter(RouterConfig{RootDir: t.TempDir()})
+	// Keep the connection check offline: CLI present and signed in.
+	router.connections = testChecker(fakeProviders(t), true, quota.ProviderLimits{Status: quota.StatusOK})
 
 	// 1. Verify initial state: claude should be api_key
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/providers", nil)
@@ -287,7 +292,8 @@ func TestSessionTokenPersistence(t *testing.T) {
 		t.Errorf("Expected auth_method='session_token' from status, got '%v'", status["auth_method"])
 	}
 
-	// 5. Test connection — should report CONNECTED with session_token auth method
+	// 5. Test connection — reports what requests really use: the Claude Code CLI login, with the
+	// saved session token flagged as unused.
 	testPayload, _ := json.Marshal(map[string]string{"provider_id": "claude"})
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/providers/test", bytes.NewReader(testPayload))
 	req.Header.Set("Content-Type", "application/json")
@@ -296,11 +302,14 @@ func TestSessionTokenPersistence(t *testing.T) {
 
 	var testResp map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &testResp)
-	if testResp["status"] != "CONNECTED" {
-		t.Errorf("Expected test status='CONNECTED', got '%v'", testResp["status"])
+	if testResp["status"] != ConnConnected {
+		t.Errorf("Expected test status=%q, got '%v'", ConnConnected, testResp["status"])
 	}
-	if testResp["auth_method"] != "session_token" {
-		t.Errorf("Expected test auth_method='session_token', got '%v'", testResp["auth_method"])
+	if testResp["auth_method"] != MethodClaudeCLI {
+		t.Errorf("Expected test auth_method=%q, got '%v'", MethodClaudeCLI, testResp["auth_method"])
+	}
+	if conn, _ := testResp["connection"].(map[string]interface{}); conn["legacy_auth"] != "session_token" {
+		t.Errorf("Expected the unused session token to be flagged, got %v", testResp["connection"])
 	}
 
 	// 6. Clear session token (send empty token)

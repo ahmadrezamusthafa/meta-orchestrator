@@ -32,7 +32,10 @@ export function useAgentConsole(taskIdSource: MaybeRefOrGetter<string>) {
   const activeTurnId = ref('')
   const turnStartedAt = ref<number | null>(null)
   const serverSessionId = ref('')
+  /** Model that actually answered the last turn (provider-reported when known). */
   const serverModel = ref('')
+  /** Router's pick for the latest request — may differ from what the provider actually ran. */
+  const routedModel = ref('')
   /** Optional model override sent with subsequent chat messages (empty = router default). */
   const selectedModel = ref('')
   const localTask = ref<Task | null>(null)
@@ -106,7 +109,11 @@ export function useAgentConsole(taskIdSource: MaybeRefOrGetter<string>) {
     else entries.value[idx] = entry
     if (entry.request?.session_id) serverSessionId.value = entry.request.session_id
     if (entry.usage?.session_id) serverSessionId.value = entry.usage.session_id
-    if (entry.kind === 'request' && entry.request?.model) serverModel.value = entry.request.model
+    if (entry.kind === 'request' && entry.request?.model) routedModel.value = entry.request.model
+    if (entry.kind === 'response' && entry.usage?.model) {
+      serverModel.value = entry.usage.model
+      routedModel.value = entry.usage.routed_model || entry.usage.model
+    }
     if (live) trackTurn(entry)
   }
 
@@ -178,6 +185,8 @@ export function useAgentConsole(taskIdSource: MaybeRefOrGetter<string>) {
     const id = taskId.value
     const seq = ++loadSeq
     entries.value = []
+    serverModel.value = ''
+    routedModel.value = ''
     completedTurns.clear()
     setIdle()
     localTask.value = null
@@ -326,6 +335,19 @@ export function useAgentConsole(taskIdSource: MaybeRefOrGetter<string>) {
   })
 
   const currentModel = computed(() => selectedModel.value || serverModel.value || task.value?.metadata?.active_model || '')
+  /** True while a turn is running and the provider has not reported which model answered yet. */
+  const awaitingModel = computed(() => busy.value && !!routedModel.value && !turnHasResponse(activeTurnId.value))
+  /** Router's pick when it differs from the model that answered (e.g. Claude Code CLI's own default). */
+  const routedDiffers = computed(() => {
+    const r = routedModel.value
+    const m = serverModel.value
+    return !!r && !!m && r !== m && !r.endsWith(`/${m}`)
+  })
+
+  function turnHasResponse(turnId: string): boolean {
+    if (!turnId) return false
+    return entries.value.some(e => e.turn_id === turnId && e.kind === 'response')
+  }
 
   // ---------------------------------------------------------------------------
   // WebSocket wiring
@@ -393,6 +415,9 @@ export function useAgentConsole(taskIdSource: MaybeRefOrGetter<string>) {
     turnStartedAt,
     sessionId: serverSessionId,
     serverModel,
+    routedModel,
+    awaitingModel,
+    routedDiffers,
     selectedModel,
     currentModel,
     totals,

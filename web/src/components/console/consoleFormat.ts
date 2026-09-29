@@ -120,6 +120,7 @@ export function responseSummary(e: ConsoleEntry): string {
   const u = e.usage
   if (!u) return '←'
   const parts = [
+    ...(u.model ? [u.model] : []),
     `${formatTokens(u.prompt_tokens)} in`,
     `${formatTokens(u.completion_tokens)} out`,
   ]
@@ -133,7 +134,8 @@ export function requestSummary(e: ConsoleEntry): string {
   const r = e.request
   if (!r) return '→'
   const n = r.messages?.length || 0
-  const parts = [r.model || 'auto', r.method || '—', `${n} message${n === 1 ? '' : 's'}`]
+  // The request carries the router's pick; the response line shows the model that actually answered.
+  const parts = [r.model ? `routed ${r.model}` : 'auto', r.method || '—', `${n} message${n === 1 ? '' : 's'}`]
   if (r.strategy) parts.push(r.strategy)
   return `→ ${parts.join(' · ')}`
 }
