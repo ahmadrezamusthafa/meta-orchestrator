@@ -288,6 +288,11 @@ func (r *Router) handleJiraImport(w http.ResponseWriter, req *http.Request) {
 		startStage = importReq.ActiveSlice.StartStageID
 	}
 
+	repos, reposFrom := importReq.AssignedRepos, "operator"
+	if len(repos) == 0 {
+		repos, reposFrom = r.inferRepos(*issue, r.cfg.ConnectorsManager.GetJiraSyncConfig())
+	}
+
 	r.mu.Lock()
 	if t := r.jiraTaskIndexLocked()[key]; t != nil { // lost a race with a concurrent import/sync
 		existing = cloneTask(t)
@@ -300,10 +305,13 @@ func (r *Router) handleJiraImport(w http.ResponseWriter, req *http.Request) {
 	task := r.newJiraTaskLocked(*issue, jiraTaskOptions{
 		WorkflowID:     importReq.WorkflowID,
 		SelectedMethod: importReq.SelectedMethod,
-		AssignedRepos:  importReq.AssignedRepos,
+		AssignedRepos:  repos,
 		StartStageID:   startStage,
 		Source:         "import",
 	})
+	if len(repos) > 0 {
+		task.Metadata["repos_assigned_by"] = reposFrom
+	}
 	task.ActiveSlice = importReq.ActiveSlice
 	for k, v := range importReq.Metadata {
 		if _, reserved := task.Metadata[k]; !reserved {

@@ -71,7 +71,12 @@ var (
 	errTaskNotFound = errors.New("task not found")
 	errTaskBusy     = errors.New("an agent turn is already running for this task")
 	errTaskDone     = errors.New("task is already completed")
+	errNoRepos      = errors.New("assign at least one repository before running this stage — it changes code")
 )
+
+// codeStages change repository files: they need assigned repositories and, inside an isolated
+// worktree, may edit files. Every other stage is read-only analysis.
+var codeStages = map[string]bool{"atdd_creation": true, "task_implementation": true, "e2e_validation": true}
 
 // depsBlockedError reports unmet prerequisite tasks.
 type depsBlockedError struct{ Unmet []string }
@@ -102,6 +107,10 @@ func (r *Router) claimStage(taskID, trigger, feedback string) (*stageRun, error)
 	if task.State == types.TaskStateCompleted {
 		r.mu.Unlock()
 		return nil, errTaskDone
+	}
+	if codeStages[task.CurrentStageID] && len(task.AssignedRepos) == 0 {
+		r.mu.Unlock()
+		return nil, errNoRepos
 	}
 	var unmet []string
 	for _, dep := range task.Dependencies {
@@ -156,6 +165,12 @@ const stageTurnTimeout = 15 * time.Minute
 // startStage claims the task's current stage and executes it in the background.
 func (r *Router) startStage(taskID, trigger, feedback string) error {
 	run, err := r.claimStage(taskID, trigger, feedback)
+	if errors.Is(err, errNoRepos) {
+		if t := r.taskSnapshot(taskID); t != nil {
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
+				"%s changes code, so it needs repositories. Assign them in Workspace & Repos, then run the stage.", t.CurrentStageID)})
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -226,8 +241,18 @@ func (r *Router) executeStage(run *stageRun) {
 	r.mu.Lock()
 	r.getOrCreateTaskProcessLocked(taskID).WorkingDir = workDir
 	r.mu.Unlock()
+	// Edits are allowed only for code stages running inside the task's own worktree — never in an
+	// operator's checkout or the orchestrator itself.
+	permission := ""
+	if codeStages[task.CurrentStageID] && r.isTaskWorktree(task.ID, workDir) {
+		permission = "acceptEdits"
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+			"The agent may edit files in the task worktree (%s). Review them in the Changes tab.", workDir)})
+	} else if codeStages[task.CurrentStageID] {
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: "No task worktree is available, so the agent runs read-only and will describe the changes instead of making them."})
+	}
 	resp, used, execErr := r.runAgentTurn(run.ctx, agentTurn{Source: "execute", TurnID: run.turnID, Task: task, Decision: decision,
-		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, MaxTokens: 8192})
+		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, MaxTokens: 8192, PermissionMode: permission})
 	r.endTurn(taskID, run.turnID, resp, used)
 
 	r.settleStage(taskID, task.CurrentStageID, resp, used, execErr)
@@ -540,6 +565,9 @@ func (r *Router) respondStageStart(w http.ResponseWriter, taskID string, err err
 			"error": err.Error(), "unmet": blocked.Unmet, "task": r.taskSnapshot(taskID)})
 	case errors.Is(err, errTaskBusy):
 		r.writeJSON(w, http.StatusConflict, map[string]interface{}{"status": "busy", "task_id": taskID, "error": err.Error()})
+	case errors.Is(err, errNoRepos):
+		r.writeJSON(w, http.StatusConflict, map[string]interface{}{"status": "needs_repositories", "task_id": taskID,
+			"error": err.Error(), "task": r.taskSnapshot(taskID)})
 	case errors.Is(err, errTaskNotFound):
 		r.writeError(w, http.StatusNotFound, err.Error())
 	default:

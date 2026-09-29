@@ -41,6 +41,7 @@ const INTERVALS = [
 
 const form = ref<JiraSyncConfig | null>(null)
 const rules = ref<{ status: string; stage: string }[]>([])
+const repoRules = ref<{ key: string; repos: string[] }[]>([])
 const newExcluded = ref('')
 const isSaving = ref(false)
 const isLoading = ref(true)
@@ -52,6 +53,7 @@ const stages = computed(() => {
 const repoOptions = computed(() => {
   const names = new Set<string>(projectStore.activeRepos.map((r: any) => r.name))
   ;(form.value?.assigned_repos || []).forEach((r) => names.add(r))
+  repoRules.value.forEach((rule) => rule.repos.forEach((r) => names.add(r)))
   return Array.from(names)
 })
 const status = computed(() => taskStore.jiraSync?.status || null)
@@ -61,6 +63,7 @@ function hydrate() {
   if (!cfg) return
   form.value = { ...cfg, assigned_repos: [...(cfg.assigned_repos || [])], exclude_statuses: [...(cfg.exclude_statuses || [])] }
   rules.value = Object.entries(cfg.status_stage_map || {}).map(([status, stage]) => ({ status, stage }))
+  repoRules.value = Object.entries(cfg.repo_rules || {}).map(([key, repos]) => ({ key: key.toUpperCase(), repos: [...repos] }))
 }
 
 function toggleRepo(repo: string) {
@@ -77,6 +80,14 @@ function addExcluded() {
   newExcluded.value = ''
 }
 
+function addRepoRule() {
+  repoRules.value.push({ key: '', repos: [] })
+}
+
+function toggleRuleRepo(rule: { repos: string[] }, repo: string) {
+  rule.repos = rule.repos.includes(repo) ? rule.repos.filter((r) => r !== repo) : [...rule.repos, repo]
+}
+
 function addRule() {
   rules.value.push({ status: '', stage: stages.value[0]?.id || 'prd_discovery' })
 }
@@ -89,7 +100,11 @@ async function save(syncNow: boolean) {
     rules.value.forEach((r) => {
       if (r.status.trim()) map[r.status.trim()] = r.stage
     })
-    await taskStore.saveJiraSync({ ...form.value, status_stage_map: map })
+    const repoMap: Record<string, string[]> = {}
+    repoRules.value.forEach((r) => {
+      if (r.key.trim() && r.repos.length) repoMap[r.key.trim()] = r.repos
+    })
+    await taskStore.saveJiraSync({ ...form.value, status_stage_map: map, repo_rules: repoMap })
     toastStore.success('Sync rules saved', form.value.enabled ? 'The board picks up matching JIRA issues automatically.' : 'Automatic sync is off.')
     if (syncNow) await taskStore.runJiraSync()
     emit('close')
@@ -284,8 +299,38 @@ onMounted(async () => {
               <option value="Superpower">Superpower</option>
             </select>
           </div>
+          <div class="col-span-2 space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-medium text-slate-300">Repository rules</span>
+              <button type="button" @click="addRepoRule" class="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                <Plus class="w-3 h-3" /> Add rule
+              </button>
+            </div>
+            <p class="text-[11px] text-slate-500">
+              Match a JIRA project key, component or label (e.g. <span class="font-mono">MIB</span>) to the repositories its issues change.
+              Components or labels named exactly like a repository are matched automatically.
+            </p>
+            <div v-for="(rule, i) in repoRules" :key="i" class="p-2.5 rounded-lg border border-slate-800 bg-slate-950 space-y-2">
+              <div class="flex items-center gap-2">
+                <input v-model="rule.key" type="text" placeholder="Project key, component or label" :aria-label="`Repository rule ${i + 1} match`"
+                  class="flex-1 h-8 px-2.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-200 focus:outline-none focus:border-blue-500" />
+                <button type="button" @click="repoRules.splice(i, 1)" :aria-label="`Remove repository rule ${i + 1}`"
+                  class="p-1.5 rounded text-slate-500 hover:text-rose-400 hover:bg-slate-800">
+                  <Trash2 class="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div class="flex flex-wrap gap-1.5">
+                <button v-for="repo in repoOptions" :key="repo" type="button" @click="toggleRuleRepo(rule, repo)"
+                  class="px-2 py-0.5 rounded text-[11px] font-mono border transition-all"
+                  :class="rule.repos.includes(repo) ? 'bg-blue-950/80 border-blue-700 text-blue-300' : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'">
+                  {{ repo }}
+                </button>
+                <span v-if="repoOptions.length === 0" class="text-[11px] text-slate-500">Register repositories in Projects first.</span>
+              </div>
+            </div>
+          </div>
           <div class="col-span-2">
-            <span class="block text-xs font-medium text-slate-300 mb-1.5">Repositories</span>
+            <span class="block text-xs font-medium text-slate-300 mb-1.5">Default repositories <span class="font-normal text-slate-500">(when no rule matches)</span></span>
             <p v-if="repoOptions.length === 0" class="text-[11px] text-slate-500">
               No repositories registered. Add a project in <router-link to="/projects" class="underline" @click="emit('close')">Projects</router-link>, or assign repos per task later.
             </p>

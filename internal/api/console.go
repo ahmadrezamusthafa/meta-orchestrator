@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -160,6 +161,8 @@ type agentTurn struct {
 	SessionID string
 	WorkDir   string
 	MaxTokens int
+	// PermissionMode for agentic providers; empty keeps them read-only.
+	PermissionMode string
 }
 
 // beginTurn marks the task console busy. It fails if a turn is already running.
@@ -257,7 +260,7 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 			Content: fmt.Sprintf("Failover: %s failed (%v) → trying %s", failed, err, next)})
 	}
 
-	req := &llm.LLMRequest{Messages: t.Messages, MaxTokens: t.MaxTokens, SessionID: t.SessionID, WorkDir: t.WorkDir}
+	req := &llm.LLMRequest{Messages: t.Messages, MaxTokens: t.MaxTokens, SessionID: t.SessionID, WorkDir: t.WorkDir, PermissionMode: t.PermissionMode}
 	start := time.Now()
 	resp, used, err := r.clientFactory.StreamWithFallbackChain(ctx, chain, req, emit, onFailover)
 
@@ -340,7 +343,16 @@ func (r *Router) resolveWorkDir(task *types.Task) string {
 			return p
 		}
 	}
-	return r.cfg.RootDir
+	// No repository: work in the task's own artifact folder, never the orchestrator's checkout.
+	dir := r.artifactDir(task.ID)
+	_ = os.MkdirAll(dir, 0o755)
+	return dir
+}
+
+// isTaskWorktree reports whether dir lies inside the task's worktree root.
+func (r *Router) isTaskWorktree(taskID, dir string) bool {
+	rel, err := filepath.Rel(r.taskWorktreeRoot(taskID), dir)
+	return err == nil && !strings.HasPrefix(rel, "..") && dir != ""
 }
 
 func dirExists(p string) bool {

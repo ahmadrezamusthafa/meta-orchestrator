@@ -213,14 +213,18 @@ func TestExecuteStreamsIntoConsoleWithoutFabricatedLogs(t *testing.T) {
 
 	a := activity(t, r, "")
 	got := kinds(a.Entries)
-	if !strings.HasPrefix(got, "state,system,request,") || !strings.HasSuffix(got, ",response,state,system") {
+	// state, "▶ Running", the read-only notice (no worktree for this repo), then the model turn.
+	if !strings.HasPrefix(got, "state,system,system,request,") || !strings.HasSuffix(got, ",response,state,system") {
 		t.Fatalf("execute entries = %s", got)
 	}
 	if st := a.Entries[0].State; st.From != "PENDING" || st.To != "RUNNING" || st.Stage != "task_implementation" {
 		t.Fatalf("state entry = %+v", st)
 	}
-	if a.Entries[2].Request.Source != "execute" || a.Entries[2].Request.Method == "" {
-		t.Fatalf("request = %+v", a.Entries[2].Request)
+	if !strings.Contains(a.Entries[2].Content, "read-only") {
+		t.Fatalf("a code stage without a worktree must say it runs read-only: %q", a.Entries[2].Content)
+	}
+	if a.Entries[3].Request.Source != "execute" || a.Entries[3].Request.Method == "" {
+		t.Fatalf("request = %+v", a.Entries[3].Request)
 	}
 	n := len(a.Entries)
 	if st := a.Entries[n-2].State; st.From != "RUNNING" || st.To != "WAITING_GATE_APPROVAL" {

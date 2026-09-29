@@ -12,6 +12,8 @@ import {
 const props = defineProps<{
   task: Task
   worktree: TaskWorktreeDTO | null
+  /** Open the repository editor immediately (from an "Assign repos" action). */
+  startEditing?: boolean
 }>()
 const emit = defineEmits<{ (e: 'open-changes'): void; (e: 'refresh'): void }>()
 
@@ -98,6 +100,7 @@ function statusOf(r: { exists: boolean; error?: string }) {
 watch(() => props.worktree, loadDiffs)
 onMounted(async () => {
   if (!projectStore.projects.length) await projectStore.fetchProjects()
+  if (props.startEditing && !running.value) startEdit()
   loadDiffs()
 })
 </script>
@@ -135,7 +138,12 @@ onMounted(async () => {
       <!-- Repositories -->
       <section class="space-y-2">
         <div class="flex items-center justify-between">
-          <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Repositories ({{ task.assigned_repos?.length || 0 }})</h3>
+          <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400">
+            Repositories ({{ task.assigned_repos?.length || 0 }})
+            <span v-if="task.metadata?.repos_assigned_by && task.assigned_repos?.length" class="ml-2 normal-case tracking-normal font-normal text-slate-500">
+              · assigned by {{ task.metadata.repos_assigned_by }}
+            </span>
+          </h3>
           <div class="flex items-center gap-2">
             <button type="button" @click="loadDiffs(); emit('refresh')" aria-label="Refresh" class="p-1.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800">
               <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': loadingDiff }" />
@@ -174,7 +182,8 @@ onMounted(async () => {
 
         <div v-if="!editing && repos.length === 0" class="p-8 rounded-xl border border-dashed border-slate-800 text-center text-xs text-slate-400 space-y-2">
           <FolderGit2 class="w-6 h-6 mx-auto text-slate-600" />
-          <p>No repositories assigned. The agent can discuss the task but has no code to change.</p>
+          <p>No repositories assigned. The agent can analyze the requirement, but code stages (ATDD, Implementation, E2E) won't run until repositories are assigned.</p>
+          <p class="text-slate-500">Tip: add a repository rule in JIRA sync settings (e.g. project <span class="font-mono">{{ task.metadata?.jira_project || 'KEY' }}</span> → repos) to assign them automatically.</p>
           <button type="button" @click="startEdit" :disabled="running" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200">Assign repositories</button>
         </div>
 

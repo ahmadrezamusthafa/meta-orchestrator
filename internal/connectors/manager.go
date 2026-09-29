@@ -2358,7 +2358,14 @@ type jiraIssueFields struct {
 			EmailAddress string `json:"emailAddress"`
 		} `json:"reporter"`
 		Created string `json:"created"`
-		Parent  *struct {
+		Project struct {
+			Key string `json:"key"`
+		} `json:"project"`
+		Components []struct {
+			Name string `json:"name"`
+		} `json:"components"`
+		Labels []string `json:"labels"`
+		Parent *struct {
 			Key    string `json:"key"`
 			Fields struct {
 				Summary   string        `json:"summary"`
@@ -2384,7 +2391,7 @@ func (t jiraIssueType) isEpic() bool {
 }
 
 // jiraIssueFieldList is requested on every search and lookup.
-const jiraIssueFieldList = "key,summary,description,status,priority,issuetype,assignee,reporter,created,parent,customfield_10014"
+const jiraIssueFieldList = "key,summary,description,status,priority,issuetype,assignee,reporter,created,parent,project,components,labels,customfield_10014"
 
 func (it jiraIssueFields) toDTO(baseURL string) types.JiraIssueDTO {
 	assignee := ""
@@ -2417,6 +2424,11 @@ func (it jiraIssueFields) toDTO(baseURL string) types.JiraIssueDTO {
 		Reporter:    reporter,
 		Created:     it.Fields.Created,
 	}
+	dto.ProjectKey = it.Fields.Project.Key
+	for _, c := range it.Fields.Components {
+		dto.Components = append(dto.Components, c.Name)
+	}
+	dto.Labels = it.Fields.Labels
 	switch p := it.Fields.Parent; {
 	case it.Fields.IssueType.isEpic():
 		dto.EpicKey, dto.EpicSummary = it.Key, it.Fields.Summary
@@ -2664,6 +2676,10 @@ func (m *Manager) GetJiraSyncConfig() types.JiraSyncConfig {
 		}
 	}
 	cfg.DefaultsVersion = types.JiraSyncDefaultsVersion
+	cfg.RepoRules = make(map[string][]string, len(m.config.JiraSync.RepoRules))
+	for k, v := range m.config.JiraSync.RepoRules {
+		cfg.RepoRules[k] = append([]string(nil), v...)
+	}
 	cfg.StatusStageMap = make(map[string]string, len(m.config.JiraSync.StatusStageMap))
 	for k, v := range m.config.JiraSync.StatusStageMap {
 		cfg.StatusStageMap[k] = v
@@ -2700,6 +2716,20 @@ func (m *Manager) UpdateJiraSyncConfig(cfg types.JiraSyncConfig) (types.JiraSync
 		}
 	}
 	cfg.StatusStageMap = normalized
+	rules := map[string][]string{}
+	for key, repos := range cfg.RepoRules {
+		k := strings.ToLower(strings.TrimSpace(key))
+		var clean []string
+		for _, r := range repos {
+			if r = strings.TrimSpace(r); r != "" {
+				clean = append(clean, r)
+			}
+		}
+		if k != "" && len(clean) > 0 {
+			rules[k] = clean
+		}
+	}
+	cfg.RepoRules = rules
 	excluded := []string{} // non-nil: an emptied list stays empty instead of reverting to defaults
 	for _, st := range cfg.ExcludeStatuses {
 		if st = strings.TrimSpace(st); st != "" {

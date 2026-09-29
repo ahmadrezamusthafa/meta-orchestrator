@@ -187,6 +187,7 @@ func (r *Router) assignRepos(taskID string, repos []string) error {
 		return fmt.Errorf("pause %s before changing its repositories", taskID)
 	}
 	t.AssignedRepos = clean
+	t.Metadata["repos_assigned_by"] = "operator"
 	t.UpdatedAt = time.Now()
 	return nil
 }

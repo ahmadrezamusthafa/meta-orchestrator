@@ -49,7 +49,7 @@ const life = computed(() => taskLifecycle(task.value))
 const pending = computed(() => !!taskStore.pendingActions[taskId.value])
 const pos = computed(() => stagePosition(task.value?.current_stage_id))
 const meta = computed(() => task.value?.metadata || {})
-const ACTION_ICON = { run: Play, resume: RotateCw, pause: Pause, reset: RefreshCcw, review: Eye }
+const ACTION_ICON = { run: Play, resume: RotateCw, pause: Pause, reset: RefreshCcw, review: Eye, assign: FolderGit2 }
 
 async function loadContext() {
   const [wt, deps] = await Promise.allSettled([api.getTaskWorktree(taskId.value), api.getTaskDependencies(taskId.value)])
@@ -72,6 +72,10 @@ async function primary() {
   if (!a || pending.value) return
   if (a.kind === 'review') {
     activeTab.value = 'console' // stage output and the approve / request-changes controls live there
+    return
+  }
+  if (a.kind === 'assign') {
+    router.replace({ query: { ...route.query, tab: 'workspace', edit: 'repos' } })
     return
   }
   if (a.kind !== 'pause') activeTab.value = 'console'
@@ -222,7 +226,7 @@ onMounted(() => {
         <TaskReasoningPanel v-else-if="activeTab === 'reasoning'" :task-id="taskId" @open-console="activeTab = 'console'" />
         <TaskScopePanel v-else-if="activeTab === 'scope'" :task="task" :dependencies="dependencies" @updated="load" />
         <TaskDiffViewer v-else-if="activeTab === 'changes'" :task-id="taskId" :worktree="worktree" />
-        <TaskWorkspacePanel v-else-if="activeTab === 'workspace'" :task="task" :worktree="worktree"
+        <TaskWorkspacePanel v-else-if="activeTab === 'workspace'" :task="task" :worktree="worktree" :start-editing="route.query.edit === 'repos'"
           @open-changes="activeTab = 'changes'" @refresh="loadContext" />
       </main>
       <div v-else class="flex-1 flex items-center justify-center text-xs text-slate-500 animate-pulse">Loading task…</div>

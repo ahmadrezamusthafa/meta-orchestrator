@@ -108,6 +108,9 @@ func applyJiraFields(t *types.Task, issue types.JiraIssueDTO) bool {
 	set("jira_assignee", issue.Assignee)
 	set("jira_issue_type", issue.IssueType)
 	set("jira_parent_key", issue.ParentKey)
+	set("jira_project", issue.ProjectKey)
+	set("jira_components", strings.Join(issue.Components, ", "))
+	set("jira_labels", strings.Join(issue.Labels, ", "))
 	set("jira_epic_key", issue.EpicKey)
 	if issue.EpicSummary != "" || issue.EpicKey == "" { // Epic Link fallback carries a key without a summary
 		set("jira_epic_name", issue.EpicSummary)
@@ -243,11 +246,26 @@ func (r *Router) syncJiraBoard(ctx context.Context) (types.JiraSyncStatus, error
 	var refreshed []created
 	now := time.Now().Format(time.RFC3339)
 
+	inferred := map[string][]string{}
+	inferredFrom := map[string]string{}
+	for _, issue := range issues {
+		key := strings.ToUpper(issue.Key)
+		inferred[key], inferredFrom[key] = r.inferRepos(issue, cfg)
+	}
+
 	r.mu.Lock()
 	linked := r.jiraTaskIndexLocked()
 	for _, issue := range issues {
 		key := strings.ToUpper(issue.Key)
 		if existing, ok := linked[key]; ok {
+			// Tasks that still have no repositories get them as soon as a rule matches.
+			if len(existing.AssignedRepos) == 0 && existing.State != types.TaskStateRunning && len(inferred[key]) > 0 {
+				existing.AssignedRepos = inferred[key]
+				existing.Metadata["repos_assigned_by"] = inferredFrom[key]
+				existing.UpdatedAt = time.Now()
+				result.Updated++
+				changed = append(changed, cloneTask(existing))
+			}
 			if cfg.UpdateExisting && applyJiraFields(existing, issue) {
 				existing.Metadata["jira_synced_at"] = now
 				existing.UpdatedAt = time.Now()
@@ -268,10 +286,13 @@ func (r *Router) syncJiraBoard(ctx context.Context) (types.JiraSyncStatus, error
 		t := r.newJiraTaskLocked(issue, jiraTaskOptions{
 			WorkflowID:     cfg.WorkflowID,
 			SelectedMethod: cfg.SelectedMethod,
-			AssignedRepos:  cfg.AssignedRepos,
+			AssignedRepos:  inferred[key],
 			StartStageID:   stage,
 			Source:         "sync",
 		})
+		if src := inferredFrom[key]; src != "" {
+			t.Metadata["repos_assigned_by"] = src
+		}
 		linked[key] = t
 		newTasks = append(newTasks, created{task: cloneTask(t), issue: issue})
 		result.Created++
@@ -350,4 +371,62 @@ func (r *Router) kickJiraSync() {
 	case r.jira.kick <- struct{}{}:
 	default:
 	}
+}
+
+// registeredRepoNames lists every repository registered in a project.
+func (r *Router) registeredRepoNames() map[string]string {
+	names := map[string]string{} // lower-case → registered name
+	if r.cfg.ProjectManager == nil {
+		return names
+	}
+	for _, p := range r.cfg.ProjectManager.List() {
+		for _, repo := range p.Repos {
+			if repo.Name != "" && repo.Path != "" {
+				names[strings.ToLower(repo.Name)] = repo.Name
+			}
+		}
+	}
+	return names
+}
+
+// inferRepos picks the repositories for an issue: explicit rules on its project key, components
+// and labels first, then components/labels named exactly like a registered repository, then the
+// sync default. Only registered repositories are returned. source explains the choice.
+func (r *Router) inferRepos(issue types.JiraIssueDTO, cfg types.JiraSyncConfig) (repos []string, source string) {
+	registered := r.registeredRepoNames()
+	seen := map[string]bool{}
+	add := func(name string) {
+		if canon, ok := registered[strings.ToLower(strings.TrimSpace(name))]; ok && !seen[canon] {
+			seen[canon] = true
+			repos = append(repos, canon)
+		}
+	}
+	keys := []string{issue.ProjectKey}
+	keys = append(keys, issue.Components...)
+	keys = append(keys, issue.Labels...)
+	var matched []string
+	for _, k := range keys {
+		if rule := cfg.RepoRules[strings.ToLower(strings.TrimSpace(k))]; len(rule) > 0 {
+			for _, name := range rule {
+				add(name)
+			}
+			matched = append(matched, k)
+		}
+	}
+	if len(repos) > 0 {
+		return repos, "JIRA rule: " + strings.Join(matched, ", ")
+	}
+	for _, k := range append(append([]string{}, issue.Components...), issue.Labels...) {
+		add(k)
+	}
+	if len(repos) > 0 {
+		return repos, "JIRA component/label matches repository name"
+	}
+	for _, name := range cfg.AssignedRepos {
+		add(name)
+	}
+	if len(repos) > 0 {
+		return repos, "sync default repositories"
+	}
+	return nil, ""
 }

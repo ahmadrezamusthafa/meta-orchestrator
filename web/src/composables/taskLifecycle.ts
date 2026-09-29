@@ -32,7 +32,10 @@ export function stagePosition(id?: string): { index: number; total: number } {
   return { index: STAGES.indexOf((id || '') as (typeof STAGES)[number]), total: STAGES.length }
 }
 
-export type ActionKind = 'run' | 'resume' | 'pause' | 'reset' | 'review'
+export type ActionKind = 'run' | 'resume' | 'pause' | 'reset' | 'review' | 'assign'
+
+/** Stages that change repository files; they cannot run without assigned repositories. */
+export const CODE_STAGES = new Set(['atdd_creation', 'task_implementation', 'e2e_validation'])
 export type Tone = 'active' | 'idle' | 'warn' | 'error' | 'done' | 'review' | 'waiting'
 
 export interface TaskAction {
@@ -59,6 +62,15 @@ export function taskLifecycle(task: Task | null | undefined, opts: { busy?: bool
   if (!task) return null
   const s = stageName(task.current_stage_id)
   const meta = task.metadata || {}
+  const needsRepos = CODE_STAGES.has(task.current_stage_id) && !(task.assigned_repos || []).length
+  if (needsRepos && ['PENDING', 'SUSPENDED', 'FAILED'].includes(task.state)) {
+    return {
+      tone: 'warn', status: 'Needs repos', isRunning: false,
+      title: `${s} needs repositories`,
+      detail: 'This stage changes code. Assign the repositories it may change, then run it.',
+      primary: { kind: 'assign', label: 'Assign repos', hint: 'Choose the repositories for this task.' },
+    }
+  }
   switch (task.state) {
     case 'RUNNING':
       return {
@@ -133,4 +145,5 @@ export const ACTION_BUTTON: Record<ActionKind, string> = {
   pause: 'bg-amber-950/80 hover:bg-amber-900 text-amber-200 border-amber-700/80',
   reset: 'bg-rose-950/80 hover:bg-rose-900 text-rose-200 border-rose-700/80',
   review: 'bg-violet-600 hover:bg-violet-500 text-white border-violet-500',
+  assign: 'bg-amber-600 hover:bg-amber-500 text-white border-amber-500',
 }
