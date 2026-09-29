@@ -389,7 +389,7 @@ async function addCustomModelToProvider() {
         </div>
 
         <p v-if="provider.id === 'antigravity'" class="text-[9px] text-slate-500 leading-relaxed">
-          Your Antigravity sign-in is only used to show plan limits below; requests use the Gemini API key.
+          Signing in to the Antigravity app doesn't connect it here — requests need a Gemini API key. Your Antigravity app quota is shown below for reference only.
         </p>
       </div>
 
@@ -503,6 +503,7 @@ async function addCustomModelToProvider() {
         :usage="usage"
         :window="usageWindow"
         :loading="usageLoading"
+        :connection-method="conn?.method"
         @quota-saved="emit('usage-changed')"
       />
     </div>

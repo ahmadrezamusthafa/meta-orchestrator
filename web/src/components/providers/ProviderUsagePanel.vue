@@ -11,6 +11,8 @@ const props = defineProps<{
   usage?: ProviderUsage
   window: ProviderUsageWindow
   loading?: boolean
+  /** How requests actually reach this provider (ProviderConnection.method). */
+  connectionMethod?: string
 }>()
 
 const emit = defineEmits<{ (e: 'quota-saved'): void }>()
@@ -24,7 +26,27 @@ const savingQuota = ref(false)
 
 const w = computed(() => props.usage?.window)
 const limits = computed(() => props.usage?.limits)
-const showLimits = computed(() => !!limits.value && (limits.value.status !== 'unavailable' || props.providerId !== 'opencode'))
+// Unavailable limits are only worth showing for Claude, where they explain how to sign in.
+const showLimits = computed(() => !!limits.value && (limits.value.status !== 'unavailable' || props.providerId === 'claude'))
+
+// Plan limits describe a subscription login. They only reflect this orchestrator's requests when
+// requests go through that same login — today only Claude via the Claude Code CLI. Antigravity's
+// quota belongs to the Antigravity app; requests here use a Gemini API key with its own quota.
+const limitsApply = computed(() => props.providerId === 'claude' && props.connectionMethod === 'claude_cli')
+const limitsTitle = computed(() => {
+  if (props.providerId === 'antigravity') return 'Antigravity app quota'
+  return limitsApply.value ? 'Plan limits' : 'Claude subscription limits'
+})
+const limitsNote = computed(() => {
+  if (limitsApply.value) return 'Requests from this orchestrator count toward these limits.'
+  if (props.providerId === 'antigravity') {
+    return "Usage of your Antigravity app account. This orchestrator can't send requests through it — it uses a Gemini API key, which has its own quota — so tasks here won't move these bars."
+  }
+  return 'Requests here use your Anthropic API key (billed per token), so they don\'t count toward these subscription limits.'
+})
+const showForeignLimits = ref(false)
+const expandedLimits = computed(() => limitsApply.value || showForeignLimits.value)
+const maxUsed = computed(() => Math.max(0, ...(limits.value?.windows || []).map(x => x.used_percent)))
 
 function resetsIn(at?: string): string {
   if (!at) return ''
@@ -111,29 +133,56 @@ async function saveQuota() {
 
     <template v-else>
       <!-- Provider-reported plan limits (like `claude /usage`) -->
-      <div v-if="showLimits && limits" class="p-2 rounded-lg bg-slate-950 border border-slate-800 space-y-2">
-        <div class="flex items-center justify-between">
-          <span class="text-[10px] text-slate-400 flex items-center gap-1" :title="limits.source">
-            <ShieldCheck class="w-3 h-3 text-slate-500" />
-            <span>Plan limits</span>
+      <div
+        v-if="showLimits && limits"
+        class="p-2 rounded-lg border space-y-2"
+        :class="limitsApply || limits.status !== 'ok' ? 'bg-slate-950 border-slate-800' : 'bg-slate-950/40 border-dashed border-slate-800'"
+      >
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-[10px] text-slate-400 flex items-center gap-1 min-w-0" :title="limits.source">
+            <ShieldCheck class="w-3 h-3 text-slate-500 shrink-0" />
+            <span class="truncate">{{ limitsTitle }}</span>
             <span v-if="limits.plan" class="ml-1 px-1 rounded bg-slate-800 text-[9px] font-mono text-slate-300">{{ limits.plan }}</span>
           </span>
           <span
-            class="text-[9px] font-mono"
-            :class="limits.status === 'ok' ? 'text-emerald-400' : limits.status === 'stale' ? 'text-amber-400' : 'text-slate-500'"
+            v-if="limits.status === 'ok'"
+            class="shrink-0 px-1.5 rounded-full border text-[9px] font-medium"
+            :class="limitsApply ? 'border-emerald-800 text-emerald-300' : 'border-slate-700 text-slate-400'"
+            :title="limitsNote"
           >
-            {{ limits.status === 'ok' ? 'live' : limits.status }}
+            {{ limitsApply ? 'used by requests here' : 'not used by requests here' }}
+          </span>
+          <span v-else class="shrink-0 text-[9px] font-mono" :class="limits.status === 'stale' ? 'text-amber-400' : 'text-slate-500'">
+            {{ limits.status }}
           </span>
         </div>
 
-        <template v-if="limits.status === 'ok' && limits.windows.length">
+        <p v-if="limits.status === 'ok'" class="text-[9px] leading-relaxed" :class="limitsApply ? 'text-slate-500' : 'text-slate-400'">
+          {{ limitsNote }}
+        </p>
+
+        <button
+          v-if="limits.status === 'ok' && !limitsApply && limits.windows.length"
+          type="button"
+          class="text-[10px] text-sky-400 hover:text-sky-300"
+          :aria-expanded="showForeignLimits"
+          @click="showForeignLimits = !showForeignLimits"
+        >
+          {{ showForeignLimits ? 'Hide' : `Show quota (highest ${maxUsed.toFixed(0)}% used)` }}
+        </button>
+
+        <template v-if="limits.status === 'ok' && limits.windows.length && expandedLimits">
           <div v-for="lw in limits.windows" :key="lw.id" class="space-y-0.5">
             <div class="flex items-baseline justify-between gap-2 text-[10px]">
               <span class="truncate text-slate-300" :title="lw.models?.join(', ') || lw.label">{{ lw.label }}</span>
               <span class="shrink-0 font-mono text-slate-200">{{ lw.used_percent.toFixed(0) }}% used</span>
             </div>
             <div class="h-1.5 rounded-full bg-slate-800 overflow-hidden">
-              <div class="h-full rounded-full transition-all" :class="barClass(lw.used_percent)" :style="{ width: barWidth(lw.used_percent) }"></div>
+              <div
+                class="h-full rounded-full transition-all"
+                :class="limitsApply ? barClass(lw.used_percent) : 'bg-slate-500'"
+                :style="{ width: barWidth(lw.used_percent) }"
+              ></div>
             </div>
             <div v-if="lw.resets_at" class="text-[9px] font-mono text-slate-500" :title="resetsTitle(lw.resets_at)">
               {{ resetsIn(lw.resets_at) }}
@@ -264,7 +313,7 @@ async function saveQuota() {
       </div>
 
       <p class="text-[9px] text-slate-600 leading-relaxed">
-        Token and cost totals count only calls made by this orchestrator.<template v-if="limits?.status === 'ok'"> Plan limits come from the provider, via your local {{ providerId === 'claude' ? 'Claude Code' : 'Antigravity' }} login.</template>
+        Token and cost totals count only calls made by this orchestrator.
       </p>
     </template>
   </div>
