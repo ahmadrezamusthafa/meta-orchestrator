@@ -1,315 +1,176 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
-import type { ProviderDTO, ProviderUsage, ProviderUsageWindow } from '../../types'
+import { ref, computed, watch, onUnmounted } from 'vue'
+import type { ProviderDTO, ProviderUsage, ProviderUsageWindow, ProviderConnection } from '../../types'
 import ProviderUsagePanel from './ProviderUsagePanel.vue'
 import { api } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import {
-  Cpu, Wifi, Key, Server, Check, Eye, EyeOff,
-  LogIn, LogOut, Shield, Globe, User, ChevronDown, ChevronUp, Save,
-  Cookie, ExternalLink, Info, Plus
+  Cpu, Key, Server, Check, Eye, EyeOff, ChevronDown, ChevronUp, Save, ExternalLink, Plus,
+  RefreshCw, CheckCircle2, XCircle, AlertTriangle, CircleDashed, Terminal, Trash2, Info
 } from 'lucide-vue-next'
 
 const props = defineProps<{
   provider: ProviderDTO
+  connection?: ProviderConnection
+  connectionLoading?: boolean
   usage?: ProviderUsage
   usageWindow: ProviderUsageWindow
   usageLoading?: boolean
 }>()
 
-const emit = defineEmits<{ (e: 'usage-changed'): void }>()
+const emit = defineEmits<{
+  (e: 'usage-changed'): void
+  (e: 'connection-changed', conn: ProviderConnection): void
+  (e: 'provider-changed'): void
+}>()
 
 const toastStore = useToastStore()
 
-const isTesting = ref(false)
-const latency = ref(props.provider.latency_ms)
-const isConnected = ref(true)
-const showKey = ref(false)
-const apiKeyInput = ref('')
-const isSavingKey = ref(false)
-const authMethod = ref<'api_key' | 'oauth' | 'session_token'>(props.provider.auth_method as any || 'api_key')
-const isOAuthConnected = ref(false)
-const oauthEmail = ref('')
-const oauthConnectedAt = ref('')
-const isOAuthLoading = ref(false)
-const showAuthDropdown = ref(false)
+// ---------------------------------------------------------------------------
+// Connection status — what requests really use, verified by the backend
+// ---------------------------------------------------------------------------
 
-// Session token state
-const sessionTokenInput = ref('')
-const isSavingSessionToken = ref(false)
-const isSessionTokenConnected = ref(false)
-const showSessionToken = ref(false)
-const sessionTokenHint = ref('')
+const isChecking = ref(false)
+const conn = computed(() => props.connection)
+const checking = computed(() => isChecking.value || (!!props.connectionLoading && !conn.value))
 
-const supportsOAuth = computed(() => props.provider.supports_oauth)
-const supportsSessionToken = computed(() => {
-  // Session token is available for cloud providers (not local/vLLM)
-  return ['claude', 'chatgpt', 'antigravity'].includes(props.provider.id)
-})
-
-const sessionTokenGuide = computed(() => {
-  switch (props.provider.id) {
-    case 'claude':
-      return {
-        label: 'claude.ai Session Key',
-        placeholder: 'sk-ant-sid01-... or sessionKey cookie value',
-        steps: [
-          'Open claude.ai and log in with your account',
-          'Open DevTools (F12) → Application → Cookies',
-          'Find the "sessionKey" cookie and copy its value',
-          'Paste the session key above'
-        ],
-        url: 'https://claude.ai',
-        note: 'Works with Claude Free, Pro & Max subscriptions. No API plan required.'
-      }
-    case 'chatgpt':
-      return {
-        label: 'ChatGPT Access Token',
-        placeholder: 'eyJhbGciOiJSUz... (access token)',
-        steps: [
-          'Open chatgpt.com and log in',
-          'Go to chatgpt.com/api/auth/session',
-          'Copy the "accessToken" value from the JSON',
-          'Paste the access token above'
-        ],
-        url: 'https://chatgpt.com/api/auth/session',
-        note: 'Works with ChatGPT Plus/Pro subscriptions. No API credits needed.'
-      }
-    case 'antigravity':
-      return {
-        label: 'Google AI Studio Cookie',
-        placeholder: '__Secure-1PSID cookie value',
-        steps: [
-          'Open aistudio.google.com and log in',
-          'Open DevTools (F12) → Application → Cookies',
-          'Find "__Secure-1PSID" and copy its value',
-          'Paste the cookie value above'
-        ],
-        url: 'https://aistudio.google.com',
-        note: 'Works with your Google account. Free tier included.'
-      }
+const statusView = computed(() => {
+  if (checking.value) return { label: 'Checking…', pill: 'bg-slate-800 border-slate-700 text-slate-300', box: 'bg-slate-950 border-slate-800', icon: CircleDashed, iconClass: 'text-slate-400 animate-spin' }
+  switch (conn.value?.status) {
+    case 'connected':
+      return { label: 'Connected', pill: 'bg-emerald-950/70 border-emerald-800 text-emerald-300', box: 'bg-emerald-950/20 border-emerald-900/50', icon: CheckCircle2, iconClass: 'text-emerald-400' }
+    case 'expired':
+      return { label: 'Login expired', pill: 'bg-amber-950/70 border-amber-800 text-amber-300', box: 'bg-amber-950/20 border-amber-900/50', icon: AlertTriangle, iconClass: 'text-amber-400' }
+    case 'invalid':
+      return { label: 'Key rejected', pill: 'bg-rose-950/70 border-rose-800 text-rose-300', box: 'bg-rose-950/20 border-rose-900/50', icon: XCircle, iconClass: 'text-rose-400' }
+    case 'unreachable':
+      return { label: "Can't verify", pill: 'bg-amber-950/70 border-amber-800 text-amber-300', box: 'bg-amber-950/20 border-amber-900/50', icon: AlertTriangle, iconClass: 'text-amber-400' }
     default:
-      return {
-        label: 'Session Token',
-        placeholder: 'Paste your session token…',
-        steps: ['Log in to the provider web app', 'Extract session token from browser cookies'],
-        url: '',
-        note: ''
-      }
+      return { label: 'Not connected', pill: 'bg-slate-900 border-slate-700 text-slate-400', box: 'bg-slate-950 border-slate-800', icon: XCircle, iconClass: 'text-slate-500' }
   }
 })
 
-// Restore auth state from provider props (backend merges saved state into GET /providers)
-onMounted(async () => {
-  // The provider.auth_method from the API already reflects saved state
-  if (props.provider.auth_method === 'session_token') {
-    authMethod.value = 'session_token'
-    isSessionTokenConnected.value = true
-  } else if (props.provider.auth_method === 'oauth') {
-    authMethod.value = 'oauth'
-  }
+const connectionTitle = computed(() => {
+  const c = conn.value
+  if (!c) return 'Checking connection…'
+  if (c.status === 'connected') return `Connected via ${c.label}`
+  if (c.status === 'expired') return `${c.label} login expired`
+  if (c.status === 'invalid') return `${c.label} rejected`
+  if (c.status === 'unreachable') return `${c.label} · couldn't verify`
+  return 'Not connected'
+})
 
-  // Also check the detailed status endpoint for richer data (email, expiry, etc.)
+const now = ref(Date.now())
+const nowTimer = setInterval(() => { now.value = Date.now() }, 15_000)
+onUnmounted(() => clearInterval(nowTimer))
+const checkedAgo = computed(() => {
+  const at = conn.value?.checked_at
+  if (!at) return ''
+  const s = Math.max(0, Math.round((now.value - new Date(at).getTime()) / 1000))
+  if (s < 60) return 'checked just now'
+  const m = Math.round(s / 60)
+  return m < 60 ? `checked ${m}m ago` : `checked ${Math.round(m / 60)}h ago`
+})
+
+async function recheck(silent = false) {
+  isChecking.value = true
   try {
-    const status = await api.getOAuthStatus(props.provider.id)
-    if (status.is_connected && status.auth_method === 'oauth') {
-      authMethod.value = 'oauth'
-      isOAuthConnected.value = true
-      oauthEmail.value = status.email || ''
-      oauthConnectedAt.value = status.connected_at || ''
-    } else if (status.is_connected && status.auth_method === 'session_token') {
-      authMethod.value = 'session_token'
-      isSessionTokenConnected.value = true
-    } else if (status.is_connected && status.auth_method === 'api_key') {
-      authMethod.value = 'api_key'
+    const res = await api.testProvider(props.provider.id)
+    if (res?.connection) {
+      emit('connection-changed', res.connection)
+      if (!silent) {
+        const c: ProviderConnection = res.connection
+        if (c.status === 'connected') toastStore.success(`${props.provider.name} connected`, [c.label, c.detail].filter(Boolean).join(' · '))
+        else toastStore.warning(`${props.provider.name}: ${statusLabelFor(c)}`, c.hint || c.detail || '')
+      }
     }
-  } catch {
-    // Status endpoint not available, rely on provider props
-  }
-})
-
-// Listen for postMessage from OAuth popup
-function handleOAuthMessage(event: MessageEvent) {
-  if (event.data?.type !== 'meta-orchestrator-oauth-callback') return
-  if (event.data.provider_id !== props.provider.id) return
-
-  isOAuthLoading.value = false
-
-  if (event.data.status === 'success') {
-    isOAuthConnected.value = true
-    oauthEmail.value = event.data.email || ''
-    oauthConnectedAt.value = new Date().toISOString()
-    authMethod.value = 'oauth'
-    toastStore.success(
-      `${props.provider.name} Connected via OAuth`,
-      `Authenticated as ${event.data.email || 'user'}`
-    )
-  } else {
-    toastStore.error(
-      `${props.provider.name} OAuth Failed`,
-      event.data.error || 'Authorization was denied or cancelled'
-    )
+  } catch (err: any) {
+    if (!silent) toastStore.error('Check failed', err.message || 'Unable to reach the orchestrator')
+  } finally {
+    isChecking.value = false
   }
 }
 
-onMounted(() => {
-  window.addEventListener('message', handleOAuthMessage)
+function statusLabelFor(c: ProviderConnection): string {
+  switch (c.status) {
+    case 'expired': return 'login expired'
+    case 'invalid': return 'key rejected'
+    case 'unreachable': return "couldn't verify"
+    case 'not_configured': return 'not connected'
+    default: return c.status
+  }
+}
+
+// ---------------------------------------------------------------------------
+// API key — the one credential every cloud driver accepts
+// ---------------------------------------------------------------------------
+
+const keyGuide = computed(() => {
+  switch (props.provider.id) {
+    case 'claude':
+      return { label: 'Anthropic API key', placeholder: 'sk-ant-api03-…', url: 'https://console.anthropic.com/settings/keys', urlLabel: 'console.anthropic.com' }
+    case 'chatgpt':
+      return { label: 'OpenAI API key', placeholder: 'sk-…', url: 'https://platform.openai.com/api-keys', urlLabel: 'platform.openai.com' }
+    case 'antigravity':
+      return { label: 'Gemini API key', placeholder: 'AIza…', url: 'https://aistudio.google.com/apikey', urlLabel: 'aistudio.google.com' }
+    default:
+      return null
+  }
 })
 
-onUnmounted(() => {
-  window.removeEventListener('message', handleOAuthMessage)
-})
+const isClaude = computed(() => props.provider.id === 'claude')
+const hasKey = computed(() => !!props.provider.has_api_key)
+// Claude works through the CLI login, so its key form stays folded unless a key is in play.
+const showKeyForm = ref(!isClaude.value)
+watch(hasKey, v => { if (v) showKeyForm.value = true }, { immediate: true })
+
+const apiKeyInput = ref('')
+const showKey = ref(false)
+const isSavingKey = ref(false)
+const replacingKey = ref(false)
 
 async function saveApiKey() {
-  if (!apiKeyInput.value.trim()) {
-    toastStore.warning('Empty API Key', 'Please enter an API key before saving')
-    return
-  }
+  const key = apiKeyInput.value.trim()
+  if (!key) return
   isSavingKey.value = true
   try {
-    await api.saveProviderConfig(props.provider.id, { api_key: apiKeyInput.value.trim() })
-    toastStore.success(`${props.provider.name} Key Saved`, 'API key configured successfully')
+    const res = await api.saveProviderConfig(props.provider.id, { api_key: key })
+    apiKeyInput.value = ''
+    replacingKey.value = false
+    if (res?.connection) emit('connection-changed', res.connection)
+    emit('provider-changed')
+    if (res?.warning) toastStore.warning('Key saved for this session only', res.warning)
+    else if (res?.connection?.status === 'connected') toastStore.success(`${props.provider.name} key verified`, 'Saved and working')
+    else toastStore.warning('Key saved, not verified', res?.connection?.detail || 'The provider could not be reached to verify it')
   } catch (err: any) {
-    toastStore.error('Save Failed', err.message || 'Unable to save API key')
+    // The backend refuses keys the provider rejects; nothing was saved.
+    toastStore.error('Key not saved', err.message || 'The provider rejected this key')
   } finally {
     isSavingKey.value = false
   }
 }
 
-async function saveSessionToken() {
-  if (!sessionTokenInput.value.trim()) {
-    toastStore.warning('Empty Session Token', 'Please paste your session token before saving')
-    return
-  }
-  isSavingSessionToken.value = true
+async function removeApiKey() {
   try {
-    const res = await api.saveProviderConfig(props.provider.id, {
-      session_token: sessionTokenInput.value.trim(),
-      auth_method: 'session_token'
-    })
-    isSessionTokenConnected.value = true
-    sessionTokenInput.value = ''
-    if (res?.warning) {
-      toastStore.warning(`${props.provider.name} Session Not Persisted`, res.warning)
-    } else {
-      toastStore.success(
-        `${props.provider.name} Session Configured`,
-        'Session token saved — it will survive daemon restarts'
-      )
-    }
+    const res = await api.saveProviderConfig(props.provider.id, { clear_api_key: true })
+    if (res?.connection) emit('connection-changed', res.connection)
+    emit('provider-changed')
+    toastStore.info(`${keyGuide.value?.label || 'API key'} removed`, isClaude.value ? 'Claude now uses your Claude Code login' : '')
   } catch (err: any) {
-    toastStore.error('Save Failed', err.message || 'Unable to save session token')
-  } finally {
-    isSavingSessionToken.value = false
+    toastStore.error('Remove failed', err.message)
   }
 }
 
-async function clearSessionToken() {
+async function removeLegacyAuth() {
   try {
-    await api.saveProviderConfig(props.provider.id, {
-      session_token: '',
-      auth_method: 'api_key'
-    })
-    isSessionTokenConnected.value = false
-    sessionTokenInput.value = ''
-    authMethod.value = 'api_key'
-    toastStore.info(`${props.provider.name} Session Cleared`, 'Switched back to API Key')
+    const res = await api.saveProviderConfig(props.provider.id, { session_token: '', auth_method: 'api_key' })
+    if (res?.connection) emit('connection-changed', res.connection)
+    emit('provider-changed')
+    toastStore.info('Unused session token removed', 'Nothing changes for requests')
   } catch (err: any) {
-    toastStore.error('Clear Failed', err.message)
+    toastStore.error('Remove failed', err.message)
   }
 }
-
-async function testConnection() {
-  isTesting.value = true
-  try {
-    const res = await api.testProvider(props.provider.id)
-    latency.value = res.latency_ms || 120
-    isConnected.value = true
-    toastStore.success(`${props.provider.name} Connected`, `Ping latency: ${latency.value}ms`)
-  } catch (err) {
-    isConnected.value = false
-    toastStore.error(`${props.provider.name} Unreachable`, 'Check endpoint configuration')
-  } finally {
-    isTesting.value = false
-  }
-}
-
-async function startOAuthFlow() {
-  isOAuthLoading.value = true
-  try {
-    const callbackUrl = `${window.location.origin}/api/v1/providers/oauth/callback`
-    const res = await api.initiateOAuth(props.provider.id, callbackUrl)
-
-    const width = 520
-    const height = 680
-    const left = window.screenX + (window.outerWidth - width) / 2
-    const top = window.screenY + (window.outerHeight - height) / 2
-    const popup = window.open(
-      res.auth_url,
-      `oauth-${props.provider.id}`,
-      `width=${width},height=${height},left=${left},top=${top},toolbar=no,menubar=no,scrollbars=yes,resizable=yes`
-    )
-
-    if (!popup) {
-      toastStore.warning('Popup Blocked', 'Please allow popups for this site to use OAuth login')
-      isOAuthLoading.value = false
-      return
-    }
-
-    const pollTimer = setInterval(() => {
-      if (popup.closed) {
-        clearInterval(pollTimer)
-        if (isOAuthLoading.value) {
-          isOAuthLoading.value = false
-        }
-      }
-    }, 500)
-  } catch (err: any) {
-    isOAuthLoading.value = false
-    toastStore.error('OAuth Initiation Failed', err.message || 'Unable to start OAuth flow')
-  }
-}
-
-async function disconnectOAuth() {
-  try {
-    await api.disconnectOAuth(props.provider.id)
-    isOAuthConnected.value = false
-    oauthEmail.value = ''
-    oauthConnectedAt.value = ''
-    authMethod.value = 'api_key'
-    toastStore.info(
-      `${props.provider.name} Disconnected`,
-      'OAuth session revoked — switched to API Key'
-    )
-  } catch (err: any) {
-    toastStore.error('Disconnect Failed', err.message)
-  }
-}
-
-function selectAuthMethod(method: 'api_key' | 'oauth' | 'session_token') {
-  if (method === 'oauth' && !isOAuthConnected.value) {
-    startOAuthFlow()
-  } else {
-    authMethod.value = method
-  }
-  showAuthDropdown.value = false
-}
-
-const authDropdownLabel = computed(() => {
-  switch (authMethod.value) {
-    case 'oauth': return 'OAuth Login'
-    case 'session_token': return 'Session Token'
-    default: return 'API Key'
-  }
-})
-
-const authDropdownClass = computed(() => {
-  switch (authMethod.value) {
-    case 'oauth': return 'bg-violet-950/70 border border-violet-700/60 text-violet-300 hover:bg-violet-900/60'
-    case 'session_token': return 'bg-amber-950/70 border border-amber-700/60 text-amber-300 hover:bg-amber-900/60'
-    default: return 'bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
-  }
-})
 
 const selectedModel = ref(props.provider.default_model)
 const showAllModels = ref(false)
@@ -362,317 +223,175 @@ async function addCustomModelToProvider() {
 
 <template>
   <div class="p-4 bg-slate-900/80 border border-slate-800 rounded-xl space-y-3 shadow-sm hover:border-slate-700 transition-colors">
-    <!-- Header -->
-    <div class="flex items-center justify-between">
-      <div class="flex items-center gap-2.5">
-        <div class="w-8 h-8 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-center text-sky-400">
+    <!-- Header: name + one clear status -->
+    <div class="flex items-center justify-between gap-2">
+      <div class="flex items-center gap-2.5 min-w-0">
+        <div class="w-8 h-8 shrink-0 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-center text-sky-400">
           <Cpu class="w-4 h-4" />
         </div>
-        <div>
-          <h3 class="text-xs font-bold text-slate-100">{{ provider.name }}</h3>
-          <div class="flex items-center gap-1.5 mt-0.5">
-            <Wifi class="w-3 h-3 text-emerald-400" />
-            <span class="text-[10px] font-mono text-emerald-400">{{ latency }}ms ping</span>
+        <h3 class="text-xs font-bold text-slate-100 truncate">{{ provider.name }}</h3>
+      </div>
+      <span
+        class="shrink-0 h-6 px-2 rounded-full border text-[10px] font-medium flex items-center gap-1"
+        :class="statusView.pill"
+        role="status"
+      >
+        <component :is="statusView.icon" class="w-3 h-3" :class="statusView.iconClass" />
+        {{ statusView.label }}
+      </span>
+    </div>
+
+    <!-- Connection: what requests actually use -->
+    <div class="p-2.5 rounded-lg border space-y-1.5" :class="statusView.box">
+      <div class="flex items-start justify-between gap-2">
+        <div class="min-w-0">
+          <div class="text-[11px] font-medium text-slate-100 flex items-center gap-1.5">
+            <Terminal v-if="conn?.method === 'claude_cli'" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            <Key v-else-if="conn?.method === 'api_key'" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            <Server v-else-if="conn?.method === 'local_endpoint'" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            <span class="truncate">{{ connectionTitle }}</span>
+          </div>
+          <div v-if="conn?.detail" class="text-[10px] text-slate-400 mt-0.5 break-words">{{ conn.detail }}</div>
+          <div class="text-[9px] font-mono text-slate-500 mt-0.5">
+            {{ checkedAgo }}<template v-if="conn?.latency_ms"> · {{ conn.latency_ms }}ms</template>
           </div>
         </div>
+        <button
+          type="button"
+          class="shrink-0 h-6 px-2 rounded bg-slate-950 border border-slate-800 hover:border-slate-700 text-[10px] text-slate-300 hover:text-white flex items-center gap-1 disabled:opacity-50"
+          :disabled="checking"
+          title="Verify the connection with the provider now"
+          @click="recheck()"
+        >
+          <RefreshCw class="w-3 h-3" :class="checking ? 'animate-spin' : ''" />
+          <span>Re-check</span>
+        </button>
       </div>
+      <div v-if="conn?.hint && conn.status !== 'connected'" class="flex items-start gap-1.5 text-[10px] text-slate-300">
+        <Info class="w-3 h-3 mt-0.5 shrink-0 text-sky-400" />
+        <span class="break-words">{{ conn.hint }}</span>
+      </div>
+    </div>
 
+    <!-- A session token / OAuth login saved earlier that no request uses -->
+    <div v-if="conn?.legacy_auth" class="p-2.5 rounded-lg bg-amber-950/20 border border-amber-900/40 space-y-1.5">
+      <div class="flex items-start gap-1.5 text-[10px] text-amber-200/90">
+        <AlertTriangle class="w-3 h-3 mt-0.5 shrink-0 text-amber-400" />
+        <span>
+          A {{ conn.legacy_auth === 'oauth' ? 'browser (OAuth) login' : 'session token' }} saved earlier is <b>not used</b> for requests —
+          {{ provider.name }} is reached through {{ conn.status === 'connected' ? conn.label : 'the method above' }}. You can safely remove it.
+        </span>
+      </div>
       <button
-        @click="testConnection"
-        :disabled="isTesting"
         type="button"
-        class="h-7 px-2.5 rounded bg-slate-950 border border-slate-800 hover:border-slate-700 text-[11px] font-mono text-slate-300 hover:text-white transition-colors flex items-center gap-1.5"
+        class="h-6 px-2 rounded bg-slate-950 border border-amber-900/50 hover:border-amber-700 text-[10px] text-amber-200 flex items-center gap-1"
+        @click="removeLegacyAuth"
       >
-        <span v-if="isTesting" class="animate-spin text-emerald-400">⟳</span>
-        <Check v-else class="w-3 h-3 text-emerald-400" />
-        <span>Test Latency</span>
+        <Trash2 class="w-3 h-3" />
+        <span>Remove saved {{ conn.legacy_auth === 'oauth' ? 'login' : 'session token' }}</span>
       </button>
     </div>
 
-    <!-- Auth Method Selector -->
-    <div class="pt-2 border-t border-slate-800/80">
-      <div class="flex items-center justify-between mb-2">
-        <label class="text-[11px] text-slate-400 flex items-center gap-1">
-          <Shield class="w-3 h-3 text-slate-500" />
-          <span>Authentication</span>
-        </label>
-
-        <!-- Auth method dropdown (providers with multiple auth options) -->
-        <div v-if="supportsOAuth || supportsSessionToken" class="relative">
-          <button
-            @click="showAuthDropdown = !showAuthDropdown"
-            type="button"
-            class="h-6 px-2 rounded-md text-[10px] font-medium flex items-center gap-1 transition-all"
-            :class="authDropdownClass"
-          >
-            <Globe v-if="authMethod === 'oauth'" class="w-3 h-3" />
-            <Cookie v-else-if="authMethod === 'session_token'" class="w-3 h-3" />
-            <Key v-else class="w-3 h-3" />
-            <span>{{ authDropdownLabel }}</span>
-            <ChevronDown class="w-3 h-3 opacity-60" />
-          </button>
-
-          <!-- Dropdown -->
-          <Transition name="dropdown">
-            <div
-              v-if="showAuthDropdown"
-              class="absolute right-0 top-full mt-1 w-52 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-30 overflow-hidden"
-            >
-              <!-- API Key option -->
-              <button
-                @click="selectAuthMethod('api_key')"
-                type="button"
-                class="w-full px-3 py-2 text-left text-[11px] flex items-center gap-2 transition-colors"
-                :class="authMethod === 'api_key'
-                  ? 'bg-emerald-950/40 text-emerald-300'
-                  : 'text-slate-300 hover:bg-slate-800'"
-              >
-                <Key class="w-3.5 h-3.5 shrink-0" />
-                <div>
-                  <div class="font-medium">API Key Token</div>
-                  <div class="text-[9px] text-slate-500 mt-0.5">Manual key from provider console</div>
-                </div>
-              </button>
-
-              <!-- Session Token option -->
-              <button
-                v-if="supportsSessionToken"
-                @click="selectAuthMethod('session_token')"
-                type="button"
-                class="w-full px-3 py-2 text-left text-[11px] flex items-center gap-2 border-t border-slate-800 transition-colors"
-                :class="authMethod === 'session_token'
-                  ? 'bg-amber-950/40 text-amber-300'
-                  : 'text-slate-300 hover:bg-slate-800'"
-              >
-                <Cookie class="w-3.5 h-3.5 shrink-0" />
-                <div>
-                  <div class="font-medium">Session Token</div>
-                  <div class="text-[9px] text-slate-500 mt-0.5">Browser cookie · no API plan needed</div>
-                </div>
-              </button>
-
-              <!-- OAuth option -->
-              <button
-                v-if="supportsOAuth"
-                @click="selectAuthMethod('oauth')"
-                type="button"
-                class="w-full px-3 py-2 text-left text-[11px] flex items-center gap-2 border-t border-slate-800 transition-colors"
-                :class="authMethod === 'oauth'
-                  ? 'bg-violet-950/40 text-violet-300'
-                  : 'text-slate-300 hover:bg-slate-800'"
-              >
-                <Globe class="w-3.5 h-3.5 shrink-0" />
-                <div>
-                  <div class="font-medium">OAuth Browser Login</div>
-                  <div class="text-[9px] text-slate-500 mt-0.5">Sign in via provider popup</div>
-                </div>
-              </button>
-            </div>
-          </Transition>
-        </div>
-
-        <!-- Non-OAuth / non-session-token providers -->
-        <div v-else class="h-6 px-2 rounded-md bg-slate-950 border border-slate-800 text-[10px] font-medium text-slate-500 flex items-center gap-1">
-          <Key class="w-3 h-3" />
-          <span>API Key Only</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Auth Content -->
     <div class="space-y-2 text-xs">
-      <Transition name="auth-fade" mode="out-in">
+      <!-- Credentials -->
+      <div v-if="keyGuide" class="pt-2 border-t border-slate-800/80 space-y-2">
+        <!-- Claude: the CLI login is the default; an API key is an optional override -->
+        <template v-if="isClaude">
+          <p class="text-[10px] text-slate-400 leading-relaxed">
+            Uses your <b class="text-slate-300">Claude subscription</b> through the Claude Code CLI login — no key needed.
+            Sign in by running <code class="px-1 rounded bg-slate-950 text-slate-300">claude</code> in a terminal.
+          </p>
+          <button
+            v-if="!hasKey"
+            type="button"
+            class="text-[10px] text-sky-400 hover:text-sky-300 flex items-center gap-1"
+            :aria-expanded="showKeyForm"
+            @click="showKeyForm = !showKeyForm"
+          >
+            <ChevronUp v-if="showKeyForm" class="w-3 h-3" />
+            <ChevronDown v-else class="w-3 h-3" />
+            <span>Use an Anthropic API key instead (pay-as-you-go)</span>
+          </button>
+        </template>
 
-        <!-- ==================== SESSION TOKEN ==================== -->
-        <!-- Session Token Connected -->
-        <div v-if="authMethod === 'session_token' && isSessionTokenConnected" key="session-connected" class="space-y-2">
-          <div class="p-3 bg-amber-950/20 border border-amber-800/30 rounded-lg space-y-2">
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2">
-                <div class="w-7 h-7 rounded-full bg-amber-900/40 border border-amber-700/40 flex items-center justify-center">
-                  <Cookie class="w-3.5 h-3.5 text-amber-300" />
-                </div>
-                <div>
-                  <div class="text-[11px] font-medium text-amber-200">Session Token Active</div>
-                  <div class="text-[9px] text-amber-400/60 font-mono">Browser cookie authentication</div>
-                </div>
-              </div>
-              <div class="flex items-center gap-1.5">
-                <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                <span class="text-[9px] font-mono text-amber-400">Active</span>
-              </div>
+        <div v-if="showKeyForm" class="space-y-1.5">
+          <label class="text-[11px] text-slate-400 flex items-center gap-1">
+            <Key class="w-3 h-3 text-slate-500" />
+            <span>{{ keyGuide.label }}</span>
+          </label>
+
+          <!-- Saved key -->
+          <div v-if="hasKey && !replacingKey" class="flex items-center gap-1.5">
+            <div class="flex-1 min-w-0 h-8 px-2.5 bg-slate-950 border border-slate-800 rounded text-xs text-slate-300 font-mono flex items-center gap-1.5">
+              <Check class="w-3 h-3 text-emerald-400 shrink-0" />
+              <span class="truncate">{{ provider.masked_api_key }}</span>
             </div>
-
             <button
-              @click="clearSessionToken"
               type="button"
-              class="w-full h-7 rounded-md bg-red-950/40 hover:bg-red-950/60 border border-red-800/30 hover:border-red-700/50 text-[10px] font-medium text-red-300 flex items-center justify-center gap-1.5 transition-all"
+              class="h-8 px-2 rounded bg-slate-950 border border-slate-800 hover:border-slate-700 text-[10px] text-slate-300"
+              @click="replacingKey = true"
             >
-              <LogOut class="w-3 h-3" />
-              <span>Clear Session Token</span>
+              Replace
+            </button>
+            <button
+              type="button"
+              class="h-8 w-8 rounded bg-slate-950 border border-slate-800 hover:border-rose-800 text-slate-400 hover:text-rose-300 flex items-center justify-center"
+              title="Remove key"
+              @click="removeApiKey"
+            >
+              <Trash2 class="w-3.5 h-3.5" />
             </button>
           </div>
-        </div>
 
-        <!-- Session Token Input -->
-        <div v-else-if="authMethod === 'session_token' && !isSessionTokenConnected" key="session-input" class="space-y-2.5">
-          <!-- How-to guide -->
-          <div class="p-2.5 bg-amber-950/15 border border-amber-900/25 rounded-lg">
-            <div class="flex items-start gap-2 mb-2">
-              <Info class="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-              <div class="text-[10px] text-amber-300/80 font-medium">
-                How to get your {{ sessionTokenGuide.label }}
-              </div>
-            </div>
-            <ol class="space-y-1 pl-5 list-decimal">
-              <li
-                v-for="(step, i) in sessionTokenGuide.steps"
-                :key="i"
-                class="text-[9px] text-slate-400 leading-relaxed"
-              >
-                {{ step }}
-              </li>
-            </ol>
-            <a
-              v-if="sessionTokenGuide.url"
-              :href="sessionTokenGuide.url"
-              target="_blank"
-              rel="noopener"
-              class="inline-flex items-center gap-1 mt-2 text-[9px] font-medium text-amber-400 hover:text-amber-300 transition-colors"
-            >
-              <ExternalLink class="w-3 h-3" />
-              <span>Open {{ sessionTokenGuide.url }}</span>
-            </a>
-          </div>
-
-          <!-- Token input -->
-          <div>
-            <label class="text-[11px] text-slate-400 flex items-center gap-1 mb-1">
-              <Cookie class="w-3 h-3 text-amber-500/70" />
-              <span>{{ sessionTokenGuide.label }}</span>
-            </label>
-            <div class="flex gap-1.5">
-              <input
-                v-model="sessionTokenInput"
-                :type="showSessionToken ? 'text' : 'password'"
-                :placeholder="sessionTokenGuide.placeholder"
-                class="flex-1 h-8 px-2.5 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 font-mono placeholder:text-slate-600 focus:outline-none focus:border-amber-500 transition-colors"
-              />
-              <button
-                @click="showSessionToken = !showSessionToken"
-                type="button"
-                class="h-8 w-8 rounded bg-slate-950 border border-slate-800 hover:border-slate-700 flex items-center justify-center text-slate-500 hover:text-slate-300 transition-colors shrink-0"
-              >
-                <EyeOff v-if="showSessionToken" class="w-3.5 h-3.5" />
-                <Eye v-else class="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-
-          <!-- Save button -->
-          <button
-            @click="saveSessionToken"
-            :disabled="isSavingSessionToken || !sessionTokenInput.trim()"
-            type="button"
-            class="w-full h-9 rounded-lg bg-gradient-to-r from-amber-700 to-orange-700 hover:from-amber-600 hover:to-orange-600 text-[11px] font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-lg shadow-amber-900/20 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <span v-if="isSavingSessionToken" class="animate-spin">⟳</span>
-            <Save v-else class="w-3.5 h-3.5" />
-            <span>{{ isSavingSessionToken ? 'Saving…' : 'Save Session Token' }}</span>
-          </button>
-
-          <p v-if="sessionTokenGuide.note" class="text-[9px] text-slate-500 text-center leading-relaxed">
-            {{ sessionTokenGuide.note }}
-          </p>
-        </div>
-
-        <!-- ==================== OAUTH ==================== -->
-        <!-- OAuth Connected State -->
-        <div v-else-if="authMethod === 'oauth' && isOAuthConnected" key="oauth-connected" class="space-y-2">
-          <div class="p-3 bg-violet-950/30 border border-violet-800/40 rounded-lg space-y-2">
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2">
-                <div class="w-7 h-7 rounded-full bg-violet-900/60 border border-violet-700/50 flex items-center justify-center">
-                  <User class="w-3.5 h-3.5 text-violet-300" />
-                </div>
-                <div>
-                  <div class="text-[11px] font-medium text-violet-200">{{ oauthEmail || 'Connected' }}</div>
-                  <div class="text-[9px] text-violet-400/70 font-mono">OAuth 2.0 · Bearer Token</div>
-                </div>
-              </div>
-              <div class="flex items-center gap-1.5">
-                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span class="text-[9px] font-mono text-emerald-400">Active</span>
-              </div>
-            </div>
-
-            <button
-              @click="disconnectOAuth"
-              type="button"
-              class="w-full h-7 rounded-md bg-red-950/40 hover:bg-red-950/60 border border-red-800/30 hover:border-red-700/50 text-[10px] font-medium text-red-300 flex items-center justify-center gap-1.5 transition-all"
-            >
-              <LogOut class="w-3 h-3" />
-              <span>Disconnect OAuth Session</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- OAuth Login Button -->
-        <div v-else-if="authMethod === 'oauth' && !isOAuthConnected" key="oauth-login" class="space-y-2">
-          <button
-            @click="startOAuthFlow"
-            :disabled="isOAuthLoading"
-            type="button"
-            class="w-full h-10 rounded-lg bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-[11px] font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-lg shadow-violet-900/30 disabled:opacity-60"
-          >
-            <span v-if="isOAuthLoading" class="animate-spin text-white">⟳</span>
-            <LogIn v-else class="w-4 h-4" />
-            <span>{{ isOAuthLoading ? 'Waiting for authorization…' : `Sign in to ${provider.name}` }}</span>
-          </button>
-          <p class="text-[9px] text-slate-500 text-center leading-relaxed">
-            Opens a secure browser window for authentication. No API key required.
-          </p>
-        </div>
-
-        <!-- ==================== API KEY ==================== -->
-        <div v-else key="api-key" class="space-y-2">
-          <div>
-            <div class="flex items-center justify-between mb-1">
-              <label class="text-[11px] text-slate-400 flex items-center gap-1">
-                <Key class="w-3 h-3 text-slate-500" />
-                <span>API Key Token</span>
-              </label>
-              <button
-                @click="showKey = !showKey"
-                type="button"
-                class="text-[10px] font-mono text-slate-500 hover:text-slate-300 flex items-center gap-1 transition-colors"
-              >
-                <EyeOff v-if="showKey" class="w-3 h-3" />
-                <Eye v-else class="w-3 h-3" />
-                <span>{{ showKey ? 'Hide' : 'Reveal' }}</span>
-              </button>
-            </div>
+          <!-- New / replacement key -->
+          <template v-else>
             <div class="flex gap-1.5">
               <input
                 v-model="apiKeyInput"
                 :type="showKey ? 'text' : 'password'"
-                :placeholder="provider.masked_api_key || 'Enter your API key…'"
-                class="flex-1 h-8 px-2.5 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 font-mono placeholder:text-slate-600 focus:outline-none focus:border-emerald-500 transition-colors"
+                :placeholder="keyGuide.placeholder"
+                autocomplete="off"
+                spellcheck="false"
+                class="flex-1 min-w-0 h-8 px-2.5 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 font-mono placeholder:text-slate-600 focus:outline-none focus:border-emerald-500 transition-colors"
+                @keyup.enter="saveApiKey"
               />
               <button
-                @click="saveApiKey"
-                :disabled="isSavingKey || !apiKeyInput.trim()"
                 type="button"
-                class="h-8 px-2.5 rounded bg-emerald-950/70 hover:bg-emerald-900 border border-emerald-800/60 text-[10px] font-medium text-emerald-300 flex items-center gap-1 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                class="h-8 w-8 rounded bg-slate-950 border border-slate-800 hover:border-slate-700 flex items-center justify-center text-slate-500 hover:text-slate-300 shrink-0"
+                :title="showKey ? 'Hide key' : 'Show key'"
+                @click="showKey = !showKey"
+              >
+                <EyeOff v-if="showKey" class="w-3.5 h-3.5" />
+                <Eye v-else class="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                :disabled="isSavingKey || !apiKeyInput.trim()"
+                class="h-8 px-2.5 rounded bg-emerald-950/70 hover:bg-emerald-900 border border-emerald-800/60 text-[10px] font-medium text-emerald-300 flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                @click="saveApiKey"
               >
                 <span v-if="isSavingKey" class="animate-spin">⟳</span>
                 <Save v-else class="w-3 h-3" />
-                <span>Save</span>
+                <span>{{ isSavingKey ? 'Verifying…' : 'Verify & save' }}</span>
               </button>
             </div>
-          </div>
+            <div class="flex items-center justify-between gap-2 text-[9px] text-slate-500">
+              <a :href="keyGuide.url" target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300">
+                <ExternalLink class="w-2.5 h-2.5" />
+                <span>Get a key at {{ keyGuide.urlLabel }}</span>
+              </a>
+              <button v-if="replacingKey" type="button" class="hover:text-slate-300" @click="replacingKey = false; apiKeyInput = ''">Cancel</button>
+            </div>
+            <p class="text-[9px] text-slate-500">
+              The key is checked with the provider before it's saved.<template v-if="isClaude"> When set, it's used instead of your Claude Code login.</template>
+            </p>
+          </template>
         </div>
-      </Transition>
+
+        <p v-if="provider.id === 'antigravity'" class="text-[9px] text-slate-500 leading-relaxed">
+          Your Antigravity sign-in is only used to show plan limits below; requests use the Gemini API key.
+        </p>
+      </div>
 
       <!-- Base URL (shown regardless of auth method) -->
       <div v-if="provider.base_url">

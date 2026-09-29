@@ -61,6 +61,7 @@ type Router struct {
 	telemetry      *telemetrySubsystem
 	console        *consoleHub
 	quota          *quota.Service
+	connections    *connectionChecker
 
 	taskSeq       int             // last allocated TASK-N; guarded by mu
 	dismissedJira map[string]bool // JIRA keys the operator removed from the board; guarded by mu
@@ -130,6 +131,7 @@ func NewRouter(cfg RouterConfig) *Router {
 		approvals:      newApprovalHub(),
 		stop:           make(chan struct{}),
 	}
+	r.connections = newConnectionChecker(r.quota)
 	r.initTelemetry()
 	r.loadBoard()
 	r.reconcileIdleRunning()
@@ -170,6 +172,7 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/providers/test", r.handleProviderTest)
 	r.mux.HandleFunc("/api/v1/providers/usage", r.handleProviderUsage)
 	r.mux.HandleFunc("/api/v1/providers/quota", r.handleProviderQuota)
+	r.mux.HandleFunc("/api/v1/providers/connection", r.handleProviderConnections)
 	r.mux.HandleFunc("/api/v1/router/settings", r.handleRouterSettings)
 	r.mux.HandleFunc("/api/v1/router/models", r.handleRegisterModel)
 	r.mux.HandleFunc("/api/v1/providers/oauth/initiate", r.handleOAuthInitiate)

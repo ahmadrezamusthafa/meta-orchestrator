@@ -198,6 +198,25 @@ export interface ProviderDTO {
   models: string[]
   auth_method: 'api_key' | 'oauth' | 'session_token'
   supports_oauth: boolean
+  /** A real API key is saved (masked_api_key shows it masked). */
+  has_api_key?: boolean
+}
+
+export type ProviderConnectionStatus = 'connected' | 'not_configured' | 'invalid' | 'expired' | 'unreachable'
+
+/** What the orchestrator actually uses to reach a provider, verified live. */
+export interface ProviderConnection {
+  provider_id: string
+  status: ProviderConnectionStatus
+  method: 'api_key' | 'claude_cli' | 'local_endpoint' | 'none'
+  label: string
+  detail?: string
+  hint?: string
+  plan?: string
+  latency_ms?: number
+  checked_at: string
+  /** A saved session token / OAuth login that no request uses. */
+  legacy_auth?: 'session_token' | 'oauth'
 }
 
 export interface ProviderUsageTotals {
