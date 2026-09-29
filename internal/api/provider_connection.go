@@ -87,6 +87,22 @@ func (c *connectionChecker) invalidate(providerID string) {
 	c.mu.Unlock()
 }
 
+// Usable reports, from cached checks only (never the network), whether the router may send work
+// to a provider. Unchecked or unreachable providers count as usable so failover still tries them.
+func (c *connectionChecker) Usable(provider string) bool {
+	c.mu.Lock()
+	conn, ok := c.cache[normalizeProviderID(provider)]
+	c.mu.Unlock()
+	if !ok {
+		return true
+	}
+	switch conn.Status {
+	case ConnNotConfigured, ConnInvalid, ConnExpired:
+		return false
+	}
+	return true
+}
+
 // providerCreds is a snapshot of what the driver would use for one provider.
 type providerCreds struct {
 	apiKey     string

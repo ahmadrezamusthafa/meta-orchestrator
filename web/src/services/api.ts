@@ -7,7 +7,7 @@ import type {
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
   UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse,
   PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
-  OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO,
+  OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO, RoutePreviewDTO, TierAssignmentDTO,
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
   TaskActivityResponse, TaskChatResponse, TaskDiffDTO, DiffAgainst, TaskArtifactDTO
 } from '../types'
@@ -343,6 +343,16 @@ export const api = {
       const err = await res.json().catch(() => ({ error: 'Failed to update router settings' }))
       throw new Error(err.error || 'Failed to update router settings')
     }
+    return res.json()
+  },
+
+  async previewRouter(payload: { mode: RouterMode; priority_chain: PriorityModelItem[] }): Promise<{ preview: RoutePreviewDTO[]; tiers: TierAssignmentDTO[] }> {
+    const res = await fetch(`${BASE_URL}/router/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!res.ok) throw new Error('Failed to preview routing')
     return res.json()
   },
 

@@ -132,6 +132,10 @@ func NewRouter(cfg RouterConfig) *Router {
 		stop:           make(chan struct{}),
 	}
 	r.connections = newConnectionChecker(r.quota)
+	stratRouter.SetAvailability(r.connections.Usable)
+	if saved := savedRouterSettings(); saved != nil {
+		stratRouter.SetSettings(*saved)
+	}
 	r.initTelemetry()
 	r.loadBoard()
 	r.reconcileIdleRunning()
@@ -175,6 +179,7 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/providers/connection", r.handleProviderConnections)
 	r.mux.HandleFunc("/api/v1/router/settings", r.handleRouterSettings)
 	r.mux.HandleFunc("/api/v1/router/models", r.handleRegisterModel)
+	r.mux.HandleFunc("/api/v1/router/preview", r.handleRouterPreview)
 	r.mux.HandleFunc("/api/v1/providers/oauth/initiate", r.handleOAuthInitiate)
 	r.mux.HandleFunc("/api/v1/providers/oauth/callback", r.handleOAuthCallback)
 	r.mux.HandleFunc("/api/v1/providers/oauth/status", r.handleOAuthStatus)

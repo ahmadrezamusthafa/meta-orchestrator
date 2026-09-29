@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import { api } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
-import type { RouterMode, PriorityModelItem, RouterModeDTO, AvailableModelDTO } from '../../types'
+import type {
+  RouterMode, PriorityModelItem, RouterModeDTO, AvailableModelDTO,
+  ModelTier, ModelSuggestion, RoutePreviewDTO
+} from '../../types'
 import {
   ArrowUp, ArrowDown, Plus, Trash2, Save, RotateCcw,
-  Zap, DollarSign, Layers, Cpu, Check, Search, Sparkles,
+  Zap, DollarSign, Layers, Check, Search, Sparkles,
   RefreshCw, ShieldCheck, HelpCircle, Activity, ChevronDown, ChevronUp,
-  X, Tag
+  X, Tag, Lightbulb, Route
 } from 'lucide-vue-next'
 
 const toastStore = useToastStore()
@@ -18,11 +21,52 @@ const selectedMode = ref<RouterMode>('priority_sequence')
 const priorityChain = ref<PriorityModelItem[]>([])
 const availableModes = ref<RouterModeDTO[]>([])
 const allModels = ref<AvailableModelDTO[]>([])
+const defaultChain = ref<PriorityModelItem[]>([])
+
+// Live routing preview for the (possibly unsaved) mode + chain
+const preview = ref<RoutePreviewDTO[]>([])
+const isPreviewLoading = ref(false)
+const savedSnapshot = ref('')
+let previewTimer: ReturnType<typeof setTimeout> | undefined
+let previewSeq = 0
+
+const TIER_OPTIONS: { id: ModelTier; label: string; title: string }[] = [
+  { id: 'tier1', label: 'Reasoning', title: 'Tier 1: PRD, RFC, task breakdown, ATDD, complex implementation' },
+  { id: 'tier2', label: 'Code', title: 'Tier 2: standard implementation and E2E / UAT verification' },
+  { id: 'tier3', label: 'Logs', title: 'Tier 3: log parsing and diff summaries' },
+]
+
+const snapshot = () => JSON.stringify({ mode: selectedMode.value, chain: priorityChain.value })
+const isDirty = computed(() => !isLoading.value && snapshot() !== savedSnapshot.value)
 
 // Add model state
 const selectedNewModelId = ref('')
 const catalogSearchQuery = ref('')
 const showFullCatalog = ref(false)
+const catalogRoot = ref<HTMLElement | null>(null)
+const catalogSearchInput = ref<HTMLInputElement | null>(null)
+
+async function toggleCatalog() {
+  showFullCatalog.value = !showFullCatalog.value
+  if (showFullCatalog.value) {
+    await nextTick()
+    catalogSearchInput.value?.focus()
+  }
+}
+
+function onDocumentPointerDown(e: PointerEvent) {
+  if (showFullCatalog.value && catalogRoot.value && !catalogRoot.value.contains(e.target as Node)) {
+    showFullCatalog.value = false
+  }
+}
+
+function onDocumentKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') showFullCatalog.value = false
+}
+
+function isInChain(m: AvailableModelDTO): boolean {
+  return priorityChain.value.some(item => item.model === m.model_id)
+}
 
 // Custom model modal state
 const showCustomModal = ref(false)
@@ -48,17 +92,122 @@ function applyPreset(preset: typeof quickPresets[0]) {
 }
 
 onMounted(async () => {
+  document.addEventListener('pointerdown', onDocumentPointerDown)
+  document.addEventListener('keydown', onDocumentKeydown)
   await loadRouterSettings()
 })
+
+onBeforeUnmount(() => {
+  clearTimeout(previewTimer)
+  document.removeEventListener('pointerdown', onDocumentPointerDown)
+  document.removeEventListener('keydown', onDocumentKeydown)
+})
+
+watch([selectedMode, priorityChain], () => {
+  if (isLoading.value) return
+  clearTimeout(previewTimer)
+  previewTimer = setTimeout(refreshPreview, 300)
+}, { deep: true })
+
+async function refreshPreview() {
+  const seq = ++previewSeq
+  isPreviewLoading.value = true
+  try {
+    const res = await api.previewRouter({ mode: selectedMode.value, priority_chain: priorityChain.value })
+    if (seq !== previewSeq) return
+    preview.value = res.preview || []
+  } catch (err) {
+    console.error('Routing preview failed:', err)
+  } finally {
+    if (seq === previewSeq) isPreviewLoading.value = false
+  }
+}
+
+/** Folds provider aliases so "openai/gpt-4o" matches a "chatgpt" chain item. */
+function providerKey(p: string): string {
+  const k = p.toLowerCase()
+  if (k === 'openai') return 'chatgpt'
+  if (k === 'gemini' || k === 'google') return 'antigravity'
+  if (k === 'anthropic') return 'claude'
+  return k
+}
+
+function splitModel(full: string): { provider: string; model: string } {
+  const i = full.indexOf('/')
+  return i > 0 ? { provider: full.slice(0, i), model: full.slice(i + 1) } : { provider: 'claude', model: full }
+}
+
+function findChainIndex(full: string): number {
+  const { provider, model } = splitModel(full)
+  return priorityChain.value.findIndex(item =>
+    item.model === model && providerKey(item.provider) === providerKey(provider))
+}
+
+function catalogTiers(provider: string, model: string): ModelTier[] {
+  const m = allModels.value.find(c => c.model_id === model && providerKey(c.provider_id) === providerKey(provider))
+  return m?.tiers?.length ? [...m.tiers] : ['tier2']
+}
+
+function withTiers(chain: PriorityModelItem[]): PriorityModelItem[] {
+  return chain.map(item => ({ ...item, tiers: item.tiers?.length ? item.tiers : catalogTiers(item.provider, item.model) }))
+}
+
+function toggleTier(index: number, tier: ModelTier) {
+  const item = priorityChain.value[index]
+  const tiers = new Set(item.tiers || [])
+  if (tiers.has(tier)) {
+    if (tiers.size === 1) {
+      toastStore.warning('At Least One Tier', 'A model needs at least one tier tag')
+      return
+    }
+    tiers.delete(tier)
+  } else {
+    tiers.add(tier)
+  }
+  item.tiers = TIER_OPTIONS.map(t => t.id).filter(t => tiers.has(t))
+}
+
+function applySuggestion(sug: ModelSuggestion) {
+  const { provider, model } = splitModel(sug.model)
+  const idx = findChainIndex(sug.model)
+  if (sug.action === 'connect') {
+    toastStore.info('Connect Provider', `Connect ${provider} in the provider cards above to let the router use ${model}`)
+    return
+  }
+  if (idx >= 0) {
+    priorityChain.value[idx].enabled = true
+    toastStore.info('Model Enabled', `${priorityChain.value[idx].name || model} is enabled. Save to apply.`)
+    return
+  }
+  const found = allModels.value.find(m => m.model_id === model && providerKey(m.provider_id) === providerKey(provider))
+  priorityChain.value.unshift({
+    id: `item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    provider: found?.provider_id || providerKey(provider),
+    model,
+    name: found?.model_name || model,
+    enabled: true,
+    cost_per_1k: found?.cost_per_1k ?? 0,
+    latency_ms: found?.latency_ms ?? 0,
+    tiers: sug.tier ? [sug.tier] : catalogTiers(provider, model),
+  })
+  toastStore.info('Model Added', `${found?.model_name || model} added at rank #1. Reorder if needed, then save.`)
+}
+
+function suggestionLabel(action: ModelSuggestion['action']): string {
+  return action === 'add' ? 'Add to chain' : action === 'enable' ? 'Enable' : 'How to connect'
+}
 
 async function loadRouterSettings() {
   isLoading.value = true
   try {
     const res = await api.getRouterSettings()
-    selectedMode.value = res.mode || 'priority_sequence'
-    priorityChain.value = res.priority_chain || []
+    selectedMode.value = res.mode || 'best_practice'
     availableModes.value = res.available_modes || []
     allModels.value = res.all_models || []
+    priorityChain.value = withTiers(res.priority_chain || [])
+    defaultChain.value = res.default_chain || []
+    preview.value = res.preview || []
+    savedSnapshot.value = snapshot()
 
     selectFirstCandidateModel()
   } catch (err: any) {
@@ -123,6 +272,7 @@ function addModelToChain(modelId?: string) {
     enabled: true,
     cost_per_1k: found.cost_per_1k,
     latency_ms: found.latency_ms,
+    tiers: found.tiers?.length ? [...found.tiers] : ['tier2'],
   })
 
   toastStore.info('Model Added', `Added ${found.model_name} to priority sequence`)
@@ -166,10 +316,12 @@ async function submitCustomModel() {
 async function saveSettings() {
   isSaving.value = true
   try {
-    await api.updateRouterSettings({
+    const res = await api.updateRouterSettings({
       mode: selectedMode.value,
       priority_chain: priorityChain.value,
     })
+    if (res.preview) preview.value = res.preview
+    savedSnapshot.value = snapshot()
     toastStore.success('Routing Configuration Saved', `Mode: ${selectedMode.value} · ${priorityChain.value.filter(i => i.enabled).length} active models in waterfall`)
   } catch (err: any) {
     toastStore.error('Save Failed', err.message || 'Could not persist router configuration')
@@ -179,55 +331,9 @@ async function saveSettings() {
 }
 
 function resetToDefault() {
-  priorityChain.value = [
-    {
-      id: 'default-0',
-      provider: 'claude',
-      model: 'claude-opus-5-5',
-      name: 'Claude Opus 5.5 (Next-Gen Frontier)',
-      enabled: true,
-      cost_per_1k: 0.015,
-      latency_ms: 250,
-    },
-    {
-      id: 'default-1',
-      provider: 'claude',
-      model: 'claude-3-7-sonnet-20250219',
-      name: 'Claude 3.7 Sonnet (Hybrid Reasoning)',
-      enabled: true,
-      cost_per_1k: 0.003,
-      latency_ms: 140,
-    },
-    {
-      id: 'default-2',
-      provider: 'antigravity',
-      model: 'gemini-2.0-flash',
-      name: 'Gemini 2.0 Flash (Fast & Capable)',
-      enabled: true,
-      cost_per_1k: 0.0001,
-      latency_ms: 65,
-    },
-    {
-      id: 'default-3',
-      provider: 'chatgpt',
-      model: 'gpt-4o',
-      name: 'OpenAI GPT-4o Omni',
-      enabled: true,
-      cost_per_1k: 0.0025,
-      latency_ms: 185,
-    },
-    {
-      id: 'default-4',
-      provider: 'opencode',
-      model: 'deepseek-coder-v2',
-      name: 'DeepSeek Coder V2 (Local MoE)',
-      enabled: true,
-      cost_per_1k: 0.0,
-      latency_ms: 12,
-    },
-  ]
-  selectedMode.value = 'priority_sequence'
-  toastStore.info('Defaults Restored', 'Click Save to persist default sequence')
+  priorityChain.value = withTiers(defaultChain.value.map(item => ({ ...item })))
+  selectedMode.value = 'best_practice'
+  toastStore.info('Defaults Restored', 'Click Save to persist the default chain')
 }
 
 const filteredCatalogModels = computed(() => {
@@ -306,6 +412,7 @@ function getModeIcon(mode: RouterMode) {
           <span v-if="isSaving" class="animate-spin text-white">⟳</span>
           <Save v-else class="w-3.5 h-3.5" />
           <span>Save Routing Configuration</span>
+          <span v-if="isDirty" class="w-1.5 h-1.5 rounded-full bg-amber-300" title="Unsaved changes"></span>
         </button>
       </div>
     </div>
@@ -369,7 +476,8 @@ function getModeIcon(mode: RouterMode) {
             <span>AI Model Priority Chain & Sort Order</span>
           </h4>
           <p class="text-[11px] text-slate-400 mt-0.5">
-            Arranged from highest priority (Rank #1) to secondary fallbacks. Use Move Up/Down to customize the sequence.
+            Your allow-list for every mode: only enabled models here ever run, and fallbacks follow this order.
+            Best Practice picks the highest-ranked model tagged for each stage's tier and only <em>suggests</em> stronger models you haven't added.
           </p>
         </div>
 
@@ -381,7 +489,7 @@ function getModeIcon(mode: RouterMode) {
             class="h-7 px-2.5 rounded-lg bg-purple-950/80 hover:bg-purple-900 border border-purple-700/80 text-[11px] font-medium text-purple-300 hover:text-white flex items-center gap-1.5 transition-colors shadow-sm"
           >
             <Plus class="w-3.5 h-3.5" />
-            <span>+ Custom Model</span>
+            <span>Custom Model</span>
           </button>
 
           <!-- Add Model Selector Dropdown -->
@@ -410,15 +518,90 @@ function getModeIcon(mode: RouterMode) {
             </button>
           </div>
 
-          <button
-            @click="showFullCatalog = !showFullCatalog"
-            type="button"
-            class="h-7 px-2.5 rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-700 text-[11px] font-mono text-slate-300 hover:text-white flex items-center gap-1.5 transition-colors"
-          >
-            <span>All Models ({{ allModels.length }})</span>
-            <ChevronUp v-if="showFullCatalog" class="w-3 h-3 text-sky-400" />
-            <ChevronDown v-else class="w-3 h-3 text-sky-400" />
-          </button>
+          <!-- All Models dropdown, anchored to its button -->
+          <div ref="catalogRoot" class="relative">
+            <button
+              @click="toggleCatalog"
+              type="button"
+              aria-haspopup="dialog"
+              :aria-expanded="showFullCatalog ? 'true' : 'false'"
+              class="h-7 px-2.5 rounded-lg bg-slate-950 border text-[11px] font-mono flex items-center gap-1.5 transition-colors"
+              :class="showFullCatalog
+                ? 'border-sky-600 text-white'
+                : 'border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white'"
+            >
+              <span>All Models ({{ allModels.length }})</span>
+              <ChevronUp v-if="showFullCatalog" class="w-3 h-3 text-sky-400" />
+              <ChevronDown v-else class="w-3 h-3 text-sky-400" />
+            </button>
+
+            <div
+              v-if="showFullCatalog"
+              role="dialog"
+              aria-label="Model catalog"
+              class="absolute right-0 top-full mt-1.5 z-40 w-[min(26rem,calc(100vw-2rem))] bg-slate-900 border border-slate-700 rounded-xl shadow-2xl shadow-slate-950/60 overflow-hidden"
+            >
+              <div class="p-2 border-b border-slate-800">
+                <div class="relative">
+                  <Search class="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-2.5" />
+                  <input
+                    ref="catalogSearchInput"
+                    v-model="catalogSearchQuery"
+                    type="text"
+                    placeholder="Search provider or model (e.g. opus, sonnet)…"
+                    class="w-full h-8 pl-8 pr-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-sky-500"
+                  />
+                </div>
+              </div>
+
+              <div class="max-h-80 overflow-y-auto py-1">
+                <div v-if="filteredCatalogModels.length === 0" class="px-3 py-6 text-center text-[11px] text-slate-500">
+                  No models match "{{ catalogSearchQuery }}"
+                </div>
+                <div
+                  v-for="m in filteredCatalogModels"
+                  :key="`${m.provider_id}:${m.model_id}`"
+                  class="px-3 py-2 flex items-center justify-between gap-2 hover:bg-slate-800/60 transition-colors"
+                >
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-1.5">
+                      <span
+                        class="px-1.5 py-0.5 rounded text-[9px] font-mono font-medium border shrink-0"
+                        :class="getProviderBadgeColor(m.provider_id)"
+                      >
+                        {{ m.provider_id }}
+                      </span>
+                      <span class="text-xs font-semibold text-slate-200 truncate" :title="m.model_name">
+                        {{ m.model_name }}
+                      </span>
+                    </div>
+                    <div class="flex items-center gap-2 mt-0.5 text-[10px] font-mono text-slate-500">
+                      <span class="truncate">{{ m.model_id }}</span>
+                      <span class="text-emerald-400 shrink-0">~{{ m.latency_ms }}ms</span>
+                      <span class="text-sky-400 shrink-0">${{ m.cost_per_1k.toFixed(4) }}/1k</span>
+                    </div>
+                  </div>
+
+                  <span
+                    v-if="isInChain(m)"
+                    class="h-6 px-2 rounded border border-emerald-800/70 text-[10px] font-mono text-emerald-400 flex items-center gap-1 shrink-0"
+                  >
+                    <Check class="w-3 h-3" />
+                    <span>In chain</span>
+                  </span>
+                  <button
+                    v-else
+                    @click="addModelToChain(m.model_id)"
+                    type="button"
+                    class="h-6 px-2 rounded bg-sky-950/80 hover:bg-sky-900 border border-sky-800/80 text-[10px] font-mono text-sky-300 flex items-center gap-1 shrink-0 transition-colors"
+                  >
+                    <Plus class="w-3 h-3" />
+                    <span>Add</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -466,7 +649,7 @@ function getModeIcon(mode: RouterMode) {
                   ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
                   : 'bg-slate-900 border-slate-800 text-slate-400'"
               >
-                {{ idx === 0 ? 'PRIMARY #1' : `FAILOVER #${idx + 1}` }}
+                {{ selectedMode === 'priority_sequence' ? (idx === 0 ? 'PRIMARY #1' : `FAILOVER #${idx + 1}`) : `RANK #${idx + 1}` }}
               </div>
 
               <!-- Provider Badge & Model Name -->
@@ -488,8 +671,26 @@ function getModeIcon(mode: RouterMode) {
               </div>
             </div>
 
-            <!-- Right Info: Latency, Cost, Enabled Toggle, Delete -->
-            <div class="flex items-center gap-3 shrink-0 self-end sm:self-auto">
+            <!-- Right Info: Tiers, Latency, Cost, Enabled Toggle, Delete -->
+            <div class="flex flex-wrap items-center gap-3 shrink-0 self-end sm:self-auto">
+              <!-- Tier Tags -->
+              <div class="flex items-center gap-1" role="group" aria-label="Tier tags">
+                <button
+                  v-for="t in TIER_OPTIONS"
+                  :key="t.id"
+                  @click="toggleTier(idx, t.id)"
+                  type="button"
+                  :title="t.title"
+                  :aria-pressed="item.tiers?.includes(t.id) ? 'true' : 'false'"
+                  class="h-6 px-1.5 rounded text-[10px] font-mono border transition-colors"
+                  :class="item.tiers?.includes(t.id)
+                    ? 'bg-violet-950/60 border-violet-600/70 text-violet-200'
+                    : 'bg-slate-900 border-slate-800 text-slate-600 hover:text-slate-300'"
+                >
+                  {{ t.label }}
+                </button>
+              </div>
+
               <!-- Latency Pill -->
               <div class="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-[10px] font-mono text-emerald-400 flex items-center gap-1">
                 <Zap class="w-2.5 h-2.5" />
@@ -530,68 +731,54 @@ function getModeIcon(mode: RouterMode) {
       </div>
     </div>
 
-    <!-- 3. All Available Models Catalog (Collapsible) -->
-    <div v-if="showFullCatalog" class="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3">
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-800">
-        <div>
-          <h4 class="text-xs font-bold text-slate-100 uppercase tracking-wide flex items-center gap-1.5">
-            <Cpu class="w-3.5 h-3.5 text-sky-400" />
-            <span>Complete AI Provider Model Catalog ({{ allModels.length }} Models Available)</span>
-          </h4>
-          <p class="text-[11px] text-slate-400 mt-0.5">
-            All registered models ready to be prioritized across Claude (Opus 5.5, Sonnet 3.7), Gemini, OpenAI, and OpenCode.
-          </p>
-        </div>
-
-        <!-- Search Bar -->
-        <div class="relative w-64">
-          <Search class="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-2.5" />
-          <input
-            v-model="catalogSearchQuery"
-            type="text"
-            placeholder="Search provider or model (e.g. opus, sonnet)…"
-            class="w-full h-8 pl-8 pr-3 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-sky-500"
-          />
-        </div>
+    <!-- 2b. Live Routing Preview -->
+    <div class="space-y-2 pt-2 border-t border-slate-800/80">
+      <div class="flex items-center justify-between gap-2">
+        <h4 class="text-xs font-bold text-slate-200 uppercase tracking-wide flex items-center gap-1.5">
+          <Route class="w-3.5 h-3.5 text-emerald-400" />
+          <span>What Will Run</span>
+          <span v-if="isDirty" class="px-1.5 py-0.5 rounded text-[9px] font-mono bg-amber-500/15 border border-amber-500/40 text-amber-300 normal-case">
+            unsaved preview
+          </span>
+        </h4>
+        <span v-if="isPreviewLoading" class="text-[10px] font-mono text-slate-500">updating…</span>
       </div>
 
-      <!-- Models Grid -->
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-80 overflow-y-auto pr-1">
-        <div
-          v-for="m in filteredCatalogModels"
-          :key="m.model_id"
-          class="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800/90 hover:border-slate-700 flex items-center justify-between gap-2 transition-all"
-        >
-          <div class="min-w-0">
-            <div class="flex items-center gap-1.5">
+      <div class="border border-slate-800 rounded-xl overflow-hidden bg-slate-950/60 divide-y divide-slate-800/80">
+        <div v-if="preview.length === 0" class="p-4 text-center text-slate-500 text-xs">No preview available.</div>
+        <div v-for="row in preview" :key="row.label" class="p-3 flex flex-col gap-1.5">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+            <div class="text-xs text-slate-300 font-medium">
+              {{ row.label }}
+              <span v-if="row.decision.tier" class="ml-1 text-[10px] font-mono text-slate-500">{{ row.decision.tier }}</span>
+            </div>
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="text-xs font-mono text-emerald-300 truncate">{{ row.decision.model }}</span>
               <span
-                class="px-1.5 py-0.5 rounded text-[9px] font-mono font-medium border shrink-0"
-                :class="getProviderBadgeColor(m.provider_id)"
+                v-if="row.decision.fallback_chain.length > 1"
+                class="text-[10px] font-mono text-slate-500 shrink-0"
+                :title="row.decision.fallback_chain.slice(1).join(' → ')"
               >
-                {{ m.provider_id }}
+                +{{ row.decision.fallback_chain.length - 1 }} fallback{{ row.decision.fallback_chain.length > 2 ? 's' : '' }}
               </span>
-              <span class="text-xs font-semibold text-slate-200 truncate" :title="m.model_name">
-                {{ m.model_name }}
-              </span>
-            </div>
-            <div class="text-[10px] font-mono text-slate-500 truncate mt-0.5">
-              {{ m.model_id }}
-            </div>
-            <div class="flex items-center gap-2 mt-1 text-[9px] font-mono text-slate-400">
-              <span class="text-emerald-400">~{{ m.latency_ms }}ms</span>
-              <span>•</span>
-              <span class="text-sky-400">${{ m.cost_per_1k.toFixed(4) }}/1k</span>
             </div>
           </div>
-
-          <button
-            @click="addModelToChain(m.model_id)"
-            type="button"
-            class="h-7 px-2 rounded bg-sky-950/80 hover:bg-sky-900 border border-sky-800/80 text-[10px] font-mono text-sky-300 flex items-center gap-1 shrink-0 transition-colors"
+          <div
+            v-if="row.decision.suggestion"
+            class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-amber-950/30 border border-amber-800/50"
           >
-            <Plus class="w-3 h-3" />
-            <span>Add</span>
-          </button>
+            <div class="flex items-start gap-1.5 text-[11px] text-amber-200">
+              <Lightbulb class="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>{{ row.decision.suggestion.reason }}</span>
+            </div>
+            <button
+              @click="applySuggestion(row.decision.suggestion)"
+              type="button"
+              class="h-6 px-2 rounded bg-amber-900/60 hover:bg-amber-800/70 border border-amber-700/70 text-[10px] font-mono text-amber-100 shrink-0 transition-colors"
+            >
+              {{ suggestionLabel(row.decision.suggestion.action) }}
+            </button>
+          </div>
         </div>
       </div>
     </div>

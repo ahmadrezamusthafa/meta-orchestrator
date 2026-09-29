@@ -294,6 +294,8 @@ export type RouterMode =
   | 'latency_optimized'
   | 'round_robin'
 
+export type ModelTier = 'tier1' | 'tier2' | 'tier3'
+
 export interface PriorityModelItem {
   id: string
   provider: string
@@ -302,6 +304,41 @@ export interface PriorityModelItem {
   enabled: boolean
   cost_per_1k: number
   latency_ms: number
+  /** Tier tags; best practice picks the highest-ranked enabled item tagged for the stage's tier. */
+  tiers?: ModelTier[]
+}
+
+/** A recommended model the router did not run because the chain does not allow it. */
+export interface ModelSuggestion {
+  model: string
+  tier?: ModelTier
+  action: 'add' | 'enable' | 'connect'
+  reason: string
+}
+
+export interface RoutingDecisionDTO {
+  strategy: string
+  model: string
+  tier?: ModelTier
+  fallback_chain: string[]
+  method: string
+  token_budget: number
+  reasoning: string
+  suggestion?: ModelSuggestion
+}
+
+export interface RoutePreviewDTO {
+  label: string
+  stage: string
+  complexity: string
+  decision: RoutingDecisionDTO
+}
+
+export interface TierAssignmentDTO {
+  tier: ModelTier
+  recommended: string
+  model: string
+  suggestion?: ModelSuggestion
 }
 
 export interface RouterModeDTO {
@@ -317,13 +354,17 @@ export interface AvailableModelDTO {
   model_name: string
   cost_per_1k: number
   latency_ms: number
+  tiers?: ModelTier[]
 }
 
 export interface RouterSettingsDTO {
   mode: RouterMode
   priority_chain: PriorityModelItem[]
+  default_chain: PriorityModelItem[]
   available_modes: RouterModeDTO[]
   all_models: AvailableModelDTO[]
+  preview: RoutePreviewDTO[]
+  tiers: TierAssignmentDTO[]
 }
 
 export interface TierMappingDTO {

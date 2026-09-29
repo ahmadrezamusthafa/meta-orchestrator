@@ -3,6 +3,7 @@ package feedback
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
@@ -17,6 +18,19 @@ func tieredConfig() *config.OrchestratorConfig {
 	cfg.ModelTiers.Tier3LogParse = "claude/claude-3-5-haiku-20241022"
 	cfg.Router.Strategy = "best_practice"
 	return cfg
+}
+
+// tieredRouter is a router whose chain allows every tiered model, so tier shifts are observable.
+func tieredRouter() *router.Router {
+	cfg := tieredConfig()
+	r := router.NewRouter(cfg)
+	var chain []router.PriorityModelItem
+	for _, m := range []string{cfg.ModelTiers.Tier1Reasoning, cfg.ModelTiers.Tier2CodeGen, cfg.ModelTiers.Tier3LogParse} {
+		p, id, _ := strings.Cut(m, "/")
+		chain = append(chain, router.PriorityModelItem{Provider: p, Model: id, Enabled: true})
+	}
+	r.SetSettings(router.RouterSettings{PriorityChain: chain})
+	return r
 }
 
 func TestClassifyTaskType(t *testing.T) {
@@ -38,7 +52,7 @@ func TestClassifyTaskType(t *testing.T) {
 
 func TestCalibratorShiftsRoutineCRUDFromTier1ToTier2(t *testing.T) {
 	ctx := context.Background()
-	r := router.NewRouter(tieredConfig())
+	r := tieredRouter()
 
 	before := r.RouteForTask("INTAKE_PRD", "MEDIUM", "crud", nil)
 	if before.Tier != "tier1" || before.Model != "claude/claude-3-5-sonnet-20241022" {
@@ -126,7 +140,7 @@ func TestCalibratorRecommendsCustomRulePromotion(t *testing.T) {
 
 func TestAdminLockOverridesCalibration(t *testing.T) {
 	ctx := context.Background()
-	r := router.NewRouter(tieredConfig())
+	r := tieredRouter()
 	cal := NewCalibrator(NewMemoryWeightStore(), DefaultCalibratorConfig())
 	r.SetTierAdvisor(cal)
 

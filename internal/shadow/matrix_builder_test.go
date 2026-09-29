@@ -191,6 +191,11 @@ func TestMatrixStoreHotReloadEmitsEventAndRouterAdopts(t *testing.T) {
 	cfg.ModelTiers.Tier1Reasoning = "claude/claude-3-5-sonnet-20241022"
 	cfg.ModelTiers.Tier2CodeGen = "openai/gpt-4o-mini"
 	r := router.NewRouter(cfg)
+	// The chain is the allow-list, so both tier models must be in it for the shift to be observable.
+	r.SetSettings(router.RouterSettings{PriorityChain: []router.PriorityModelItem{
+		{Provider: "claude", Model: "claude-3-5-sonnet-20241022", Enabled: true},
+		{Provider: "openai", Model: "gpt-4o-mini", Enabled: true},
+	}})
 	r.SetMethodAdvisor(store)
 
 	before := r.Route("CODEGEN_IMPLEMENT", "HIGH", nil)
