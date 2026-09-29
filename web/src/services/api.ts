@@ -152,6 +152,19 @@ export const api = {
     return res.json()
   },
 
+  async decideApproval(taskId: string, approvalId: string, decision: 'allow' | 'always' | 'deny', message?: string): Promise<{ status: string }> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/approvals/${encodeURIComponent(approvalId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision, message }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || 'Could not send the decision')
+    }
+    return res.json()
+  },
+
   async getTaskArtifacts(taskId: string): Promise<{ task_id: string; artifacts: TaskArtifactDTO[] }> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/artifacts`)
     if (!res.ok) throw new Error(`Failed to list documents for ${taskId}`)

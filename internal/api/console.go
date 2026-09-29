@@ -163,6 +163,8 @@ type agentTurn struct {
 	MaxTokens int
 	// PermissionMode for agentic providers; empty keeps them read-only.
 	PermissionMode string
+	// Approver answers the agent's permission prompts; nil denies them.
+	Approver llm.Approver
 }
 
 // beginTurn marks the task console busy. It fails if a turn is already running.
@@ -260,7 +262,7 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 			Content: fmt.Sprintf("Failover: %s failed (%v) → trying %s", failed, err, next)})
 	}
 
-	req := &llm.LLMRequest{Messages: t.Messages, MaxTokens: t.MaxTokens, SessionID: t.SessionID, WorkDir: t.WorkDir, PermissionMode: t.PermissionMode}
+	req := &llm.LLMRequest{Messages: t.Messages, MaxTokens: t.MaxTokens, SessionID: t.SessionID, WorkDir: t.WorkDir, PermissionMode: t.PermissionMode, Approver: t.Approver}
 	start := time.Now()
 	resp, used, err := r.clientFactory.StreamWithFallbackChain(ctx, chain, req, emit, onFailover)
 

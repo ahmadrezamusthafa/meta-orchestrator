@@ -5,7 +5,7 @@ import type { Task, WorkflowStage } from '../../types'
 import { useTaskStore } from '../../stores/tasks'
 import { taskLifecycle, stagePosition, TONE_BADGE, ACTION_BUTTON } from '../../composables/taskLifecycle'
 import {
-  MoreVertical, Check, Terminal, GitBranch, Link2, Play, Pause, RotateCw, RefreshCcw, Eye, FolderGit2,
+  MoreVertical, Check, Terminal, GitBranch, Link2, Play, Pause, RotateCw, RefreshCcw, Eye, FolderGit2, ShieldAlert,
   ExternalLink, FileText, Layers, Trash2, ArrowRight, Loader2,
 } from 'lucide-vue-next'
 
@@ -58,12 +58,12 @@ const updatedAgo = computed(() => {
   return `${Math.floor(mins / 1440)}d ago`
 })
 
-const ACTION_ICON = { run: Play, resume: RotateCw, pause: Pause, reset: RefreshCcw, review: Eye, assign: FolderGit2 }
+const ACTION_ICON = { run: Play, resume: RotateCw, pause: Pause, reset: RefreshCcw, review: Eye, assign: FolderGit2, approve: ShieldAlert }
 
 async function runPrimary() {
   const a = life.value.primary
   if (!a || pending.value) return
-  if (a.kind === 'review') {
+  if (a.kind === 'review' || a.kind === 'approve') {
     emit('open-console', props.task.id) // the console hosts approve / request-changes
     return
   }

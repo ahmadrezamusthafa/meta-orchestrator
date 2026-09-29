@@ -322,7 +322,18 @@ export const useTaskStore = defineStore('tasks', () => {
     wsSubscribed = true
     wsService.subscribe((event) => {
       if (event.type === 'task.status' && event.payload) {
-        replaceTask(event.payload as Task)
+        const incoming = event.payload as Task
+        const before = Number(tasks.value.find((t) => t.id === incoming.id)?.metadata?.pending_approvals || 0)
+        const after = Number(incoming.metadata?.pending_approvals || 0)
+        if (after > before) {
+          toastStore.warning('Approval needed', `${incoming.id} is paused until you allow or deny an action. Open its console to decide.`)
+          try {
+            if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+              new Notification(`${incoming.id} needs approval`, { body: incoming.title })
+            }
+          } catch { /* notifications unavailable */ }
+        }
+        replaceTask(incoming)
       } else if (event.type === 'task.deleted' && event.task_id) {
         tasks.value = tasks.value.filter((t) => t.id !== event.task_id)
       } else if (event.type === 'jira.sync' && event.payload) {

@@ -21,6 +21,7 @@ const (
 	ConsoleKindSystem     = "system"
 	ConsoleKindError      = "error"
 	ConsoleKindState      = "state"
+	ConsoleKindApproval   = "approval" // the agent asks the operator for permission
 )
 
 // Console entry statuses.
@@ -78,16 +79,41 @@ type ConsoleState struct {
 
 // ConsoleEntry is one item of a task's real activity transcript.
 type ConsoleEntry struct {
-	ID        string          `json:"id"`
-	TaskID    string          `json:"task_id"`
-	TurnID    string          `json:"turn_id,omitempty"`
-	Kind      string          `json:"kind"`
-	Content   string          `json:"content,omitempty"`
-	Status    string          `json:"status,omitempty"`
-	Tool      *ConsoleTool    `json:"tool,omitempty"`
-	Request   *ConsoleRequest `json:"request,omitempty"`
-	Usage     *ConsoleUsage   `json:"usage,omitempty"`
-	State     *ConsoleState   `json:"state,omitempty"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	ID        string           `json:"id"`
+	TaskID    string           `json:"task_id"`
+	TurnID    string           `json:"turn_id,omitempty"`
+	Kind      string           `json:"kind"`
+	Content   string           `json:"content,omitempty"`
+	Status    string           `json:"status,omitempty"`
+	Tool      *ConsoleTool     `json:"tool,omitempty"`
+	Request   *ConsoleRequest  `json:"request,omitempty"`
+	Usage     *ConsoleUsage    `json:"usage,omitempty"`
+	State     *ConsoleState    `json:"state,omitempty"`
+	Approval  *ConsoleApproval `json:"approval,omitempty"`
+	CreatedAt time.Time        `json:"created_at"`
+	UpdatedAt time.Time        `json:"updated_at"`
+}
+
+// Approval decisions.
+const (
+	ApprovalPending   = "pending"
+	ApprovalAllowed   = "allowed"
+	ApprovalAlways    = "always"
+	ApprovalDenied    = "denied"
+	ApprovalExpired   = "expired"
+	ApprovalCancelled = "cancelled"
+	ApprovalAutomatic = "auto" // matched a rule the operator saved earlier
+)
+
+// ConsoleApproval is a permission request from the agent and its outcome.
+type ConsoleApproval struct {
+	ID          string    `json:"id"`
+	ToolName    string    `json:"tool_name"`
+	Summary     string    `json:"summary"`              // the command, file or URL in one line
+	RuleLabel   string    `json:"rule_label,omitempty"` // what "always allow" would cover
+	BlockedPath string    `json:"blocked_path,omitempty"`
+	Decision    string    `json:"decision"`
+	Message     string    `json:"message,omitempty"` // operator note sent to the agent on deny
+	ExpiresAt   time.Time `json:"expires_at"`
+	DecidedAt   time.Time `json:"decided_at,omitempty"`
 }

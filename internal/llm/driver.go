@@ -48,7 +48,28 @@ type LLMRequest struct {
 	PermissionMode string `json:"permission_mode,omitempty"`
 	// Timeout bounds agentic turns; zero uses the driver default.
 	Timeout time.Duration `json:"-"`
+	// Approver answers the agent's permission prompts (Claude Code CLI). Nil means nobody can
+	// answer, so anything that needs permission is denied.
+	Approver Approver `json:"-"`
 }
+
+// ApprovalRequest is an agent's request to use a tool that needs operator permission.
+type ApprovalRequest struct {
+	ToolName    string
+	ToolUseID   string
+	Description string
+	Input       map[string]interface{}
+	BlockedPath string
+}
+
+// ApprovalDecision answers an ApprovalRequest. Message is shown to the agent when denied.
+type ApprovalDecision struct {
+	Allow   bool
+	Message string
+}
+
+// Approver blocks until the request is decided or ctx ends.
+type Approver func(ctx context.Context, req ApprovalRequest) ApprovalDecision
 
 // LLMResponse normalizes responses from all providers.
 type LLMResponse struct {

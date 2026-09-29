@@ -32,7 +32,7 @@ export function stagePosition(id?: string): { index: number; total: number } {
   return { index: STAGES.indexOf((id || '') as (typeof STAGES)[number]), total: STAGES.length }
 }
 
-export type ActionKind = 'run' | 'resume' | 'pause' | 'reset' | 'review' | 'assign'
+export type ActionKind = 'run' | 'resume' | 'pause' | 'reset' | 'review' | 'assign' | 'approve'
 
 /** Stages that change repository files; they cannot run without assigned repositories. */
 export const CODE_STAGES = new Set(['atdd_creation', 'task_implementation', 'e2e_validation'])
@@ -69,6 +69,15 @@ export function taskLifecycle(task: Task | null | undefined, opts: { busy?: bool
       title: `${s} needs repositories`,
       detail: 'This stage changes code. Assign the repositories it may change, then run it.',
       primary: { kind: 'assign', label: 'Assign repos', hint: 'Choose the repositories for this task.' },
+    }
+  }
+  const approvals = Number(meta.pending_approvals || 0)
+  if (task.state === 'RUNNING' && approvals > 0) {
+    return {
+      tone: 'review', status: 'Needs approval', isRunning: true,
+      title: `The agent is waiting for your permission${approvals > 1 ? ` (${approvals} requests)` : ''}`,
+      detail: 'It paused on an action that needs approval. Review the request in the console.',
+      primary: { kind: 'approve', label: 'Review request', hint: 'Open the console to allow or deny.' },
     }
   }
   switch (task.state) {
@@ -146,4 +155,5 @@ export const ACTION_BUTTON: Record<ActionKind, string> = {
   reset: 'bg-rose-950/80 hover:bg-rose-900 text-rose-200 border-rose-700/80',
   review: 'bg-violet-600 hover:bg-violet-500 text-white border-violet-500',
   assign: 'bg-amber-600 hover:bg-amber-500 text-white border-amber-500',
+  approve: 'bg-amber-600 hover:bg-amber-500 text-white border-amber-500 animate-pulse',
 }

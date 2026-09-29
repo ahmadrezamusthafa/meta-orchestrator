@@ -4,6 +4,7 @@ import type { ConsoleEntry } from '../../types'
 import ToolCallBlock from './ToolCallBlock.vue'
 import ToolResultView from './ToolResultView.vue'
 import RequestBlock from './RequestBlock.vue'
+import ApprovalBlock from './ApprovalBlock.vue'
 import { formatTime, responseSummary, stateSummary } from './consoleFormat'
 import MarkdownView from '../common/MarkdownView.vue'
 import type { ExpandSignal } from './expandSignal'
@@ -85,6 +86,9 @@ const stateColor = computed(() => STATE_COLORS[props.entry.state?.to || ''] || '
     <div v-else-if="entry.kind === 'tool_result'" class="ml-4">
       <ToolResultView :entry="entry" :expand-signal="expandSignal" />
     </div>
+
+    <!-- permission request -->
+    <ApprovalBlock v-else-if="entry.kind === 'approval' && entry.approval" :entry="entry" />
 
     <!-- request -->
     <RequestBlock v-else-if="entry.kind === 'request'" :entry="entry" :expand-signal="expandSignal" />

@@ -733,6 +733,7 @@ export interface TelemetryTrendsDTO {
 // ---------------------------------------------------------------------------
 
 export type ConsoleEntryKind =
+  | 'approval'
   | 'user'
   | 'assistant'
   | 'thinking'
@@ -786,6 +787,18 @@ export interface ConsoleStateInfo {
   stage?: string
 }
 
+export interface ConsoleApprovalInfo {
+  id: string
+  tool_name: string
+  summary: string
+  rule_label?: string
+  blocked_path?: string
+  decision: 'pending' | 'allowed' | 'always' | 'denied' | 'expired' | 'cancelled' | 'auto'
+  message?: string
+  expires_at: string
+  decided_at?: string
+}
+
 export interface ConsoleEntry {
   id: string
   task_id: string
@@ -797,6 +810,7 @@ export interface ConsoleEntry {
   request?: ConsoleRequestInfo
   usage?: ConsoleUsageInfo
   state?: ConsoleStateInfo
+  approval?: ConsoleApprovalInfo
   created_at: string
   updated_at?: string
 }

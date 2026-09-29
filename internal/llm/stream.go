@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -269,7 +270,13 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	if prompt == "" {
 		prompt = "Continue."
 	}
+	interactive := req.Approver != nil
 	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--include-partial-messages"}
+	if interactive {
+		// The prompt goes over stdin so the same channel can carry permission prompts and answers.
+		args = []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+			"--include-partial-messages", "--permission-prompt-tool", "stdio"}
+	}
 	if req.SessionID != "" {
 		args = append(args, "--resume", req.SessionID)
 	}
@@ -285,6 +292,9 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	timeout := req.Timeout
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
+		if interactive {
+			timeout = time.Hour // leaves room for the operator to answer approval prompts
+		}
 	}
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -296,10 +306,24 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	if err != nil {
 		return nil, err
 	}
+	var host *cliHost
+	if interactive {
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return nil, err
+		}
+		host = &cliHost{w: stdin}
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("claude CLI start: %w", err)
+	}
+	if host != nil {
+		defer host.close()
+		host.send(map[string]interface{}{"type": "control_request", "request_id": "init", "request": map[string]interface{}{"subtype": "initialize"}})
+		host.send(map[string]interface{}{"type": "user", "session_id": "", "parent_tool_use_id": nil,
+			"message": map[string]interface{}{"role": "user", "content": prompt}})
 	}
 
 	start := time.Now()
@@ -316,6 +340,11 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 			continue
 		}
 		switch line.Type {
+		case "control_request":
+			if host != nil {
+				raw := append([]byte(nil), sc.Bytes()...) // the scanner reuses its buffer
+				go host.answer(cmdCtx, raw, req.Approver)
+			}
 		case "system":
 			if line.SessionID != "" {
 				resp.SessionID = line.SessionID
@@ -371,6 +400,9 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 			}
 		case "result":
 			gotResult = true
+			if host != nil {
+				host.close() // the turn is over; let the CLI exit
+			}
 			if line.SessionID != "" {
 				resp.SessionID = line.SessionID
 			}
@@ -668,4 +700,71 @@ func (d *OpenAIDriver) StreamActivity(ctx context.Context, req *LLMRequest, emit
 	}
 	resp.DurationMS = time.Since(start).Milliseconds()
 	return resp, nil
+}
+
+// cliHost is the host side of the Claude Code CLI control protocol (stream-json over stdio): it
+// sends the prompt and answers the CLI's permission prompts through an Approver.
+type cliHost struct {
+	mu     sync.Mutex
+	w      io.WriteCloser
+	closed bool
+}
+
+func (h *cliHost) send(v interface{}) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.closed {
+		_, _ = h.w.Write(append(data, '\n'))
+	}
+}
+
+func (h *cliHost) close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.closed {
+		h.closed = true
+		_ = h.w.Close()
+	}
+}
+
+// answer handles one control_request line. Only can_use_tool is supported; anything else is
+// refused so the CLI never waits on a request nobody will answer.
+func (h *cliHost) answer(ctx context.Context, raw []byte, approve Approver) {
+	var msg struct {
+		RequestID string `json:"request_id"`
+		Request   struct {
+			Subtype     string                 `json:"subtype"`
+			ToolName    string                 `json:"tool_name"`
+			ToolUseID   string                 `json:"tool_use_id"`
+			Description string                 `json:"description"`
+			Input       map[string]interface{} `json:"input"`
+			BlockedPath string                 `json:"blocked_path"`
+		} `json:"request"`
+	}
+	if json.Unmarshal(raw, &msg) != nil || msg.RequestID == "" {
+		return
+	}
+	if msg.Request.Subtype != "can_use_tool" {
+		h.send(map[string]interface{}{"type": "control_response", "response": map[string]interface{}{
+			"subtype": "error", "request_id": msg.RequestID, "error": "unsupported control request: " + msg.Request.Subtype}})
+		return
+	}
+	d := approve(ctx, ApprovalRequest{ToolName: msg.Request.ToolName, ToolUseID: msg.Request.ToolUseID,
+		Description: msg.Request.Description, Input: msg.Request.Input, BlockedPath: msg.Request.BlockedPath})
+	decision := map[string]interface{}{"behavior": "deny", "message": d.Message}
+	if d.Allow {
+		input := msg.Request.Input
+		if input == nil {
+			input = map[string]interface{}{}
+		}
+		decision = map[string]interface{}{"behavior": "allow", "updatedInput": input}
+	} else if d.Message == "" {
+		decision["message"] = "The operator denied this action."
+	}
+	h.send(map[string]interface{}{"type": "control_response", "response": map[string]interface{}{
+		"subtype": "success", "request_id": msg.RequestID, "response": decision}})
 }

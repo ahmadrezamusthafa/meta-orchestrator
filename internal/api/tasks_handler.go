@@ -417,6 +417,10 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			r.handleTaskArtifacts(w, req, taskID)
 			return
 
+		case "approvals":
+			r.handleTaskApprovals(w, req, taskID, parts)
+			return
+
 		case "dependencies":
 			if req.Method != http.MethodGet {
 				r.writeError(w, http.StatusMethodNotAllowed, "GET required for dependencies")

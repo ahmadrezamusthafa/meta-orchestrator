@@ -59,6 +59,7 @@ type Router struct {
 	jira          *jiraSyncState
 	persistMu     sync.Mutex
 	worktreeMu    sync.Mutex // serializes git worktree creation/removal
+	approvals     *approvalHub
 	lastPersisted []byte
 	stop          chan struct{}
 	closeOnce     sync.Once
@@ -116,6 +117,7 @@ func NewRouter(cfg RouterConfig) *Router {
 		console:        newConsoleHub(),
 		dismissedJira:  make(map[string]bool),
 		jira:           newJiraSyncState(),
+		approvals:      newApprovalHub(),
 		stop:           make(chan struct{}),
 	}
 	r.initTelemetry()

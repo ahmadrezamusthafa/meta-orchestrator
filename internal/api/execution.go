@@ -244,15 +244,17 @@ func (r *Router) executeStage(run *stageRun) {
 	// Edits are allowed only for code stages running inside the task's own worktree — never in an
 	// operator's checkout or the orchestrator itself.
 	permission := ""
+	var approver llm.Approver
 	if codeStages[task.CurrentStageID] && r.isTaskWorktree(task.ID, workDir) {
 		permission = "acceptEdits"
+		approver = r.approverFor(taskID, run.turnID)
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
-			"The agent may edit files in the task worktree (%s). Review them in the Changes tab.", workDir)})
+			"The agent may edit files in the task worktree (%s); commands and other actions ask for your approval here. Review edits in the Changes tab.", workDir)})
 	} else if codeStages[task.CurrentStageID] {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: "No task worktree is available, so the agent runs read-only and will describe the changes instead of making them."})
 	}
 	resp, used, execErr := r.runAgentTurn(run.ctx, agentTurn{Source: "execute", TurnID: run.turnID, Task: task, Decision: decision,
-		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, MaxTokens: 8192, PermissionMode: permission})
+		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, MaxTokens: 8192, PermissionMode: permission, Approver: approver})
 	r.endTurn(taskID, run.turnID, resp, used)
 
 	r.settleStage(taskID, task.CurrentStageID, resp, used, execErr)

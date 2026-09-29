@@ -12,7 +12,7 @@ import type { TaskWorktreeDTO, TaskDependencyInfoDTO } from '../types'
 import { api } from '../services/api'
 import {
   ChevronLeft, Terminal, BrainCircuit, ClipboardList, FileDiff, FolderGit2, Copy, Check, GitBranch,
-  ExternalLink, MoreHorizontal, Play, Pause, RotateCw, RefreshCcw, Eye, Loader2, Link2,
+  ExternalLink, MoreHorizontal, Play, Pause, RotateCw, RefreshCcw, Eye, Loader2, Link2, ShieldAlert,
 } from 'lucide-vue-next'
 
 type Tab = 'console' | 'reasoning' | 'scope' | 'changes' | 'workspace'
@@ -49,7 +49,7 @@ const life = computed(() => taskLifecycle(task.value))
 const pending = computed(() => !!taskStore.pendingActions[taskId.value])
 const pos = computed(() => stagePosition(task.value?.current_stage_id))
 const meta = computed(() => task.value?.metadata || {})
-const ACTION_ICON = { run: Play, resume: RotateCw, pause: Pause, reset: RefreshCcw, review: Eye, assign: FolderGit2 }
+const ACTION_ICON = { run: Play, resume: RotateCw, pause: Pause, reset: RefreshCcw, review: Eye, assign: FolderGit2, approve: ShieldAlert }
 
 async function loadContext() {
   const [wt, deps] = await Promise.allSettled([api.getTaskWorktree(taskId.value), api.getTaskDependencies(taskId.value)])
@@ -70,7 +70,7 @@ async function load() {
 async function primary() {
   const a = life.value?.primary
   if (!a || pending.value) return
-  if (a.kind === 'review') {
+  if (a.kind === 'review' || a.kind === 'approve') {
     activeTab.value = 'console' // stage output and the approve / request-changes controls live there
     return
   }
