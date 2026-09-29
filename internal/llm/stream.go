@@ -277,6 +277,9 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 		args = []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 			"--include-partial-messages", "--permission-prompt-tool", "stdio"}
 	}
+	if req.Model != "" {
+		args = append(args, "--model", req.Model) // without it the CLI runs its own configured default
+	}
 	if req.SessionID != "" {
 		args = append(args, "--resume", req.SessionID)
 	}
