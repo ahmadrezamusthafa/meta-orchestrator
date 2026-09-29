@@ -386,10 +386,13 @@ export interface BenchmarkCellDTO {
   avg_cost_usd?: number
   score?: number
   samples?: number
+  // 'shadow_benchmark' = measured; 'default' = best-practice policy, never benchmarked
+  source?: 'shadow_benchmark' | 'default' | string
 }
 
 export interface BenchmarksResponseDTO {
   total_cells: number
+  measured_cells?: number
   generated_at?: string
   source?: 'shadow_benchmark' | 'default' | string
   matrix: BenchmarkCellDTO[]

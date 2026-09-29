@@ -31,6 +31,12 @@ export function methodStyle(method: string | undefined): MethodStyle {
   return METHOD_STYLES[method] ?? FALLBACK_STYLE
 }
 
+/** A cell is measured when shadow benchmark samples back it (older payloads lack `source`). */
+export function isMeasured(cell: { source?: string; samples?: number } | undefined): boolean {
+  if (!cell) return false
+  return cell.source ? cell.source === 'shadow_benchmark' : (cell.samples ?? 0) > 0
+}
+
 export const HEALTH_TEXT: Record<Health, string> = {
   pass: 'text-emerald-400',
   warn: 'text-amber-400',

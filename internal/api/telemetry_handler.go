@@ -289,12 +289,11 @@ func (r *Router) handleBenchmarks(w http.ResponseWriter, req *http.Request) {
 		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
-	m := r.telemetry.matrix.Current()
-	if len(m.Cells) == 0 {
-		m = shadow.DefaultMatrix(time.Now())
-	}
+	// Unmeasured cells fall back to the default policy, tagged source=default per cell.
+	m := shadow.FillDefaults(r.telemetry.matrix.Current(), time.Now())
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"total_cells":  len(m.Cells),
+		"total_cells":    len(m.Cells),
+		"measured_cells": m.MeasuredCells(),
 		"generated_at": m.GeneratedAt,
 		"source":       m.Source,
 		"sweep_id":     m.SweepID,

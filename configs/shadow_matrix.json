@@ -78,6 +78,9 @@
     "max_iterations": 3,
     "cell_timeout_s": 600,
     "cpu_ceiling_percent": 70,
-    "replay_stages": ["task_implementation"]
+    "replay_stages": [
+      "prd_discovery", "repo_discovery", "atdd_creation", "techdoc_rfc", "task_breakdown",
+      "red_verification", "task_implementation", "e2e_validation", "signoff_merge"
+    ]
   }
 }

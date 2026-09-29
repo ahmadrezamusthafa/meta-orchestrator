@@ -268,3 +268,33 @@ func TestShippedBestMethodsMatrixIsValid(t *testing.T) {
 		t.Fatalf("duplicate cells: %d distinct", len(seen))
 	}
 }
+
+func TestFillDefaultsCompletesPartialSweep(t *testing.T) {
+	partial := BestMethodsMatrix{Version: 1, GeneratedAt: buildTime, Source: SourceShadowBenchmark,
+		Cells: []MatrixCell{{StageID: "task_implementation", Complexity: "HIGH", OptimalMethod: "Supervisor",
+			WinningModel: "openai/gpt-4o", FPVRPercent: 92, Samples: 3}}}
+	m := FillDefaults(partial, buildTime)
+	if len(m.Cells) != 36 {
+		t.Fatalf("cells = %d, want 36", len(m.Cells))
+	}
+	if m.MeasuredCells() != 1 {
+		t.Fatalf("measured = %d, want 1", m.MeasuredCells())
+	}
+	c, _ := m.Cell("task_implementation", "HIGH")
+	if c.Source != SourceShadowBenchmark || c.WinningModel != "openai/gpt-4o" {
+		t.Fatalf("measured cell lost: %+v", c)
+	}
+	d, _ := m.Cell("prd_discovery", "LOW")
+	if d.Source != SourceDefault || d.OptimalMethod != "BMAD" {
+		t.Fatalf("missing cell not filled from policy: %+v", d)
+	}
+	if m.Cells[0].StageID != "prd_discovery" || m.Cells[0].Complexity != "LOW" {
+		t.Fatalf("cells not in canonical order: %+v", m.Cells[0])
+	}
+	if m.Source != SourceShadowBenchmark || !m.GeneratedAt.Equal(buildTime) {
+		t.Fatalf("matrix header changed: %s %s", m.Source, m.GeneratedAt)
+	}
+	if e := FillDefaults(BestMethodsMatrix{}, buildTime); len(e.Cells) != 36 || e.Source != SourceDefault || e.MeasuredCells() != 0 {
+		t.Fatalf("empty matrix = %d cells, source %q", len(e.Cells), e.Source)
+	}
+}

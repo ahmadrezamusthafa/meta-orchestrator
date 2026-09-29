@@ -1,14 +1,18 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { BenchmarkCellDTO } from '../../types'
 import { X } from 'lucide-vue-next'
+import { methodStyle, fpvrHealth, HEALTH_TEXT, isMeasured } from '../analytics/analyticsFormat'
 
-defineProps<{
+const props = defineProps<{
   cell: BenchmarkCellDTO
 }>()
 
 defineEmits<{
   (e: 'close'): void
 }>()
+
+const measured = computed(() => isMeasured(props.cell))
 </script>
 
 <template>
@@ -26,19 +30,32 @@ defineEmits<{
 
       <div class="space-y-3 font-mono text-xs">
         <div class="p-3 bg-slate-950 border border-slate-800 rounded-lg space-y-1.5">
-          <div class="text-slate-400">Winning Method: <span class="text-emerald-400 font-bold">{{ cell.optimal_method }}</span></div>
-          <div class="text-slate-400">Winning Model: <span class="text-slate-200">{{ cell.winning_model }}</span></div>
-          <div class="text-slate-400">First-Pass Verification: <span class="text-emerald-400 font-bold">{{ cell.fpvr_percent }}%</span></div>
-          <div class="text-slate-400">Average Token Burn: <span class="text-sky-400">{{ cell.avg_tokens.toLocaleString() }} tokens</span></div>
-          <div class="text-slate-400">Mean Duration: <span class="text-slate-200">{{ cell.avg_duration_s }}s</span></div>
+          <div class="text-slate-400">
+            {{ measured ? 'Winning Method' : 'Policy Method' }}:
+            <span class="font-bold" :class="methodStyle(cell.optimal_method).text">{{ cell.optimal_method }}</span>
+          </div>
           <div v-if="cell.model_tier" class="text-slate-400">Model Tier: <span class="text-slate-200">{{ cell.model_tier }}</span></div>
-          <div v-if="cell.avg_cost_usd !== undefined" class="text-slate-400">Avg Cost / Run: <span class="text-sky-400">${{ cell.avg_cost_usd.toFixed(4) }}</span></div>
-          <div v-if="cell.score !== undefined" class="text-slate-400">Composite Score: <span class="text-sky-400">{{ cell.score.toFixed(2) }}</span></div>
-          <div v-if="cell.samples !== undefined" class="text-slate-400">Samples: <span class="text-sky-400">{{ cell.samples }}</span></div>
+          <template v-if="measured">
+            <div class="text-slate-400">Winning Model: <span class="text-slate-200">{{ cell.winning_model || '—' }}</span></div>
+            <div class="text-slate-400">
+              First-Pass Verification:
+              <span class="font-bold" :class="HEALTH_TEXT[fpvrHealth(cell.fpvr_percent)]">{{ cell.fpvr_percent }}%</span>
+            </div>
+            <div class="text-slate-400">Average Token Burn: <span class="text-sky-400">{{ cell.avg_tokens.toLocaleString() }} tokens</span></div>
+            <div class="text-slate-400">Mean Duration: <span class="text-slate-200">{{ cell.avg_duration_s }}s</span></div>
+            <div v-if="cell.avg_cost_usd !== undefined" class="text-slate-400">Avg Cost / Run: <span class="text-sky-400">${{ cell.avg_cost_usd.toFixed(4) }}</span></div>
+            <div v-if="cell.score !== undefined" class="text-slate-400">Composite Score: <span class="text-sky-400">{{ cell.score.toFixed(2) }}</span></div>
+            <div v-if="cell.samples !== undefined" class="text-slate-400">Samples: <span class="text-sky-400">{{ cell.samples }}</span></div>
+          </template>
+          <div v-else class="text-amber-400">Not yet benchmarked &mdash; no FPVR, cost or token data.</div>
         </div>
 
-        <p class="text-[11px] font-sans text-slate-400 leading-relaxed">
+        <p v-if="measured" class="text-[11px] font-sans text-slate-400 leading-relaxed">
           Shadow Benchmarking periodically replays past tasks in the background across alternative methods to verify that this pairing retains the maximum pass rate and lowest cost.
+        </p>
+        <p v-else class="text-[11px] font-sans text-slate-400 leading-relaxed">
+          This cell shows the built-in best-practice policy. The router keeps its own heuristics here until a shadow benchmark
+          (enabled with <span class="font-mono text-slate-300">MO_SHADOW_ENABLED=true</span>) replays a completed task for this stage and complexity.
         </p>
       </div>
 

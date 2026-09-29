@@ -169,7 +169,7 @@ Submit human operator approval or rejection at a gated SDLC boundary (e.g. `tech
 
 * `GET /api/v1/providers`: Lists active providers (`Claude`, `Antigravity`, `ChatGPT`, `OpenCode`), masked API keys, base URLs, and active project override status.
 * `POST /api/v1/providers/test`: Ping connection and measure latency in milliseconds (`{"provider_id": "claude"}`).
-* `GET /api/v1/benchmarks`: Returns empirical 36-cell benchmark matrix (9 SDLC Stages $\times$ 4 Complexities) with winning methods, models, and First-Pass Verification Rates (FPVR %).
+* `GET /api/v1/benchmarks`: Returns the 36-cell benchmark matrix (9 SDLC Stages $\times$ 4 Complexities) with winning methods, models, and First-Pass Verification Rates (FPVR %). Each cell carries `source`: `shadow_benchmark` (measured) or `default` (best-practice policy filling cells no sweep has measured). `measured_cells` counts the measured ones.
 
 ---
 

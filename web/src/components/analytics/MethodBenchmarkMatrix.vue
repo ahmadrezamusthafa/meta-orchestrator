@@ -3,12 +3,13 @@ import { ref, computed } from 'vue'
 import type { BenchmarkCellDTO } from '../../types'
 import BenchmarkCellDetailModal from '../benchmark/BenchmarkCellDetailModal.vue'
 import { TableProperties } from 'lucide-vue-next'
-import { METHODS, methodStyle, fmtUsd, fpvrHealth, HEALTH_TEXT } from './analyticsFormat'
+import { METHODS, methodStyle, fmtUsd, fpvrHealth, HEALTH_TEXT, isMeasured } from './analyticsFormat'
 
 const props = defineProps<{
   cells: BenchmarkCellDTO[]
   source?: string
   generatedAt?: string
+  measuredCells?: number
 }>()
 
 const selectedCell = ref<BenchmarkCellDTO | null>(null)
@@ -33,7 +34,8 @@ const cellIndex = computed(() => {
   return m
 })
 
-const filledCount = computed(() => cellIndex.value.size)
+const measuredCount = computed(() => props.measuredCells ?? (props.cells ?? []).filter(isMeasured).length)
+const totalCells = stages.length * complexities.length
 
 function getCell(stageId: string, comp: string): BenchmarkCellDTO | undefined {
   return cellIndex.value.get(`${stageId}|${comp}`)
@@ -52,10 +54,14 @@ function fmtTimestamp(ts?: string): string {
       <div>
         <h3 class="text-xs font-bold text-slate-100 uppercase tracking-wide">
           Method Benchmark Matrix
-          <span class="ml-1 text-sky-400 font-mono text-xs">{{ filledCount }}/36</span>
+          <span class="ml-1 text-sky-400 font-mono text-xs" title="Cells backed by shadow benchmark samples">
+            {{ measuredCount }}/{{ totalCells }} measured
+          </span>
         </h3>
         <span class="text-[11px] text-slate-400">
           Winning method per SDLC stage &times; complexity
+          <template v-if="measuredCount === 0"> &middot; <span class="text-amber-400">default policy only &mdash; no shadow benchmark has run yet</span></template>
+          <template v-else-if="measuredCount < totalCells"> &middot; dashed cells are default policy</template>
           <template v-if="source"> &middot; source <span class="font-mono text-slate-300">{{ source }}</span></template>
           <template v-if="generatedAt"> &middot; {{ fmtTimestamp(generatedAt) }}</template>
         </span>
@@ -84,7 +90,7 @@ function fmtTimestamp(ts?: string): string {
             <td class="p-2.5 font-medium text-slate-200 whitespace-nowrap">{{ s.name }}</td>
             <td v-for="c in complexities" :key="c" class="p-1.5">
               <button
-                v-if="getCell(s.id, c)"
+                v-if="getCell(s.id, c) && isMeasured(getCell(s.id, c))"
                 type="button"
                 class="w-full p-1.5 rounded border space-y-1 text-left transition-colors hover:border-slate-500"
                 :class="[methodStyle(getCell(s.id, c)?.optimal_method).bg, methodStyle(getCell(s.id, c)?.optimal_method).border]"
@@ -105,6 +111,21 @@ function fmtTimestamp(ts?: string): string {
                     {{ getCell(s.id, c)?.avg_cost_usd !== undefined ? fmtUsd(getCell(s.id, c)?.avg_cost_usd) : '—' }}
                   </span>
                 </div>
+              </button>
+              <button
+                v-else-if="getCell(s.id, c)"
+                type="button"
+                class="w-full p-1.5 rounded border border-dashed border-slate-700 bg-slate-950/40 space-y-1 text-left transition-colors hover:border-slate-500"
+                :title="`${getCell(s.id, c)?.optimal_method} · default policy, not yet benchmarked`"
+                @click="selectedCell = getCell(s.id, c) || null"
+              >
+                <div class="flex items-center justify-between text-[10px] font-mono">
+                  <span class="font-semibold opacity-70" :class="methodStyle(getCell(s.id, c)?.optimal_method).text">
+                    {{ getCell(s.id, c)?.optimal_method }}
+                  </span>
+                  <span class="text-slate-500">policy</span>
+                </div>
+                <div class="text-[9px] font-mono text-slate-600 uppercase">{{ getCell(s.id, c)?.model_tier || '—' }}</div>
               </button>
               <div
                 v-else
