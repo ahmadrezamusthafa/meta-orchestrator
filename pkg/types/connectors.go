@@ -146,6 +146,10 @@ type JiraSyncConfig struct {
 	// DefaultsVersion records which built-in exclusions the saved rules already include, so new
 	// defaults (e.g. "Won't Fix") reach existing installs without re-adding ones the operator removed.
 	DefaultsVersion int `json:"defaults_version,omitempty"`
+	// RepoRules assign repositories from JIRA fields: each key is matched (case-insensitive) against
+	// the issue's project key, components and labels. Components or labels named exactly like a
+	// registered repository are assigned automatically. AssignedRepos is the fallback.
+	RepoRules map[string][]string `json:"repo_rules,omitempty"`
 }
 
 // JiraSyncDefaultsVersion is bumped whenever DefaultExcludedJiraStatuses gains an entry.
@@ -197,19 +201,22 @@ type JiraSyncSettings struct {
 
 // JiraIssueDTO represents an issue fetched or imported from JIRA.
 type JiraIssueDTO struct {
-	Key         string `json:"key"` // e.g. PROJ-1042
-	Summary     string `json:"summary"`
-	Description string `json:"description"`
-	Status      string `json:"status"` // "To Do", "In Progress", "In Review", "Done"
-	Priority    string `json:"priority"`
-	IssueType   string `json:"issue_type"` // "Story", "Bug", "Task", "Epic"
-	URL         string `json:"url"`
-	Reporter    string `json:"reporter,omitempty"`
-	Assignee    string `json:"assignee,omitempty"`
-	Created     string `json:"created,omitempty"`
-	ParentKey   string `json:"parent_key,omitempty"`   // direct parent (epic for stories, story for sub-tasks)
-	EpicKey     string `json:"epic_key,omitempty"`     // owning epic; the issue's own key when it is an epic
-	EpicSummary string `json:"epic_summary,omitempty"` // owning epic's summary
+	Key         string   `json:"key"` // e.g. PROJ-1042
+	Summary     string   `json:"summary"`
+	Description string   `json:"description"`
+	Status      string   `json:"status"` // "To Do", "In Progress", "In Review", "Done"
+	Priority    string   `json:"priority"`
+	IssueType   string   `json:"issue_type"` // "Story", "Bug", "Task", "Epic"
+	URL         string   `json:"url"`
+	Reporter    string   `json:"reporter,omitempty"`
+	Assignee    string   `json:"assignee,omitempty"`
+	Created     string   `json:"created,omitempty"`
+	ParentKey   string   `json:"parent_key,omitempty"`   // direct parent (epic for stories, story for sub-tasks)
+	EpicKey     string   `json:"epic_key,omitempty"`     // owning epic; the issue's own key when it is an epic
+	EpicSummary string   `json:"epic_summary,omitempty"` // owning epic's summary
+	ProjectKey  string   `json:"project_key,omitempty"`
+	Components  []string `json:"components,omitempty"`
+	Labels      []string `json:"labels,omitempty"`
 }
 
 // ImportJiraIssueRequest represents parameters to import a JIRA ticket into a Kanban task.

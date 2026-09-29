@@ -519,6 +519,7 @@ export interface JiraSyncConfig {
   status_stage_map?: Record<string, string> | null
   update_existing: boolean
   exclude_statuses: string[] | null
+  repo_rules?: Record<string, string[]> | null
 }
 
 export interface JiraSyncStatus {

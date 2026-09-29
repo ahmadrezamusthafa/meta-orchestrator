@@ -53,7 +53,7 @@ async function loadDefaults() {
     if (cfg.assigned_repos?.length) selectedRepos.value = [...cfg.assigned_repos]
   }
   if (!projectStore.projects.length) await projectStore.fetchProjects()
-  if (!selectedRepos.value.length) selectedRepos.value = projectStore.activeRepos.map((r: any) => r.name)
+  // Left empty, the daemon assigns repositories from the sync rules (project / component / label).
 }
 
 async function loadJiraConfig() {
@@ -360,6 +360,7 @@ onMounted(async () => {
           <div>
             <label class="block text-xs font-medium text-slate-300 mb-1.5">Assigned Repositories</label>
             <p v-if="availableRepos.length === 0" class="text-[11px] text-slate-500">No repositories registered — assign them later from the task.</p>
+            <p v-else-if="selectedRepos.length === 0" class="text-[11px] text-slate-500 mb-1.5">None selected: repositories are assigned by your JIRA sync rules.</p>
             <div class="flex flex-wrap gap-1.5">
               <button
                 v-for="repo in availableRepos"

@@ -22,7 +22,7 @@ const stage = computed(() => props.task?.current_stage_id || '')
 const stageIndex = computed(() => STAGES.indexOf(stage.value as (typeof STAGES)[number]))
 const life = computed(() => taskLifecycle(props.task, { busy: props.busy }))
 // Review happens in the gate selector right below the bar, so the bar offers no button for it.
-const action = computed(() => (life.value?.primary?.kind === 'review' ? undefined : life.value?.primary))
+const action = computed(() => (life.value?.primary?.kind === 'review' || life.value?.primary?.kind === 'assign' ? undefined : life.value?.primary))
 
 const ICON: Record<Tone, string> = { active: '●', idle: '○', warn: '⏸', error: '✗', done: '✓', review: '◆', waiting: '⧗' }
 
