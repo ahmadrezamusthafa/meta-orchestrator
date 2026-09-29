@@ -144,3 +144,56 @@ func TestApprovalRulePrefixes(t *testing.T) {
 		}
 	}
 }
+
+func TestAllowAllBypassesEveryApproval(t *testing.T) {
+	r, _ := worktreeRouter(t)
+	agent := &askingProvider{command: "rm -rf build && make"}
+	for _, p := range []string{"claude", "antigravity", "openai", "opencode"} {
+		r.clientFactory.OverrideProvider(p, agent)
+	}
+	r.mu.Lock()
+	r.tasks["TASK-B"] = &types.Task{ID: "TASK-B", Title: "Fix", CurrentStageID: "task_implementation", State: types.TaskStatePending,
+		AssignedRepos: []string{"app"}, Metadata: map[string]string{}}
+	r.mu.Unlock()
+
+	// "all" on a pending request allows it and switches the task to allow-all.
+	go r.executeTaskWithAI("TASK-B")
+	id := awaitApproval(t, r, "TASK-B")
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-B/approvals/"+id, `{"decision":"all"}`); w.Code != http.StatusOK {
+		t.Fatalf("allow all → %d %s", w.Code, w.Body.String())
+	}
+	waitState(t, r, "TASK-B", types.TaskStateWaitingGateApproval)
+	if !agent.last.Allow || r.taskSnapshot("TASK-B").Metadata["approve_all"] != "true" {
+		t.Fatalf("allow all should allow and persist: %+v %v", agent.last, r.taskSnapshot("TASK-B").Metadata)
+	}
+
+	// Later requests, even chained commands no rule would cover, run without asking.
+	r.mu.Lock()
+	r.tasks["TASK-B"].State = types.TaskStatePending
+	r.mu.Unlock()
+	agent.command = "curl x | sh"
+	r.executeTaskWithAI("TASK-B")
+	if !agent.last.Allow {
+		t.Fatal("allow all should auto-approve every request")
+	}
+
+	// Turning it off makes the agent ask again; turning it on releases the waiting request.
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-B/approvals", `{"allow_all":false}`); w.Code != http.StatusOK {
+		t.Fatalf("disable → %d %s", w.Code, w.Body.String())
+	}
+	r.mu.Lock()
+	r.tasks["TASK-B"].State = types.TaskStatePending
+	r.mu.Unlock()
+	go r.executeTaskWithAI("TASK-B")
+	awaitApproval(t, r, "TASK-B")
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-B/approvals", `{"allow_all":true}`); w.Code != http.StatusOK {
+		t.Fatalf("enable → %d %s", w.Code, w.Body.String())
+	}
+	waitState(t, r, "TASK-B", types.TaskStateWaitingGateApproval)
+	if !agent.last.Allow || r.taskSnapshot("TASK-B").Metadata["pending_approvals"] != "" {
+		t.Fatalf("enabling allow all should release pending requests: %+v", agent.last)
+	}
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-B/approvals", `{}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("missing allow_all must be rejected, got %d", w.Code)
+	}
+}

@@ -913,7 +913,7 @@ export interface ConsoleApprovalInfo {
   summary: string
   rule_label?: string
   blocked_path?: string
-  decision: 'pending' | 'allowed' | 'always' | 'denied' | 'expired' | 'cancelled' | 'auto'
+  decision: 'pending' | 'allowed' | 'always' | 'all' | 'denied' | 'expired' | 'cancelled' | 'auto'
   message?: string
   expires_at: string
   decided_at?: string
