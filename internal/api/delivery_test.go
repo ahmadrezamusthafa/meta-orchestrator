@@ -201,8 +201,15 @@ func TestUATGuideCoversEveryATDDUATAndSanityCase(t *testing.T) {
 	if st.Coverage.Planned != "1/3" || strings.Join(st.Coverage.Missing, ",") != "C-2,C-3" || st.ATDD.InScope != 3 || st.ATDD.Sanity != 2 || !st.CanRequestChanges {
 		t.Fatalf("status = %s", w.Body.String())
 	}
-	if len(stub.job.Scenarios) != 1 || stub.job.Scenarios[0].BaseURL != "https://backyard.example.com" {
-		t.Fatalf("only the planned web scenario is replayed: %+v", stub.job.Scenarios)
+	// Every scenario gets images: the planned web one is replayed, the ones written from the sheet
+	// are drawn as step cards that say why.
+	if len(stub.job.Scenarios) != 3 || !stub.job.Scenarios[0].Replay || stub.job.Scenarios[0].BaseURL != "https://backyard.example.com" {
+		t.Fatalf("job = %+v", stub.job.Scenarios)
+	}
+	for _, js := range stub.job.Scenarios[1:] {
+		if js.Replay || js.BaseURL != "" || !strings.Contains(js.CardNote, "ATDD sheet") {
+			t.Fatalf("sheet-only scenario %s must be a card with a note: %+v", js.ID, js)
+		}
 	}
 	guide := do(r, http.MethodGet, "/api/v1/artifacts/TASK-4/uat/UAT_GUIDE.md", "").Body.String()
 	for _, want := range []string{"covers **all 3** ATDD case(s)", "#### C-2 · Tag filter", "#### C-3 · Tags API healthy", "Filter by tag"} {

@@ -23,18 +23,33 @@ type JobScenario struct {
 	BaseURL      string `json:"base_url"`
 	StorageState string `json:"storage_state,omitempty"` // Playwright storage-state file with a logged-in session
 	AppName      string `json:"app_name,omitempty"`
+	// Replay is false for scenarios with no screen to drive (no environment URL, API-only, written
+	// from the ATDD sheet); their steps are drawn as step cards in the same frame instead.
+	Replay   bool   `json:"replay"`
+	CardNote string `json:"card_note,omitempty"` // why the scenario is shown as cards
 	// Captions is the tester-facing instruction per step (secrets masked), drawn on its screenshot.
 	Captions []string `json:"captions,omitempty"`
 }
 
-// NewJobScenario prepares a scenario for the runner, with the captions its screenshots carry.
-func NewJobScenario(s Scenario, baseURL, storageState, appName string) JobScenario {
+// NewJobScenario prepares a scenario for the runner, with the captions its screenshots carry. It is
+// replayed in a browser when it has an environment and a browser step; otherwise cardNote says why
+// its steps are drawn as cards.
+func NewJobScenario(s Scenario, baseURL, storageState, appName, cardNote string) JobScenario {
 	caps := make([]string, len(s.Steps))
 	plain := strings.NewReplacer("**", "", "`", "")
 	for i, st := range s.Steps {
 		caps[i] = plain.Replace(Instruction(st))
 	}
-	return JobScenario{Scenario: s, BaseURL: baseURL, StorageState: storageState, AppName: appName, Captions: caps}
+	replay := false
+	for _, st := range s.Steps {
+		replay = replay || (baseURL != "" && st.Automated())
+	}
+	if replay {
+		cardNote = ""
+	} else {
+		baseURL, storageState = "", ""
+	}
+	return JobScenario{Scenario: s, BaseURL: baseURL, StorageState: storageState, AppName: appName, Captions: caps, Replay: replay, CardNote: cardNote}
 }
 
 // CaptureJob is one screenshot run: every scenario that has a web environment to run against.

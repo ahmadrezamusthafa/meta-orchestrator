@@ -87,10 +87,10 @@ func Assemble(p *Plan, results []StepResult, apps []App, cov Coverage) ([]GuideS
 				g.Where = "Same screen as the previous step"
 			}
 			sum.Steps++
-			switch {
-			case !st.Automated():
+			if !st.Automated() {
 				sum.Manual++
-			case g.Result != nil && g.Result.Screenshot != "":
+			}
+			if g.Result != nil && g.Result.Screenshot != "" {
 				g.Screenshot = g.Result.Screenshot
 				gs.Captured++
 				sum.Captured++
@@ -257,7 +257,7 @@ func RenderMarkdown(p *Plan, scenarios []GuideScenario, sum Summary, cov Coverag
 	default:
 		w("This guide covers **all %d** ATDD case(s) marked for UAT or Sanity (%d Sanity, %d UAT).", len(cov.Cases), cov.Sanity, cov.UAT)
 		if len(cov.Missing) > 0 {
-			w(" %d of them are written from the ATDD sheet's own steps, without screenshots.", len(cov.Missing))
+			w(" %d of them are written from the ATDD sheet's own steps and shown as step cards.", len(cov.Missing))
 		}
 		b.WriteString("\n\n| Case ID | Type | Priority | Test case | Application | Walkthrough |\n|---|---|---|---|---|---|\n")
 		for _, c := range cov.Cases {
@@ -364,15 +364,18 @@ func RenderMarkdown(p *Plan, scenarios []GuideScenario, sum Summary, cov Coverag
 				}
 				b.WriteString("\n")
 				switch {
-				case g.Step.Action == ActionManual && !s.FromATDD:
+				case g.Step.Action == ActionManual && !s.FromATDD && g.Screenshot == "":
 					b.WriteString("_Manual check — no screenshot._\n\n")
 				case g.Result != nil && !g.Result.OK:
 					w("> ⚠ The automated walkthrough could not complete this step (%s). Follow the instructions above and verify it by hand.\n\n", g.Result.Error)
 				}
 				if g.Screenshot != "" {
 					caption := "what you should see"
-					if g.Result != nil && g.Result.Phase == "before" {
+					switch {
+					case g.Result != nil && g.Result.Phase == "before":
 						caption = "where to act (highlighted)"
+					case g.Result != nil && g.Result.Phase == "card":
+						caption = "step card"
 					}
 					w("![%s step %d — %s](%s)\n\n", s.ID, g.N, caption, meta.ImageURL(g.Screenshot))
 				}

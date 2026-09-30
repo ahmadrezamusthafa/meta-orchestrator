@@ -315,24 +315,33 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 		notes = append(notes, "The ATDD sheet could not be read ("+atddErr.Error()+"), so coverage could not be checked.")
 	}
 
+	// Every scenario gets an image for every step: replayed in its application when it can be,
+	// otherwise drawn as step cards in the same frame, so the guide has no gaps.
+	fromSheet := map[string]bool{}
+	for _, c := range cov.Cases {
+		if c.FromATDD && len(c.Scenarios) > 0 {
+			fromSheet[c.Scenarios[0]] = true
+		}
+	}
 	var job uat.CaptureJob
 	missingEnv := map[string]bool{}
 	for _, s := range plan.Scenarios {
+		a, known := appOf[s.App]
 		hasBrowserStep := false
 		for _, st := range s.Steps {
 			hasBrowserStep = hasBrowserStep || st.Automated()
 		}
-		if !hasBrowserStep {
-			continue
+		env, note := envFor(s), ""
+		switch {
+		case fromSheet[s.ID]:
+			note = "Written from the ATDD sheet: the agent's UAT plan did not walk through this case, so its steps are shown as written."
+		case hasBrowserStep && env == "" && known && a.IsWeb():
+			missingEnv[a.Name] = true
+			note = "No environment URL is set for " + a.Name + ", so this screen was not captured. Set it in the UAT Guide tab and regenerate."
+		case known && !a.IsWeb():
+			note = a.Name + " has no screen: an engineer runs this step with the team's API client."
 		}
-		env := envFor(s)
-		if env == "" {
-			if a, ok := appOf[s.App]; ok && a.IsWeb() {
-				missingEnv[a.Name] = true
-			}
-			continue
-		}
-		job.Scenarios = append(job.Scenarios, uat.NewJobScenario(s, env, appOf[s.App].StorageState, appOf[s.App].Name))
+		job.Scenarios = append(job.Scenarios, uat.NewJobScenario(s, env, a.StorageState, a.Name, note))
 	}
 	if len(missingEnv) > 0 {
 		var names []string
@@ -340,7 +349,7 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 			names = append(names, n)
 		}
 		sort.Strings(names)
-		notes = append(notes, "No environment URL is set for "+strings.Join(names, ", ")+", so those scenarios have no screenshots. Set it in the UAT Guide tab and regenerate.")
+		notes = append(notes, "No environment URL is set for "+strings.Join(names, ", ")+", so those scenarios are shown as step cards instead of real screens. Set it in the UAT Guide tab and regenerate.")
 	}
 	var results []uat.StepResult
 	if len(job.Scenarios) > 0 {

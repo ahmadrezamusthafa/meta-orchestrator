@@ -67,7 +67,7 @@ func TestPlaywrightRunnerE2E(t *testing.T) {
 	if d := os.Getenv("UAT_E2E_OUT"); d != "" {
 		out = d
 	}
-	res, err := (&PlaywrightRunner{Dir: dir}).Capture(context.Background(), CaptureJob{Scenarios: []JobScenario{NewJobScenario(plan.Scenarios[0], srv.URL, "", "Subscription Backyard")}, OutDir: out, Label: "TASK-0 · UAT"})
+	res, err := (&PlaywrightRunner{Dir: dir}).Capture(context.Background(), CaptureJob{Scenarios: []JobScenario{NewJobScenario(plan.Scenarios[0], srv.URL, "", "Subscription Backyard", "")}, OutDir: out, Label: "TASK-0 · UAT"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,8 +88,36 @@ func TestPlaywrightRunnerE2E(t *testing.T) {
 	if res[5].OK || res[5].Error == "" || res[5].Screenshot == "" {
 		t.Fatalf("failing step should report an error and still screenshot: %+v", res[5])
 	}
-	if !res[6].Skipped {
-		t.Fatalf("manual step should be skipped: %+v", res[6])
+	if !res[6].Skipped || res[6].Screenshot == "" {
+		t.Fatalf("a manual step is not driven but still gets an image: %+v", res[6])
+	}
+	for _, r := range res {
+		if r.Screenshot == "" {
+			t.Fatalf("every step must have an image: %+v", r)
+		}
+	}
+
+	// Scenarios that cannot be replayed (API-only, no environment, from the sheet) are drawn as
+	// step cards in the same frame.
+	cards := &Plan{Scenarios: []Scenario{{ID: "C1", Title: "Self-checkout creates an unpaid PI", ExecutableBy: "Engineer", Steps: []Step{
+		{Action: ActionAPI, Target: "POST /api/v4/invoiceables/self-checkout", Value: `{"external_ref_id":"UAT-QSC-0001","token":"${UAT_API_TOKEN}"}`,
+			Description: "Create a self-checkout proforma invoice", Expected: "HTTP 200 with invoiceable_id and payment_link"},
+		{Action: ActionManual, Description: "Check the invoice email arrives in the UAT inbox", Expected: "One email with the payment link"},
+		{Action: ActionClick, Target: `role=button[name="Void"]`, Where: "Billing Dashboard › Proforma Invoices", Description: "Click Void"},
+	}}}}
+	cardOut := t.TempDir()
+	if d := os.Getenv("UAT_E2E_OUT"); d != "" {
+		cardOut = d
+	}
+	cres, err := (&PlaywrightRunner{Dir: dir}).Capture(context.Background(), CaptureJob{OutDir: cardOut, Label: "TASK-0 · UAT",
+		Scenarios: []JobScenario{NewJobScenario(cards.Scenarios[0], "", "", "Billing API", "No environment URL is set.")}})
+	if err != nil || len(cres) != 3 {
+		t.Fatalf("cards = %+v, %v", cres, err)
+	}
+	for _, r := range cres {
+		if r.Screenshot == "" || r.Phase != "card" {
+			t.Fatalf("a scenario that is not replayed must get a card per step: %+v", r)
+		}
 	}
 
 	// Paths resolve inside the app's base path; wrong routes, HTTP errors and missing test data
@@ -113,7 +141,7 @@ func TestPlaywrightRunnerE2E(t *testing.T) {
 		if s.ID == "B4" {
 			base = srv.URL + "/billing/proforma-invoices/42"
 		}
-		job.Scenarios = append(job.Scenarios, JobScenario{Scenario: s, BaseURL: base})
+		job.Scenarios = append(job.Scenarios, JobScenario{Scenario: s, BaseURL: base, Replay: true})
 	}
 	job.OutDir = t.TempDir()
 	res, err = (&PlaywrightRunner{Dir: dir}).Capture(context.Background(), job)
@@ -130,8 +158,8 @@ func TestPlaywrightRunnerE2E(t *testing.T) {
 	if r := by["B2#1"]; r.OK || r.Reason != ReasonNotFound {
 		t.Fatalf("the SPA not-found screen must fail the step: %+v", r)
 	}
-	if r := by["B3#1"]; r.OK || r.Reason != ReasonPlaceholder || r.Screenshot != "" {
-		t.Fatalf("an unknown placeholder must fail before navigating, without a blank screenshot: %+v", r)
+	if r := by["B3#1"]; r.OK || r.Reason != ReasonPlaceholder || r.Phase != "card" {
+		t.Fatalf("an unknown placeholder must fail before navigating and be drawn as a card, not a blank page: %+v", r)
 	}
 	if r := by["B4#1"]; !r.OK || r.Screenshot == "" {
 		t.Fatalf("a scenario starting with a click must open its environment first: %+v", r)
