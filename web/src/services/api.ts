@@ -9,7 +9,8 @@ import type {
   PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
   OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO, RoutePreviewDTO, TierAssignmentDTO,
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
-  TaskActivityResponse, TaskChatResponse, TaskDiffDTO, DiffAgainst, TaskArtifactDTO
+  TaskActivityResponse, TaskChatResponse, TaskDiffDTO, DiffAgainst, TaskArtifactDTO,
+  PullRequestDraftDTO, PullRequestOpenedDTO, UATGuideStatusDTO, UATGuideSettings
 } from '../types'
 
 
@@ -182,6 +183,51 @@ export const api = {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/artifacts`)
     if (!res.ok) throw new Error(`Failed to list documents for ${taskId}`)
     return res.json()
+  },
+
+  async getPullRequestDrafts(taskId: string): Promise<{ task_id: string; stage_ready: boolean; drafts: PullRequestDraftDTO[] }> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/pull-request`)
+    if (!res.ok) throw new Error(`Failed to prepare the pull request for ${taskId}`)
+    return res.json()
+  },
+
+  async openPullRequest(taskId: string, body: { repo: string; title: string; body: string }): Promise<PullRequestOpenedDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/pull-request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.error || `Could not open the pull request for ${taskId}`)
+    return data
+  },
+
+  async getUATGuide(taskId: string): Promise<UATGuideStatusDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/uat-guide`)
+    if (!res.ok) throw new Error(`Failed to load the UAT guide for ${taskId}`)
+    return res.json()
+  },
+
+  async generateUATGuide(taskId: string, settings: UATGuideSettings): Promise<UATGuideStatusDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/uat-guide`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.error || `Could not generate the UAT guide for ${taskId}`)
+    return data
+  },
+
+  async uatSignIn(taskId: string, app: string, forget = false): Promise<UATGuideStatusDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/uat-guide/login`, {
+      method: forget ? 'DELETE' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app }),
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.error || `Could not ${forget ? 'forget the session' : 'open the sign-in window'} for ${app}`)
+    return data
   },
 
   async getTaskDiff(taskId: string, against: DiffAgainst, repo?: string): Promise<TaskDiffDTO> {

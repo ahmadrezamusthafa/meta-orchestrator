@@ -69,6 +69,95 @@ export interface TaskWorktreeDTO {
   error?: string
 }
 
+export interface PullRequestDraftDTO {
+  repo: string
+  repos: string[]
+  provider: 'bitbucket' | 'github' | string
+  repo_url?: string
+  source_branch: string
+  target_branch: string
+  title: string
+  body: string
+  commit_message: string
+  uncommitted: boolean
+  commits: number
+  files: number
+  existing_url?: string
+  can_create: boolean
+  blocker?: string
+}
+
+export interface PullRequestOpenedDTO {
+  repo: string
+  url: string
+  number: number
+  updated: boolean
+  committed: boolean
+}
+
+export interface UATAppDTO {
+  id: string
+  name: string
+  kind: 'web' | 'api' | string
+  audience?: string
+  summary?: string
+  sign_in?: string[]
+  repos?: string[]
+  base_url?: string
+  storage_state?: string
+}
+
+export interface UATScopeCaseDTO {
+  id: string
+  title: string
+  kind: 'Sanity' | 'UAT' | 'Sanity + UAT' | string
+  priority: string
+  platform: string
+  app: string
+}
+
+export interface UATVariableDTO {
+  name: string
+  value?: string
+  source: 'task' | 'environment' | 'missing' | string
+  secret: boolean
+  used: boolean
+  browser: boolean
+  consumed?: boolean
+}
+
+export interface UATGuideStatusDTO {
+  task_id: string
+  status: 'NOT_STARTED' | 'GENERATING' | 'READY' | 'FAILED' | string
+  error?: string
+  generated_at?: string
+  ignore_https_errors: boolean
+  stage_ready: boolean
+  can_request_changes: boolean
+  guide_path?: string
+  html_path?: string
+  apps: UATAppDTO[]
+  variables?: UATVariableDTO[]
+  test_data?: { tag?: string; next_tag: string; saved_at?: string; used_at?: string; used_by?: string[]; used_vars?: string[]; refresh_command?: string }
+  sessions?: { app: string; source: 'task' | 'shared' | 'none' | string; saved_at?: string; login?: 'waiting' | 'ok' | 'failed' | string; error?: string }[]
+  seed?: { language?: string; run?: string; script: string } | null
+  seed_check?: {
+    issues: { severity: 'error' | 'warning' | string; line?: number; message: string }[]
+    syntax: { checked: boolean; ok: boolean; tool?: string; message?: string }
+  } | null
+  atdd: { source: string; path?: string; error?: string; total: number; in_scope: number; sanity: number; cases: UATScopeCaseDTO[] }
+  coverage: { planned?: string; missing?: string[] }
+}
+
+export interface UATGuideSettings {
+  apps?: Record<string, { url?: string; storage_state?: string }>
+  atdd_path?: string
+  variables?: Record<string, string>
+  ignore_https_errors?: boolean
+  save_only?: boolean
+  rerender?: boolean
+}
+
 export interface TaskArtifactDTO {
   path: string
   name: string

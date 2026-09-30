@@ -165,6 +165,7 @@ func (r *Router) startBoardPersister() {
 				return
 			case <-ticker.C:
 				r.saveBoardNow()
+				r.saveConsolesNow()
 			}
 		}
 	}()
@@ -173,7 +174,15 @@ func (r *Router) startBoardPersister() {
 // Close stops background work and flushes the board. Safe to call more than once.
 func (r *Router) Close() error {
 	r.closeOnce.Do(func() { close(r.stop) })
+	r.saveConsolesNow()
 	return r.persistBoard()
+}
+
+// saveConsolesNow flushes changed task transcripts.
+func (r *Router) saveConsolesNow() {
+	if err := r.persistConsoles(); err != nil {
+		fmt.Printf("[Console] Failed to save transcripts: %v\n", err)
+	}
 }
 
 // deleteTask removes a task from the board, stopping any live agent turn first. Deleting a
@@ -220,7 +229,9 @@ func (r *Router) deleteTask(taskID string) (*types.Task, error) {
 
 	r.console.mu.Lock()
 	delete(r.console.consoles, taskID)
+	delete(r.console.dirty, taskID)
 	r.console.mu.Unlock()
+	r.removeConsoleFile(taskID)
 
 	if kept := r.removeTaskWorktrees(removed); len(kept) > 0 {
 		fmt.Printf("[Tasks] Kept worktrees with uncommitted work for deleted %s: %s\n", taskID, strings.Join(kept, ", "))

@@ -17,7 +17,8 @@ export const escapeHtml = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 
 const SAFE_URL = /^(https?:|mailto:|#|\/(?!\/))/i
-const SAFE_IMAGE = /^https?:/i
+// Remote images, plus task artifacts served by the orchestrator itself (UAT screenshots).
+const SAFE_IMAGE = /^(https?:|\/api\/v1\/artifacts\/)/i
 
 // Per-render state (renders are synchronous, so module scope is safe).
 let toc: TocEntry[] = []

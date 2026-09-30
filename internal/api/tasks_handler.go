@@ -413,6 +413,18 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			r.handleTaskDiff(w, req, taskSnapshot)
 			return
 
+		case "pull-request":
+			r.handleTaskPullRequest(w, req, taskSnapshot)
+			return
+
+		case "uat-guide":
+			if len(parts) > 2 && parts[2] == "login" {
+				r.handleUATLogin(w, req, taskSnapshot)
+				return
+			}
+			r.handleTaskUATGuide(w, req, taskSnapshot)
+			return
+
 		case "artifacts":
 			r.handleTaskArtifacts(w, req, taskID)
 			return

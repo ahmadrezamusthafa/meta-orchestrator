@@ -12,6 +12,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/pullrequest"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/quota"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
@@ -69,6 +70,9 @@ type Router struct {
 	persistMu     sync.Mutex
 	worktreeMu    sync.Mutex // serializes git worktree creation/removal
 	approvals     *approvalHub
+	busyOps       sync.Map            // "pr:<task>" / "uat:<task>" while a delivery job runs
+	prClient      *pullrequest.Client // opens pull requests; tests point it at a fake API
+	uatRunner     uatScreenshotRunner // captures UAT screenshots; tests stub it
 	lastPersisted []byte
 	stop          chan struct{}
 	closeOnce     sync.Once
@@ -129,6 +133,7 @@ func NewRouter(cfg RouterConfig) *Router {
 		dismissedJira:  make(map[string]bool),
 		jira:           newJiraSyncState(),
 		approvals:      newApprovalHub(),
+		prClient:       &pullrequest.Client{},
 		stop:           make(chan struct{}),
 	}
 	r.connections = newConnectionChecker(r.quota)
@@ -138,6 +143,7 @@ func NewRouter(cfg RouterConfig) *Router {
 	}
 	r.initTelemetry()
 	r.loadBoard()
+	r.loadConsoles()
 	r.reconcileIdleRunning()
 	r.registerRoutes()
 	r.startBackgroundProcessMonitor()

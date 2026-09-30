@@ -82,6 +82,16 @@ func (r *Router) handleArtifacts(w http.ResponseWriter, req *http.Request) {
 		http.ServeFile(w, req, path)
 		return
 	}
+	if strings.EqualFold(filepath.Ext(path), ".html") {
+		// Generated, self-contained reports (UAT guide): offered as a download and sandboxed so
+		// nothing in them can run in the orchestrator's origin.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", taskID+"-"+filepath.Base(path)))
+		http.ServeFile(w, req, path)
+		return
+	}
 	if st.Size() > maxArtifactBytes {
 		r.writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("%s is too large to preview (%d bytes)", name, st.Size()))
 		return
