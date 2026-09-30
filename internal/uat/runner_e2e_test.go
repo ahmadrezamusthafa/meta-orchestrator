@@ -2,10 +2,12 @@ package uat
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -17,6 +19,20 @@ func TestPlaywrightRunnerE2E(t *testing.T) {
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
+		switch {
+		case r.URL.Path == "/missing":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`<h1>gone</h1>`))
+			return
+		case strings.HasPrefix(r.URL.Path, "/billing/"):
+			// An SPA answers 200 for every path and renders its own not-found route.
+			if r.URL.Path != "/billing/proforma-invoices/42" {
+				_, _ = w.Write([]byte(`<div id="app"></div><script>setTimeout(()=>{app.textContent='404 Halaman yang Anda cari saat ini telah dipindahkan atau telah dihapus.'},300)</script>`))
+				return
+			}
+			_, _ = w.Write([]byte(`<div id="app"></div><script>setTimeout(()=>{app.innerHTML='<h1>Proforma Invoice 42</h1><button>Void</button>'},300)</script>`))
+			return
+		}
 		_, _ = w.Write([]byte(`<!doctype html><title>PI</title><h1>Create PI</h1>
 <label>SQ Number <input id="sq"></label><label>Password <input type="password" id="pw"></label>
 <button onclick="document.getElementById('out').textContent='Package Pro prefilled'">Save</button><p id="out"></p>`))
@@ -57,6 +73,53 @@ func TestPlaywrightRunnerE2E(t *testing.T) {
 	}
 	if !res[6].Skipped {
 		t.Fatalf("manual step should be skipped: %+v", res[6])
+	}
+
+	// Paths resolve inside the app's base path; wrong routes, HTTP errors and missing test data
+	// fail with a reason instead of a 404 or blank screenshot.
+	t.Setenv("UAT_PI_ID", "42")
+	spa := &Plan{Scenarios: []Scenario{
+		{ID: "B1", Steps: []Step{{Action: ActionGoto, Target: "/proforma-invoices/${UAT_PI_ID}"}, {Action: ActionExpectText, Value: "Proforma Invoice 42"}}},
+		{ID: "B2", Steps: []Step{{Action: ActionGoto, Target: "/proforma-invoices/abc"}}},
+		{ID: "B3", Steps: []Step{{Action: ActionGoto, Target: "/proforma-invoices/${PI_ID}"}}},
+		{ID: "B4", Steps: []Step{{Action: ActionClick, Target: "text=Void"}}},
+		{ID: "B5", Steps: []Step{{Action: ActionGoto, Target: srv.URL + "/missing"}}},
+	}}
+	env := func(Scenario) string { return srv.URL + "/billing" }
+	if err := spa.ResolveTargets(env); err != nil {
+		t.Fatal(err)
+	}
+	var job CaptureJob
+	for _, s := range spa.Scenarios {
+		base := env(s)
+		if s.ID == "B4" {
+			base = srv.URL + "/billing/proforma-invoices/42"
+		}
+		job.Scenarios = append(job.Scenarios, JobScenario{Scenario: s, BaseURL: base})
+	}
+	job.OutDir = t.TempDir()
+	res, err = (&PlaywrightRunner{Dir: dir}).Capture(context.Background(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]StepResult{}
+	for _, r := range res {
+		by[fmt.Sprintf("%s#%d", r.Scenario, r.Step)] = r
+	}
+	if r := by["B1#1"]; !r.OK || !strings.HasSuffix(r.URL, "/billing/proforma-invoices/42") || !by["B1#2"].OK {
+		t.Fatalf("base path + placeholder: %+v / %+v", r, by["B1#2"])
+	}
+	if r := by["B2#1"]; r.OK || r.Reason != ReasonNotFound {
+		t.Fatalf("the SPA not-found screen must fail the step: %+v", r)
+	}
+	if r := by["B3#1"]; r.OK || r.Reason != ReasonPlaceholder || r.Screenshot != "" {
+		t.Fatalf("an unknown placeholder must fail before navigating, without a blank screenshot: %+v", r)
+	}
+	if r := by["B4#1"]; !r.OK || r.Screenshot == "" {
+		t.Fatalf("a scenario starting with a click must open its environment first: %+v", r)
+	}
+	if r := by["B5#1"]; r.OK || r.Reason != ReasonNotFound || !strings.Contains(r.Error, "HTTP 404") {
+		t.Fatalf("an HTTP 404 must fail the step: %+v", r)
 	}
 	t.Logf("screenshots in %s", out)
 }

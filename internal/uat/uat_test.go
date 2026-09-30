@@ -164,3 +164,54 @@ func TestRenderGuides(t *testing.T) {
 		t.Fatal("checkboxes should stay tickable")
 	}
 }
+
+func TestResolveURLKeepsTheAppBasePath(t *testing.T) {
+	cases := []struct{ env, target, want string }{
+		{"https://backyard.test/billing", "/proforma-invoices/12", "https://backyard.test/billing/proforma-invoices/12"},
+		{"https://backyard.test/billing/", "proforma-invoices", "https://backyard.test/billing/proforma-invoices"},
+		{"https://backyard.test/billing", "/billing/proforma-invoices", "https://backyard.test/billing/proforma-invoices"},
+		{"https://backyard.test/billing", "/billing", "https://backyard.test/billing"},
+		{"https://backyard.test/billing", "/billingx", "https://backyard.test/billing/billingx"},
+		{"https://backyard.test", "/billing/proforma-invoices?tab=log#top", "https://backyard.test/billing/proforma-invoices?tab=log#top"},
+		{"https://backyard.test/billing", "/proforma-invoices/${UAT_PI_ID}", "https://backyard.test/billing/proforma-invoices/${UAT_PI_ID}"},
+		{"https://backyard.test/billing", "https://backyard.test/other", "https://backyard.test/other"},
+		{"https://backyard.test", "/", "https://backyard.test/"},
+	}
+	for _, c := range cases {
+		got, err := ResolveURL(c.env, c.target)
+		if err != nil || got != c.want {
+			t.Errorf("ResolveURL(%q, %q) = %q, %v; want %q", c.env, c.target, got, err, c.want)
+		}
+	}
+	if _, err := ResolveURL("backyard.test", "/x"); err == nil {
+		t.Error("a relative environment URL must be rejected")
+	}
+}
+
+func TestResolveTargetsRewritesOnlyScenariosWithAnEnvironment(t *testing.T) {
+	p := &Plan{Scenarios: []Scenario{
+		{ID: "S1", App: "web", Steps: []Step{{Action: ActionGoto, Target: "/proforma-invoices"}, {Action: ActionClick, Target: "text=/x"}}},
+		{ID: "S2", App: "api", Steps: []Step{{Action: ActionGoto, Target: "/health"}}},
+	}}
+	env := func(s Scenario) string {
+		if s.App == "web" {
+			return "https://backyard.test/billing"
+		}
+		return ""
+	}
+	if err := p.Validate(env); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ResolveTargets(env); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Scenarios[0].Steps[0].Target; got != "https://backyard.test/billing/proforma-invoices" {
+		t.Fatalf("goto target = %q", got)
+	}
+	if got := p.Scenarios[0].Steps[1].Target; got != "text=/x" {
+		t.Fatalf("selectors must not be touched, got %q", got)
+	}
+	if got := p.Scenarios[1].Steps[0].Target; got != "/health" {
+		t.Fatalf("a scenario without an environment must keep its target, got %q", got)
+	}
+}

@@ -147,8 +147,18 @@ func (r *Router) uatStageContext(t *types.Task) string {
 		if len(a.Repos) > 0 {
 			fmt.Fprintf(&b, "; repositories: %s", strings.Join(a.Repos, ", "))
 		}
+		if a.IsWeb() {
+			if a.BaseURL != "" {
+				fmt.Fprintf(&b, "; environment URL: %s", a.BaseURL)
+			} else {
+				b.WriteString("; environment URL: not set yet")
+			}
+		}
 		b.WriteString("\n")
 	}
+	b.WriteString("\nEach goto target is appended to its application's environment URL. Write it as the path the browser address bar shows " +
+		"after the host, including the frontend router's base path (vue-router `base`, React Router `basename`, Vite `base`, Nginx location) — " +
+		"read it from the repository, e.g. /billing/proforma-invoices, not /proforma-invoices. A prefix the environment URL already contains is not repeated.\n")
 	cases, source, err := r.loadATDD(t)
 	scope := atdd.UATScope(cases)
 	switch {
@@ -270,6 +280,12 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 		fail(err.Error())
 		return
 	}
+	// Paths are inside each app: https://host/billing + /proforma-invoices opens
+	// https://host/billing/proforma-invoices, and the guide shows testers that same address.
+	if err := plan.ResolveTargets(envFor); err != nil {
+		fail(err.Error())
+		return
+	}
 	if raw, err := json.MarshalIndent(plan, "", "  "); err == nil {
 		_ = r.writeArtifact(taskID, uatPlanDoc, raw)
 	}
@@ -329,6 +345,7 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 			notes = append(notes, "Screenshots could not be captured ("+err.Error()+"). The written steps are complete; verify them by hand.")
 		}
 	}
+	notes = append(notes, uatResultNotes(results)...)
 	meta.Note = strings.Join(notes, " ")
 
 	scenarios, sum := uat.Assemble(plan, results, apps, cov)
@@ -359,6 +376,32 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 		note += fmt.Sprintf(" %d step(s) need to be verified by hand.", sum.Failed)
 	}
 	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: note + " Open the UAT Guide tab to review or download it."})
+}
+
+// uatResultNotes explains runs that reached the wrong page or lacked test data, which otherwise
+// show up only as a 404 or blank screenshot inside one step.
+func uatResultNotes(results []uat.StepResult) []string {
+	var notFound, placeholder []string
+	for _, res := range results {
+		ref := fmt.Sprintf("%s step %d", res.Scenario, res.Step)
+		switch res.Reason {
+		case uat.ReasonNotFound:
+			notFound = append(notFound, ref)
+		case uat.ReasonPlaceholder:
+			placeholder = append(placeholder, ref)
+		}
+	}
+	var notes []string
+	if len(notFound) > 0 {
+		notes = append(notes, fmt.Sprintf("%s opened a page that does not exist. Check that each application's environment URL "+
+			"includes its base path (for example https://<backyard-host>/billing for Subscription Backyard) and that the plan uses real routes, then regenerate.",
+			strings.Join(notFound, ", ")))
+	}
+	if len(placeholder) > 0 {
+		notes = append(notes, fmt.Sprintf("%s need a test record (a ${UAT_…} value) the orchestrator was not given; "+
+			"set those variables in the orchestrator's environment and regenerate.", strings.Join(placeholder, ", ")))
+	}
+	return notes
 }
 
 // UATAppSettings is one application's environment for this task.

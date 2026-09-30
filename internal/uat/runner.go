@@ -38,9 +38,16 @@ type StepResult struct {
 	OK         bool   `json:"ok"`
 	Skipped    bool   `json:"skipped,omitempty"` // manual step, not automated
 	Error      string `json:"error,omitempty"`
+	Reason     string `json:"reason,omitempty"`     // ReasonNotFound or ReasonPlaceholder when the runner knows why
 	Screenshot string `json:"screenshot,omitempty"` // file name inside OutDir
 	URL        string `json:"url,omitempty"`
 }
+
+// Why a step failed, when the runner can tell.
+const (
+	ReasonNotFound    = "not_found"   // the page is an HTTP error or the app's own not-found screen
+	ReasonPlaceholder = "placeholder" // a ${…} test-data value the runner has no value for
+)
 
 // PlaywrightRunner captures screenshots with playwright-core, installed on first use into Dir.
 type PlaywrightRunner struct {

@@ -141,7 +141,7 @@ func (p *Plan) Validate(baseURL func(Scenario) string) error {
 			if st.Action != ActionGoto {
 				continue
 			}
-			u, err := url.Parse(st.Target)
+			u, err := url.Parse(placeholder.ReplaceAllString(st.Target, "PLACEHOLDER"))
 			if err != nil {
 				return fmt.Errorf("scenario %s step %d: invalid URL %q", s.ID, j+1, st.Target)
 			}
@@ -152,6 +152,64 @@ func (p *Plan) Validate(baseURL func(Scenario) string) error {
 	}
 	return nil
 }
+
+// ResolveURL turns a goto target into the absolute URL the browser opens. A relative target is a
+// path inside the app, so it is appended to the environment URL's own path instead of replacing it
+// (https://backyard.example/billing + /proforma-invoices → …/billing/proforma-invoices). A target that
+// already carries that path (/billing/proforma-invoices) is not prefixed twice.
+func ResolveURL(env, target string) (string, error) {
+	base, err := url.Parse(strings.TrimSpace(env))
+	if err != nil || !ValidURL(env) {
+		return "", fmt.Errorf("the environment URL %q must be an absolute http(s) URL", env)
+	}
+	t := strings.TrimSpace(target)
+	// ${…} placeholders are resolved by the runner; keep them out of URL parsing.
+	u, err := url.Parse(placeholder.ReplaceAllString(t, "PLACEHOLDER"))
+	if err != nil {
+		return "", fmt.Errorf("invalid URL %q", target)
+	}
+	if u.IsAbs() {
+		return t, nil
+	}
+	prefix := strings.TrimRight(base.Path, "/")
+	path, rest := t, ""
+	if i := strings.IndexAny(t, "?#"); i >= 0 {
+		path, rest = t[:i], t[i:]
+	}
+	path = "/" + strings.TrimLeft(path, "/")
+	if prefix != "" && path != prefix && !strings.HasPrefix(path, prefix+"/") {
+		path = prefix + path
+	}
+	return base.Scheme + "://" + base.Host + path + rest, nil
+}
+
+// ResolveTargets rewrites every goto target to the absolute URL it opens in its scenario's
+// environment, so the runner and the tester-facing guide use the same address. Scenarios without
+// an environment are left as they are.
+func (p *Plan) ResolveTargets(baseURL func(Scenario) string) error {
+	for i := range p.Scenarios {
+		s := &p.Scenarios[i]
+		env := baseURL(*s)
+		if env == "" {
+			continue
+		}
+		for j := range s.Steps {
+			st := &s.Steps[j]
+			if st.Action != ActionGoto {
+				continue
+			}
+			abs, err := ResolveURL(env, st.Target)
+			if err != nil {
+				return fmt.Errorf("scenario %s step %d: %w", s.ID, j+1, err)
+			}
+			st.Target = abs
+		}
+	}
+	return nil
+}
+
+// placeholder matches any ${NAME} reference in a target or value.
+var placeholder = regexp.MustCompile(`\$\{([A-Za-z0-9_]+)\}`)
 
 // ScreenshotName is the file a step's screenshot is saved as.
 func ScreenshotName(scenarioID string, step int) string {
