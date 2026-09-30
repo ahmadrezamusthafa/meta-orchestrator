@@ -370,7 +370,11 @@ func RenderMarkdown(p *Plan, scenarios []GuideScenario, sum Summary, cov Coverag
 					w("> ⚠ The automated walkthrough could not complete this step (%s). Follow the instructions above and verify it by hand.\n\n", g.Result.Error)
 				}
 				if g.Screenshot != "" {
-					w("![%s step %d — what you should see](%s)\n\n", s.ID, g.N, meta.ImageURL(g.Screenshot))
+					caption := "what you should see"
+					if g.Result != nil && g.Result.Phase == "before" {
+						caption = "where to act (highlighted)"
+					}
+					w("![%s step %d — %s](%s)\n\n", s.ID, g.N, caption, meta.ImageURL(g.Screenshot))
 				}
 				b.WriteString("- [ ] Pass\n- [ ] Fail — what I saw: \n\n")
 			}

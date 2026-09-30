@@ -332,7 +332,7 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 			}
 			continue
 		}
-		job.Scenarios = append(job.Scenarios, uat.JobScenario{Scenario: s, BaseURL: env, StorageState: appOf[s.App].StorageState})
+		job.Scenarios = append(job.Scenarios, uat.NewJobScenario(s, env, appOf[s.App].StorageState, appOf[s.App].Name))
 	}
 	if len(missingEnv) > 0 {
 		var names []string
@@ -345,6 +345,7 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 	var results []uat.StepResult
 	if len(job.Scenarios) > 0 {
 		job.OutDir, job.IgnoreHTTPS = shotDir, t.Metadata["uat_ignore_https"] == "true"
+		job.Label = strings.Join(nonEmpty(taskID, t.Metadata["jira_key"], "UAT"), " · ")
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
 			"Capturing UAT screenshots for %d scenario(s)…", len(job.Scenarios))})
 		results, err = r.screenshotRunner().Capture(ctx, job)
@@ -383,6 +384,16 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 		note += fmt.Sprintf(" %d step(s) need to be verified by hand.", sum.Failed)
 	}
 	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: note + " Open the UAT Guide tab to review or download it."})
+}
+
+func nonEmpty(values ...string) []string {
+	var out []string
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // uatVarPrefix keys the per-task test-data values (${NAME} → value) in task metadata.

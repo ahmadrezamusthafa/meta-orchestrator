@@ -54,17 +54,20 @@ func TestPlaywrightRunnerE2E(t *testing.T) {
 		dir = filepath.Join(os.TempDir(), "uat-runner-e2e")
 	}
 	t.Setenv("UAT_PASSWORD", "not-a-real-secret")
-	plan := &Plan{Feature: "Prefill", Scenarios: []Scenario{{ID: "S1", Title: "Happy", Steps: []Step{
-		{Action: ActionGoto, Target: "/pi/new"},
-		{Action: ActionFill, Target: "label=SQ Number", Value: "SQ-0001"},
+	plan := &Plan{Feature: "Prefill", Scenarios: []Scenario{{ID: "S1", Title: "Create a proforma invoice prefilled from the SQ", Sanity: true, Steps: []Step{
+		{Action: ActionGoto, Target: "/pi/new", Where: "Subscription Backyard › Proforma Invoices › Create", Description: "Open the Create Proforma Invoice form", Expected: "The form is shown with an empty SQ Number field"},
+		{Action: ActionFill, Target: "label=SQ Number", Value: "SQ-0001", Where: "Create Proforma Invoice form", Expected: "SQ-0001 is shown in SQ Number"},
 		{Action: ActionFill, Target: "label=Password", Value: "${UAT_PASSWORD}"},
-		{Action: ActionClick, Target: `role=button[name="Save"]`},
-		{Action: ActionExpectText, Value: "Package Pro prefilled"},
+		{Action: ActionClick, Target: `role=button[name="Save"]`, Where: "Create Proforma Invoice form", Description: "Click Save to prefill the package from the SQ", Expected: "The package is prefilled"},
+		{Action: ActionExpectText, Value: "Package Pro prefilled", Expected: "“Package Pro prefilled” appears under the form"},
 		{Action: ActionClick, Target: "text=Does not exist"},
 		{Action: ActionManual, Description: "Check the email"},
 	}}}}
 	out := t.TempDir()
-	res, err := (&PlaywrightRunner{Dir: dir}).Capture(context.Background(), CaptureJob{Scenarios: []JobScenario{{Scenario: plan.Scenarios[0], BaseURL: srv.URL}}, OutDir: out})
+	if d := os.Getenv("UAT_E2E_OUT"); d != "" {
+		out = d
+	}
+	res, err := (&PlaywrightRunner{Dir: dir}).Capture(context.Background(), CaptureJob{Scenarios: []JobScenario{NewJobScenario(plan.Scenarios[0], srv.URL, "", "Subscription Backyard")}, OutDir: out, Label: "TASK-0 · UAT"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +81,9 @@ func TestPlaywrightRunnerE2E(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(out, res[i].Screenshot)); err != nil {
 			t.Fatalf("screenshot missing: %v", err)
 		}
+	}
+	if res[3].Phase != "before" || res[1].Phase != "after" {
+		t.Fatalf("a click is captured before it acts, other steps after: %+v / %+v", res[3], res[1])
 	}
 	if res[5].OK || res[5].Error == "" || res[5].Screenshot == "" {
 		t.Fatalf("failing step should report an error and still screenshot: %+v", res[5])

@@ -22,6 +22,19 @@ type JobScenario struct {
 	Scenario
 	BaseURL      string `json:"base_url"`
 	StorageState string `json:"storage_state,omitempty"` // Playwright storage-state file with a logged-in session
+	AppName      string `json:"app_name,omitempty"`
+	// Captions is the tester-facing instruction per step (secrets masked), drawn on its screenshot.
+	Captions []string `json:"captions,omitempty"`
+}
+
+// NewJobScenario prepares a scenario for the runner, with the captions its screenshots carry.
+func NewJobScenario(s Scenario, baseURL, storageState, appName string) JobScenario {
+	caps := make([]string, len(s.Steps))
+	plain := strings.NewReplacer("**", "", "`", "")
+	for i, st := range s.Steps {
+		caps[i] = plain.Replace(Instruction(st))
+	}
+	return JobScenario{Scenario: s, BaseURL: baseURL, StorageState: storageState, AppName: appName, Captions: caps}
 }
 
 // CaptureJob is one screenshot run: every scenario that has a web environment to run against.
@@ -29,6 +42,8 @@ type CaptureJob struct {
 	Scenarios   []JobScenario
 	OutDir      string // screenshots land here
 	IgnoreHTTPS bool
+	Label       string // footer of every annotated screenshot, e.g. "TASK-15 · MIB-12839 · UAT"
+	Plain       bool   // raw captures without the annotation frame
 }
 
 // StepResult is what happened when the runner drove one step.
@@ -40,6 +55,7 @@ type StepResult struct {
 	Error      string `json:"error,omitempty"`
 	Reason     string `json:"reason,omitempty"`     // ReasonNotFound or ReasonPlaceholder when the runner knows why
 	Screenshot string `json:"screenshot,omitempty"` // file name inside OutDir
+	Phase      string `json:"phase,omitempty"`      // "before": captured just before the action (where to click); "after": its result
 	URL        string `json:"url,omitempty"`
 }
 
@@ -134,6 +150,8 @@ func (p *PlaywrightRunner) Capture(ctx context.Context, job CaptureJob) ([]StepR
 		"ignore_https_errors": job.IgnoreHTTPS,
 		"scenarios":           job.Scenarios,
 		"results_path":        filepath.Join(tmp, "results.json"),
+		"label":               job.Label,
+		"annotate":            !job.Plain,
 	}
 	raw, _ := json.Marshal(spec)
 	jobPath := filepath.Join(tmp, "job.json")
