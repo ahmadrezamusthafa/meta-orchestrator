@@ -413,6 +413,14 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			r.handleTaskDiff(w, req, taskSnapshot)
 			return
 
+		case "pull-request":
+			r.handleTaskPullRequest(w, req, taskSnapshot)
+			return
+
+		case "uat-guide":
+			r.handleTaskUATGuide(w, req, taskSnapshot)
+			return
+
 		case "artifacts":
 			r.handleTaskArtifacts(w, req, taskID)
 			return

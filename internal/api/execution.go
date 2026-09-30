@@ -30,16 +30,18 @@ var stagePipeline = []string{
 }
 
 var stageInstructions = map[string]string{
-	"prd_discovery":       "Clarify the requirement: goals, scope and non-goals, acceptance criteria, assumptions and open questions.",
-	"repo_discovery":      "Identify the repositories, modules and files this task touches and why.",
-	"atdd_creation":       "Write acceptance test cases in Given/When/Then form that cover every acceptance criterion, including edge cases.",
-	"techdoc_rfc":         "Write a concise technical design: approach, components, data/API changes, risks and alternatives considered.",
-	"task_breakdown":      "Break the work into small ordered sub-tasks, each with the repository, files and how it will be verified.",
-	"red_verification":    "Explain which acceptance tests are expected to fail before implementation and why.",
-	"task_implementation": "Implement the change. Show concrete code changes per file (unified diff where possible) and how to verify them.",
-	"e2e_validation":      "Describe the end-to-end validation: scenarios, commands or scripts to run, and expected results.",
-	"uat_verification":    "Prepare the UAT checklist and the evidence the reviewer should see.",
-	"signoff_merge":       "Prepare the sign-off: summary of changes, risks, rollout notes and a pull request description.",
+	"prd_discovery":    "Clarify the requirement: goals, scope and non-goals, acceptance criteria, assumptions and open questions.",
+	"repo_discovery":   "Identify the repositories, modules and files this task touches and why.",
+	"atdd_creation":    atddStageInstruction,
+	"techdoc_rfc":      "Write a concise technical design: approach, components, data/API changes, risks and alternatives considered.",
+	"task_breakdown":   "Break the work into small ordered sub-tasks, each with the repository, files and how it will be verified.",
+	"red_verification": "Explain which acceptance tests are expected to fail before implementation and why.",
+	"task_implementation": "Implement the change. Show concrete code changes per file (unified diff where possible) and how to verify them. " +
+		"Organize the report under the headings \"## Summary\" (what changed and why), \"## How to test\" (steps a reviewer follows) and " +
+		"\"## Risks\" (impact and rollback) — they become the standard pull request description.",
+	"e2e_validation":   "Describe the end-to-end validation: scenarios, commands or scripts to run, and expected results.",
+	"uat_verification": uatStageInstruction,
+	"signoff_merge":    "Prepare the sign-off: summary of changes, risks, rollout notes and a pull request description.",
 }
 
 func stageIndexOf(stage string) int {
@@ -235,7 +237,11 @@ func (r *Router) executeStage(run *stageRun) {
 	r.console.mu.Unlock()
 
 	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method)}}, history...)
-	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: stagePrompt(task, run.feedback)})
+	prompt := stagePrompt(task, run.feedback)
+	if task.CurrentStageID == "uat_verification" {
+		prompt += "\n\n" + r.uatStageContext(task)
+	}
+	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: prompt})
 
 	workDir := r.resolveWorkDir(task)
 	r.mu.Lock()
@@ -311,6 +317,9 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 
 	if execErr == nil && resp != nil {
 		r.saveStageDocument(taskID, stage, model, resp.Content)
+		if stage == "uat_verification" && strings.TrimSpace(resp.Content) != "" {
+			defer r.startUATGuide(taskID) // after the gate state below is settled
+		}
 	}
 
 	var note string
@@ -576,3 +585,53 @@ func (r *Router) respondStageStart(w http.ResponseWriter, taskID string, err err
 		r.writeJSON(w, http.StatusConflict, map[string]interface{}{"status": "not_started", "task_id": taskID, "error": err.Error()})
 	}
 }
+
+// atddStageInstruction asks for readable Given/When/Then cases plus the same cases as data, in
+// the columns of the team's ATDD sheet, so the UAT stage and guide can cover every case marked
+// UAT or Sanity.
+const atddStageInstruction = `Write acceptance test cases in Given/When/Then form that cover every acceptance criterion, including negative and edge cases.
+Then emit the cases as JSON in a fenced block whose language is atdd-cases, one object per atomic case:
+
+` + "```" + `atdd-cases
+[{"id": "ABC-TC-001", "requirement": "US-1", "reference": "US-1 / FR-1", "priority": "P1", "test_level": "SIT",
+  "title": "Plain-language statement of what the case proves", "platform": "WEB", "repository": "billing-frontend",
+  "uat": true, "sanity": false,
+  "preconditions": ["I am signed in to Subscription Backyard as a Super Admin."],
+  "steps": ["1. Open …", "2. Click …"], "expected_results": ["1. …", "2. …"],
+  "reference_acceptance_criteria": "US-1 [Scenario: …]\nGiven: …\nWhen: …\nThen: …"}]
+` + "```" + `
+
+Rules: priority P0 (money, permissions, data loss, regression guards), P1 (core happy path, primary validations) or P2;
+test_level SIT (end-to-end journey) or SUT (one rule or one API contract); platform WEB for screen-driven cases, API for operation-level cases;
+repository is the assigned repository the case runs against; uat true for every reviewer-facing UI case;
+sanity true for the smoke / critical-path cases that prove the release is healthy.
+Write steps and expected results in complete plain language a business tester can follow — name the screen, menu, button and field; no bare requirement codes.`
+
+// uatStageInstruction asks for a readable UAT checklist plus a machine-readable plan that the
+// orchestrator replays in a browser per application to capture a screenshot per step (see
+// uat_handler.go). The ATDD cases the plan must cover are appended by uatStageContext.
+const uatStageInstruction = `Prepare the User Acceptance Test (UAT) for business testers (finance, sales and billing operations) who will verify the release by hand in each application.
+Read the frontend code in the repositories to find the real routes, menu names, field labels and button texts, so every step matches the screen exactly.
+
+1. Write a short UAT checklist: objective, preconditions, test data, and the scenarios — sanity checks first, then UAT scenarios grouped by application.
+2. Then emit the exact plan as JSON in a fenced block whose language is uat-plan:
+
+` + "```" + `uat-plan
+{"feature": "…", "objective": "What the release should do, in one or two sentences a tester understands",
+ "preconditions": ["Feature flag … is enabled for the test user (engineer)"], "test_data": ["A test company with an active subscription …"],
+ "scenarios": [{"id": "S1", "title": "…", "app": "subscription_backyard", "covers": ["ABC-TC-001"], "sanity": true,
+   "executable_by": "Finance/Ops", "preconditions": ["…"], "acceptance_criterion": "Given … When … Then …",
+   "expected_result": "The single observable fact that proves the scenario passed",
+   "steps": [{"action": "goto", "target": "/path", "where": "Subscription Backyard › Proforma Invoices", "description": "Open the Proforma Invoice list", "expected": "The list of Proforma Invoices is shown"},
+             {"action": "fill", "target": "label=Field label", "value": "…", "where": "Create Proforma Invoice form", "description": "…", "expected": "…"},
+             {"action": "click", "target": "role=button[name=\"Save\"]", "where": "…", "description": "…", "expected": "…"}]}]}
+` + "```" + `
+
+Plan rules:
+- Cover every ATDD case listed below: each id must appear in the covers list of at least one scenario. Use one scenario per case, or one scenario for cases that share the same setup and screens.
+- app is one of the application ids listed below; a scenario runs in exactly one application.
+- actions: goto (target = path relative to that application), click, fill, select, check, press (value = key), wait (target = selector, or value = milliseconds), expect_text (value = text that must appear), api (target = "METHOD /path", value = request body; for API-only sanity cases run by an engineer), manual (a check the browser cannot do, e.g. an email or a background job result).
+- targets: prefer label=…, placeholder=…, testid=…, text=… or role=button[name="…"]; use CSS only as a last resort.
+- every step has "where" (screen and menu path), a plain-language description of exactly what to do, and the expected result the tester should see. Never skip an intermediate action (sign in, navigation, opening the record, saving, refreshing, waiting for a background job).
+- executable_by: "Finance/Ops" when every step is on a screen, "Engineer" when any step needs console, API, database or flag access, "Engineer + Finance/Ops" when an engineer prepares and a business user verifies.
+- use obviously fake test data. Never include real customer data, credentials or tokens; for a login use ${UAT_USERNAME} and ${UAT_PASSWORD}.`
