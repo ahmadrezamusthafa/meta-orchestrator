@@ -219,6 +219,17 @@ export const api = {
     return data
   },
 
+  async uatSignIn(taskId: string, app: string, forget = false): Promise<UATGuideStatusDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/uat-guide/login`, {
+      method: forget ? 'DELETE' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app }),
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.error || `Could not ${forget ? 'forget the session' : 'open the sign-in window'} for ${app}`)
+    return data
+  },
+
   async getTaskDiff(taskId: string, against: DiffAgainst, repo?: string): Promise<TaskDiffDTO> {
     const q = new URLSearchParams({ against })
     if (repo) q.set('repo', repo)

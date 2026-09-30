@@ -137,6 +137,7 @@ export interface UATGuideStatusDTO {
   html_path?: string
   apps: UATAppDTO[]
   variables?: UATVariableDTO[]
+  sessions?: { app: string; source: 'task' | 'shared' | 'none' | string; saved_at?: string; login?: 'waiting' | 'ok' | 'failed' | string; error?: string }[]
   seed?: { language?: string; run?: string; script: string } | null
   seed_check?: {
     issues: { severity: 'error' | 'warning' | string; line?: number; message: string }[]

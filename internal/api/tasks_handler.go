@@ -418,6 +418,10 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			return
 
 		case "uat-guide":
+			if len(parts) > 2 && parts[2] == "login" {
+				r.handleUATLogin(w, req, taskSnapshot)
+				return
+			}
 			r.handleTaskUATGuide(w, req, taskSnapshot)
 			return
 

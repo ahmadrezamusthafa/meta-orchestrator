@@ -1,13 +1,13 @@
 // UAT screenshot runner: drives each scenario of a UAT plan in a real browser and saves a
 // screenshot after every step. Invoked by the orchestrator as `node runner.mjs <job.json>`; writes
 // the step results as JSON to the job's results path. Never prints form values.
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs'
+import { join, dirname } from 'node:path'
 import { chromium } from 'playwright-core'
 
 const job = JSON.parse(readFileSync(process.argv[2], 'utf8'))
 const STEP_TIMEOUT = job.step_timeout_ms || 15000
-mkdirSync(job.out_dir, { recursive: true })
+if (job.out_dir) mkdirSync(job.out_dir, { recursive: true })
 
 // ${UAT_*} placeholders come from the environment so secrets and test-data ids never live in the
 // plan or guide. A placeholder left without a value fails the step instead of opening a wrong page.
@@ -33,6 +33,16 @@ const pathOf = (u) => { try { const x = new URL(u); return x.origin + x.pathname
 // Short pages that read like an error page: the SPA's own not-found route answers HTTP 200.
 const NOT_FOUND = /\b404\b|not found|page (?:you|does not)|tidak ditemukan|halaman yang anda cari|telah dipindahkan atau telah dihapus/i
 
+// A sign-in screen: the environment redirected to its identity provider (another host) or shows a
+// password form. Scenarios that sign in themselves (fill a password) are allowed to land there.
+async function onLoginPage(page, envURL) {
+  let envHost = ''
+  try { envHost = new URL(envURL).host } catch {}
+  const host = (() => { try { return new URL(page.url()).host } catch { return '' } })()
+  const password = await page.locator('input[type="password"]').first().isVisible().catch(() => false)
+  return password && (host !== envHost || /login|sign[-_ ]?in|auth|account/i.test(page.url()))
+}
+
 async function checkPage(page, response) {
   const status = response ? response.status() : 0
   if (status >= 400) {
@@ -52,10 +62,63 @@ async function settle(page) {
   await page.waitForFunction(() => document.body && document.body.innerText.trim().length > 0, null, { timeout: 5000 }).catch(() => {})
 }
 
+let current = { envURL: '', signsIn: false }
+
 async function open(page, url) {
   const response = await page.goto(url, { waitUntil: 'domcontentloaded' })
   await settle(page)
+  if (!current.signsIn && await onLoginPage(page, current.envURL)) {
+    throw new StepError(`redirected to sign-in (${pathOf(page.url())}) — no saved session, or it expired. ` +
+      'Use "Sign in" for this application in the UAT Guide tab, then regenerate', 'login_required')
+  }
   await checkPage(page, response)
+}
+
+// Login mode: a visible browser window where the tester signs in once; the session (cookies and
+// local storage for every site visited, SSO included) is saved as a Playwright storage state.
+async function login() {
+  const opts = { headless: !!job.headless, ignoreDefaultArgs: ['--enable-automation'], args: ['--disable-blink-features=AutomationControlled'] }
+  // Real Chrome first: some identity providers (Google) refuse sign-in from a bundled test browser.
+  const browser = await chromium.launch({ ...opts, channel: 'chrome' }).catch(() => chromium.launch(opts))
+  const context = await browser.newContext({ viewport: null, ignoreHTTPSErrors: !!job.ignore_https_errors })
+  const page = await context.newPage()
+  const deadline = Date.now() + (job.timeout_ms || 5 * 60 * 1000)
+  let envHost = ''
+  try { envHost = new URL(job.url).host } catch {}
+  const result = { ok: false }
+  try {
+    await page.goto(job.url, { waitUntil: 'domcontentloaded' }).catch(() => {})
+    let signedInSince = 0
+    // Done when the window is back on the application, without a password form, for 3 seconds —
+    // or when the tester closes the window after signing in.
+    while (Date.now() < deadline) {
+      if (page.isClosed()) break
+      const host = (() => { try { return new URL(page.url()).host } catch { return '' } })()
+      const onApp = host === envHost && !(await onLoginPage(page, job.url))
+      signedInSince = onApp ? (signedInSince || Date.now()) : 0
+      if (signedInSince && Date.now() - signedInSince > 3000) break
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    const state = await context.storageState()
+    const cookies = (state.cookies || []).length
+    if (!cookies) throw new Error('no session was created — sign in before closing the window')
+    mkdirSync(dirname(job.storage_path), { recursive: true, mode: 0o700 })
+    writeFileSync(job.storage_path, JSON.stringify(state), { mode: 0o600 })
+    chmodSync(job.storage_path, 0o600)
+    result.ok = true
+    result.cookies = cookies
+    result.signed_in = !!signedInSince
+  } catch (err) {
+    result.error = String(err && err.message ? err.message : err).split('\n')[0].slice(0, 300)
+  } finally {
+    await browser.close().catch(() => {})
+    writeFileSync(job.results_path, JSON.stringify(result))
+  }
+}
+
+if (job.mode === 'login') {
+  await login()
+  process.exit(0)
 }
 
 function locate(page, target) {
@@ -93,6 +156,7 @@ try {
     })
     const page = await context.newPage()
     page.setDefaultTimeout(STEP_TIMEOUT)
+    current = { envURL: sc.base_url, signsIn: sc.steps.some((st) => st.action === 'fill' && /password|UAT_PASSWORD/i.test(`${st.target} ${st.value}`)) }
     let broken = ''
     for (let i = 0; i < sc.steps.length; i++) {
       const st = sc.steps[i]

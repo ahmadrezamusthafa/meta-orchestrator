@@ -266,3 +266,64 @@ func TestUATTestDataFillsPlanPlaceholders(t *testing.T) {
 		t.Fatalf("saved value must be reported: %s", w.Body.String())
 	}
 }
+
+type loginStubRunner struct {
+	stubRunner
+	url string
+}
+
+func (s *loginStubRunner) Login(_ context.Context, url, path string, _ bool) (uat.LoginResult, error) {
+	s.url = url
+	_ = os.MkdirAll(filepath.Dir(path), 0o700)
+	_ = os.WriteFile(path, []byte(`{"cookies":[{"name":"sid","value":"x"}],"origins":[]}`), 0o600)
+	return uat.LoginResult{OK: true, Cookies: 1, SignedIn: true}, nil
+}
+
+func TestUATSignInSavesASharedSession(t *testing.T) {
+	root := t.TempDir()
+	r := NewRouter(RouterConfig{RootDir: root})
+	stub := &loginStubRunner{}
+	r.uatRunner = stub
+	r.mu.Lock()
+	r.tasks["TASK-6"] = &types.Task{ID: "TASK-6", Title: "Void", CurrentStageID: "uat_verification", State: types.TaskStateWaitingGateApproval,
+		Metadata: map[string]string{"uat_app.subscription_backyard.url": "https://backyard.example.com/billing"}}
+	r.tasks["TASK-7"] = &types.Task{ID: "TASK-7", Title: "Other", Metadata: map[string]string{}}
+	r.mu.Unlock()
+
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-6/uat-guide/login", `{"app":"billing_dashboard"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("an app without an environment URL cannot sign in → %d", w.Code)
+	}
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-6/uat-guide/login", `{"app":"../etc"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid app id → %d", w.Code)
+	}
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-6/uat-guide/login", `{"app":"subscription_backyard"}`); w.Code != http.StatusAccepted {
+		t.Fatalf("sign in → %d %s", w.Code, w.Body.String())
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for r.taskSnapshot("TASK-6").Metadata["uat_login.subscription_backyard"] != "ok" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if stub.url != "https://backyard.example.com/billing" {
+		t.Fatalf("sign-in window opened %q", stub.url)
+	}
+	path := filepath.Join(root, ".sdlc", "uat", "sessions", "subscription_backyard.json")
+	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("session file %v %v", st, err)
+	}
+	w := do(r, http.MethodGet, "/api/v1/tasks/TASK-6/uat-guide", "")
+	if !strings.Contains(w.Body.String(), `{"app":"subscription_backyard","source":"shared"`) || strings.Contains(w.Body.String(), `"sid"`) {
+		t.Fatalf("status must report the session without its contents: %s", w.Body.String())
+	}
+	// Every task testing the application reuses it.
+	for _, a := range r.taskApps(r.taskSnapshot("TASK-7")) {
+		if a.ID == "subscription_backyard" && a.StorageState != path {
+			t.Fatalf("other tasks must reuse the shared session, got %q", a.StorageState)
+		}
+	}
+	if w := do(r, http.MethodDelete, "/api/v1/tasks/TASK-6/uat-guide/login", `{"app":"subscription_backyard"}`); w.Code != 200 {
+		t.Fatalf("forget session → %d", w.Code)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("session file must be removed: %v", err)
+	}
+}

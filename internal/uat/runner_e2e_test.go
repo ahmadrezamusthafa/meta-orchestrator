@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestPlaywrightRunnerE2E drives a real headless browser. It installs playwright-core on first
@@ -20,6 +21,16 @@ func TestPlaywrightRunnerE2E(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		switch {
+		case r.URL.Path == "/secure":
+			http.Redirect(w, r, "/login?next=/secure", http.StatusFound)
+			return
+		case r.URL.Path == "/login":
+			_, _ = w.Write([]byte(`<h1>Sign in</h1><label>Email <input></label><label>Password <input type="password"></label>`))
+			return
+		case r.URL.Path == "/app":
+			http.SetCookie(w, &http.Cookie{Name: "sid", Value: "test-session", Path: "/", Expires: time.Now().Add(time.Hour)})
+			_, _ = w.Write([]byte(`<h1>Dashboard</h1>`))
+			return
 		case r.URL.Path == "/missing":
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`<h1>gone</h1>`))
@@ -84,6 +95,7 @@ func TestPlaywrightRunnerE2E(t *testing.T) {
 		{ID: "B3", Steps: []Step{{Action: ActionGoto, Target: "/proforma-invoices/${PI_ID}"}}},
 		{ID: "B4", Steps: []Step{{Action: ActionClick, Target: "text=Void"}}},
 		{ID: "B5", Steps: []Step{{Action: ActionGoto, Target: srv.URL + "/missing"}}},
+		{ID: "B6", Steps: []Step{{Action: ActionGoto, Target: srv.URL + "/secure"}}},
 	}}
 	env := func(Scenario) string { return srv.URL + "/billing" }
 	if err := spa.ResolveTargets(env); err != nil {
@@ -118,8 +130,41 @@ func TestPlaywrightRunnerE2E(t *testing.T) {
 	if r := by["B4#1"]; !r.OK || r.Screenshot == "" {
 		t.Fatalf("a scenario starting with a click must open its environment first: %+v", r)
 	}
+	if r := by["B6#1"]; r.OK || r.Reason != ReasonLogin {
+		t.Fatalf("a redirect to sign-in must be reported, not captured as a pass: %+v", r)
+	}
 	if r := by["B5#1"]; r.OK || r.Reason != ReasonNotFound || !strings.Contains(r.Error, "HTTP 404") {
 		t.Fatalf("an HTTP 404 must fail the step: %+v", r)
 	}
 	t.Logf("screenshots in %s", out)
+}
+
+// TestPlaywrightLoginSavesSession checks the sign-in mode saves the session once the window is on
+// the application without a sign-in form. Headless, so nobody has to click.
+func TestPlaywrightLoginSavesSession(t *testing.T) {
+	if os.Getenv("UAT_E2E") != "1" {
+		t.Skip("set UAT_E2E=1 to run the browser test")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "sid", Value: "test-session", Path: "/", Expires: time.Now().Add(time.Hour)})
+		_, _ = w.Write([]byte(`<h1>Dashboard</h1>`))
+	}))
+	defer srv.Close()
+	dir := os.Getenv("UAT_RUNNER_DIR")
+	if dir == "" {
+		dir = filepath.Join(os.TempDir(), "uat-runner-e2e")
+	}
+	path := filepath.Join(t.TempDir(), "sessions", "app.json")
+	res, err := (&PlaywrightRunner{Dir: dir, HeadlessLogin: true}).Login(context.Background(), srv.URL+"/app", path, false)
+	if err != nil || !res.OK || !res.SignedIn || res.Cookies != 1 {
+		t.Fatalf("login = %+v, %v", res, err)
+	}
+	st, err := os.Stat(path)
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("session file %v %v", st, err)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), `"name":"sid"`) {
+		t.Fatalf("storage state has no session cookie")
+	}
 }

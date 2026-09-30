@@ -70,6 +70,12 @@ func (r *Router) taskApps(t *types.Task) []uat.App {
 		if a.StorageState == "" && a.IsWeb() {
 			a.StorageState = t.Metadata["uat_storage_state"]
 		}
+		// A session saved with "Sign in" is shared by every task that tests this application.
+		if a.StorageState == "" && a.IsWeb() {
+			if p := r.uatSessionPath(a.ID); fileExists(p) {
+				a.StorageState = p
+			}
+		}
 	}
 	return apps
 }
@@ -438,7 +444,7 @@ func (r *Router) uatVariables(t *types.Task) []UATVariable {
 // uatResultNotes explains runs that reached the wrong page or lacked test data, which otherwise
 // show up only as a 404 or blank screenshot inside one step.
 func uatResultNotes(results []uat.StepResult) []string {
-	var notFound, placeholder []string
+	var notFound, placeholder, login []string
 	for _, res := range results {
 		ref := fmt.Sprintf("%s step %d", res.Scenario, res.Step)
 		switch res.Reason {
@@ -446,6 +452,8 @@ func uatResultNotes(results []uat.StepResult) []string {
 			notFound = append(notFound, ref)
 		case uat.ReasonPlaceholder:
 			placeholder = append(placeholder, ref)
+		case uat.ReasonLogin:
+			login = append(login, ref)
 		}
 	}
 	var notes []string
@@ -454,12 +462,153 @@ func uatResultNotes(results []uat.StepResult) []string {
 			"includes its base path (for example https://<backyard-host>/billing for Subscription Backyard) and that the plan uses real routes, then regenerate.",
 			strings.Join(notFound, ", ")))
 	}
+	if len(login) > 0 {
+		notes = append(notes, fmt.Sprintf("%s landed on a sign-in page, so those screenshots show the login screen. "+
+			"Use \"Sign in\" for the application in the UAT Guide tab (Environments) to save a session, then regenerate.", strings.Join(login, ", ")))
+	}
 	if len(placeholder) > 0 {
 		notes = append(notes, fmt.Sprintf("%s need a test-data value the orchestrator was not given; "+
 			"fill it under Environments › Test data in the UAT Guide tab (credentials go in the orchestrator's environment) and regenerate.",
 			strings.Join(placeholder, ", ")))
 	}
 	return notes
+}
+
+// uatSessionPath is where "Sign in" saves an application's session: one per application, shared by
+// every task, inside .sdlc (0700 directory, 0600 file — it holds live session cookies).
+func (r *Router) uatSessionPath(appID string) string {
+	return filepath.Join(r.cfg.RootDir, ".sdlc", "uat", "sessions", appID+".json")
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
+}
+
+// UATSession describes an application's saved sign-in, never its contents.
+type UATSession struct {
+	App     string `json:"app"`
+	Source  string `json:"source"`             // "task" (a file set for this task), "shared" (saved with Sign in) or "none"
+	SavedAt string `json:"saved_at,omitempty"` // when the file was written
+	Login   string `json:"login,omitempty"`    // sign-in window state: "waiting", "ok" or "failed"
+	Error   string `json:"error,omitempty"`
+}
+
+func (r *Router) uatSessions(t *types.Task, apps []uat.App) []UATSession {
+	var out []UATSession
+	for _, a := range apps {
+		if !a.IsWeb() {
+			continue
+		}
+		s := UATSession{App: a.ID, Source: "none", Login: t.Metadata["uat_login."+a.ID], Error: t.Metadata["uat_login_error."+a.ID]}
+		switch {
+		case a.StorageState != "" && a.StorageState == r.uatSessionPath(a.ID):
+			s.Source = "shared"
+		case a.StorageState != "":
+			s.Source = "task"
+		}
+		if st, err := os.Stat(a.StorageState); a.StorageState != "" && err == nil {
+			s.SavedAt = st.ModTime().Format(time.RFC3339)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// uatLoginRunner opens the sign-in window; PlaywrightRunner implements it.
+type uatLoginRunner interface {
+	Login(ctx context.Context, url, storagePath string, ignoreHTTPS bool) (uat.LoginResult, error)
+}
+
+func (r *Router) setUATLogin(taskID, appID, state, errMsg string) {
+	r.mu.Lock()
+	if t, ok := r.tasks[taskID]; ok {
+		if t.Metadata == nil {
+			t.Metadata = map[string]string{}
+		}
+		t.Metadata["uat_login."+appID] = state
+		if errMsg != "" {
+			t.Metadata["uat_login_error."+appID] = errMsg
+		} else {
+			delete(t.Metadata, "uat_login_error."+appID)
+		}
+		t.UpdatedAt = time.Now()
+	}
+	r.mu.Unlock()
+	r.saveBoardNow()
+	r.broadcastTask(r.taskSnapshot(taskID))
+}
+
+// handleUATLogin serves POST /api/v1/tasks/{id}/uat-guide/login {"app": "<id>"}: it opens a browser
+// window on the orchestrator host at the application's environment URL, waits for the tester to sign
+// in, and saves the session for every task testing that application. DELETE forgets the session.
+func (r *Router) handleUATLogin(w http.ResponseWriter, req *http.Request, t *types.Task) {
+	var body struct {
+		App string `json:"app"`
+	}
+	if req.Method != http.MethodPost && req.Method != http.MethodDelete {
+		r.writeError(w, http.StatusMethodNotAllowed, "POST or DELETE required for uat-guide/login")
+		return
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil || !safeTaskID.MatchString(body.App) {
+		r.writeError(w, http.StatusBadRequest, "expected {\"app\": \"<application id>\"}")
+		return
+	}
+	var app *uat.App
+	for _, a := range r.taskApps(t) {
+		if a.ID == body.App && a.IsWeb() {
+			a := a
+			app = &a
+		}
+	}
+	if app == nil {
+		r.writeError(w, http.StatusNotFound, "no web application "+body.App+" in this task")
+		return
+	}
+	path := r.uatSessionPath(app.ID)
+	if req.Method == http.MethodDelete {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			r.writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		r.setUATLogin(t.ID, app.ID, "", "")
+		r.writeJSON(w, http.StatusOK, r.uatGuideStatus(r.taskSnapshot(t.ID)))
+		return
+	}
+	if !uat.ValidURL(app.BaseURL) {
+		r.writeError(w, http.StatusBadRequest, "set the environment URL for "+app.Name+" first")
+		return
+	}
+	runner, ok := r.screenshotRunner().(uatLoginRunner)
+	if !ok {
+		r.writeError(w, http.StatusNotImplemented, "this screenshot runner cannot open a sign-in window")
+		return
+	}
+	key := "uat-login:" + app.ID
+	if _, busy := r.busyOps.LoadOrStore(key, true); busy {
+		r.writeError(w, http.StatusConflict, "a sign-in window for "+app.Name+" is already open")
+		return
+	}
+	r.setUATLogin(t.ID, app.ID, "waiting", "")
+	ignoreHTTPS := t.Metadata["uat_ignore_https"] == "true"
+	go func() {
+		defer r.busyOps.Delete(key)
+		res, err := runner.Login(context.Background(), app.BaseURL, path, ignoreHTTPS)
+		switch {
+		case err != nil:
+			r.setUATLogin(t.ID, app.ID, "failed", err.Error())
+		case !res.OK:
+			r.setUATLogin(t.ID, app.ID, "failed", res.Error)
+		case !res.SignedIn:
+			r.setUATLogin(t.ID, app.ID, "ok", "The window closed before it was back on "+app.Name+"; if screenshots still show a sign-in page, sign in again.")
+		default:
+			r.setUATLogin(t.ID, app.ID, "ok", "")
+		}
+		if err == nil && res.OK {
+			r.addEntry(t.ID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: "UAT session saved for " + app.Name + ". Regenerate the UAT guide to capture signed-in screenshots."})
+		}
+	}()
+	r.writeJSON(w, http.StatusAccepted, r.uatGuideStatus(r.taskSnapshot(t.ID)))
 }
 
 // UATAppSettings is one application's environment for this task.
@@ -573,6 +722,7 @@ func (r *Router) uatGuideStatus(t *types.Task) map[string]interface{} {
 		"html_path":           exists(uatGuideHTML),
 		"apps":                apps,
 		"variables":           r.uatVariables(t),
+		"sessions":            r.uatSessions(t, apps),
 		"seed":                seed,
 		"seed_check":          seedCheck,
 		"atdd": map[string]interface{}{

@@ -45,15 +45,18 @@ type StepResult struct {
 
 // Why a step failed, when the runner can tell.
 const (
-	ReasonNotFound    = "not_found"   // the page is an HTTP error or the app's own not-found screen
-	ReasonPlaceholder = "placeholder" // a ${…} test-data value the runner has no value for
+	ReasonNotFound    = "not_found"      // the page is an HTTP error or the app's own not-found screen
+	ReasonPlaceholder = "placeholder"    // a ${…} test-data value the runner has no value for
+	ReasonLogin       = "login_required" // the app redirected to sign-in: no saved session, or it expired
 )
 
 // PlaywrightRunner captures screenshots with playwright-core, installed on first use into Dir.
 type PlaywrightRunner struct {
-	Dir     string        // tool directory holding runner.mjs and node_modules
-	Timeout time.Duration // whole run; default 10 minutes
-	mu      sync.Mutex
+	Dir string // tool directory holding runner.mjs and node_modules
+	// HeadlessLogin runs the sign-in window headless (tests only: nobody can sign in to it).
+	HeadlessLogin bool
+	Timeout       time.Duration // whole run; default 10 minutes
+	mu            sync.Mutex
 }
 
 // captureTimeout bounds one run so a hung page never stalls the daemon.
@@ -146,4 +149,50 @@ func (p *PlaywrightRunner) Capture(ctx context.Context, job CaptureJob) ([]StepR
 		return nil, runErr
 	}
 	return results, nil
+}
+
+// loginTimeout bounds how long the sign-in window stays open.
+const loginTimeout = 5 * time.Minute
+
+// LoginResult is what the sign-in window produced.
+type LoginResult struct {
+	OK       bool   `json:"ok"`
+	Cookies  int    `json:"cookies,omitempty"`
+	SignedIn bool   `json:"signed_in,omitempty"` // the window returned to the app without a sign-in form
+	Error    string `json:"error,omitempty"`
+}
+
+// Login opens a visible browser window at url so a tester signs in once (SSO included), then saves
+// the session as a Playwright storage state at storagePath (0600). The file holds live session
+// cookies: it is never returned by the API or written into a guide.
+func (p *PlaywrightRunner) Login(ctx context.Context, url, storagePath string, ignoreHTTPS bool) (LoginResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, loginTimeout+time.Minute)
+	defer cancel()
+	if err := p.ensure(ctx); err != nil {
+		return LoginResult{}, err
+	}
+	tmp, err := os.MkdirTemp("", "uat-login-")
+	if err != nil {
+		return LoginResult{}, err
+	}
+	defer os.RemoveAll(tmp)
+	spec := map[string]interface{}{
+		"mode": "login", "url": url, "storage_path": storagePath, "ignore_https_errors": ignoreHTTPS,
+		"timeout_ms": loginTimeout.Milliseconds(), "results_path": filepath.Join(tmp, "results.json"), "headless": p.HeadlessLogin,
+	}
+	raw, _ := json.Marshal(spec)
+	jobPath := filepath.Join(tmp, "job.json")
+	if err := os.WriteFile(jobPath, raw, 0o600); err != nil {
+		return LoginResult{}, err
+	}
+	runErr := command(ctx, p.Dir, "node", "runner.mjs", jobPath)
+	var res LoginResult
+	out, err := os.ReadFile(filepath.Join(tmp, "results.json"))
+	if err != nil || json.Unmarshal(out, &res) != nil {
+		if runErr != nil {
+			return LoginResult{}, runErr
+		}
+		return LoginResult{}, fmt.Errorf("the sign-in window returned no result")
+	}
+	return res, nil
 }

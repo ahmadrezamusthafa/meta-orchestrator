@@ -7,7 +7,7 @@ import MarkdownView from '../common/MarkdownView.vue'
 import type { Task, UATGuideStatusDTO } from '../../types'
 import {
   ClipboardCheck, Download, Loader2, RefreshCw, AlertCircle, Camera, Settings2, ListChecks, CheckCircle2, MessageSquareWarning,
-  Plus, X, Lock, Wand2, Copy, ClipboardPaste, ShieldCheck, ShieldAlert,
+  Plus, X, Lock, Wand2, Copy, ClipboardPaste, ShieldCheck, ShieldAlert, LogIn, KeyRound,
 } from 'lucide-vue-next'
 
 const props = defineProps<{ task: Task }>()
@@ -177,9 +177,31 @@ const KIND_BADGE: Record<string, string> = {
   'Sanity + UAT': 'bg-violet-950/60 border-violet-800/70 text-violet-200',
 }
 
+const sessionOf = (appId: string) => status.value?.sessions?.find((s) => s.app === appId)
+const signingIn = computed(() => (status.value?.sessions || []).some((s) => s.login === 'waiting'))
+const noSession = computed(() => webApps.value.filter((a) => a.base_url && sessionOf(a.id)?.source === 'none').map((a) => a.name))
+
+async function signIn(appId: string, forget = false) {
+  const app = status.value?.apps.find((a) => a.id === appId)
+  if (!forget && envs.value[appId]?.url.trim() !== (app?.base_url || '')) {
+    toast.error('Save the environment URL first', 'The sign-in window opens the saved URL.')
+    return
+  }
+  try {
+    status.value = await api.uatSignIn(props.task.id, appId, forget)
+    if (forget) toast.success('Session forgotten', `${app?.name || appId} will be captured signed out until you sign in again.`)
+    else toast.info('Sign-in window opened', `Sign in to ${app?.name || appId} in the browser window on this machine. It closes by itself once you are in.`)
+  } catch (err: any) {
+    toast.error(forget ? 'Could not forget the session' : 'Could not open the sign-in window', err?.message || 'Unknown error')
+  } finally {
+    syncPolling()
+  }
+}
+
 function syncPolling() {
-  if (generating.value && !poll) poll = setInterval(load, 2500)
-  if (!generating.value && poll) {
+  const busy = generating.value || signingIn.value
+  if (busy && !poll) poll = setInterval(load, 2500)
+  if (!busy && poll) {
     clearInterval(poll)
     poll = null
   }
@@ -306,14 +328,42 @@ onBeforeUnmount(() => poll && clearInterval(poll))
               <input v-model="envs[app.id].url" type="url" placeholder="https://staging…"
                 class="w-full h-9 px-3 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-emerald-500" />
             </label>
-            <label class="block space-y-1">
-              <span class="text-[11px] uppercase tracking-wide text-slate-500">Logged-in session file (optional)</span>
-              <input v-model="envs[app.id].storage_state" type="text" placeholder="/path/to/storage-state.json"
-                class="w-full h-9 px-3 rounded-lg bg-slate-950 border border-slate-700 font-mono text-xs text-slate-100 focus:outline-none focus:border-emerald-500" />
-            </label>
+            <div class="block space-y-1">
+              <span class="text-[11px] uppercase tracking-wide text-slate-500">Signed-in session</span>
+              <div class="flex items-center gap-2 h-9">
+                <span class="text-xs flex items-center gap-1.5 min-w-0"
+                  :class="sessionOf(app.id)?.login === 'failed' ? 'text-rose-300' : sessionOf(app.id)?.source === 'none' ? 'text-amber-200' : 'text-emerald-300'">
+                  <KeyRound class="w-3.5 h-3.5 flex-shrink-0" />
+                  <span v-if="sessionOf(app.id)?.login === 'waiting'" class="text-slate-300">Waiting for you to sign in…</span>
+                  <span v-else-if="sessionOf(app.id)?.source === 'none'">Not signed in — screenshots stop at the login page</span>
+                  <span v-else class="truncate">
+                    {{ sessionOf(app.id)?.source === 'task' ? 'Session file set for this task' : 'Signed in' }}<template v-if="sessionOf(app.id)?.saved_at">
+                      · saved {{ new Date(sessionOf(app.id)!.saved_at!).toLocaleString() }}</template>
+                  </span>
+                </span>
+                <button type="button" @click="signIn(app.id)" :disabled="!app.base_url || sessionOf(app.id)?.login === 'waiting'"
+                  :title="app.base_url ? 'Opens a browser window on this machine; sign in once and the session is reused' : 'Save the environment URL first'"
+                  class="ml-auto h-8 px-2.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5 disabled:opacity-50 flex-shrink-0">
+                  <Loader2 v-if="sessionOf(app.id)?.login === 'waiting'" class="w-3.5 h-3.5 animate-spin" /><LogIn v-else class="w-3.5 h-3.5" />
+                  {{ sessionOf(app.id)?.source === 'none' ? 'Sign in' : 'Sign in again' }}
+                </button>
+                <button v-if="sessionOf(app.id)?.source === 'shared'" type="button" @click="signIn(app.id, true)" aria-label="Forget session"
+                  class="h-8 px-2 rounded-lg border border-slate-700 text-slate-400 hover:text-rose-300 flex-shrink-0"><X class="w-3.5 h-3.5" /></button>
+              </div>
+              <span v-if="sessionOf(app.id)?.error" class="block text-[11px]" :class="sessionOf(app.id)?.login === 'failed' ? 'text-rose-300' : 'text-amber-200'">
+                {{ sessionOf(app.id)?.error }}
+              </span>
+              <details class="text-[11px] text-slate-500">
+                <summary class="cursor-pointer hover:text-slate-300">Use a session file instead</summary>
+                <input v-model="envs[app.id].storage_state" type="text" placeholder="/path/to/storage-state.json" aria-label="Session file path"
+                  class="mt-1 w-full h-8 px-3 rounded-lg bg-slate-950 border border-slate-700 font-mono text-xs text-slate-100 focus:outline-none focus:border-emerald-500" />
+              </details>
+            </div>
           </div>
           <p class="text-[11px] text-slate-500 leading-relaxed">
-            The session file is a Playwright storage state for a UAT test account, so pages behind login can be captured. Login steps may use
+            <strong class="text-slate-300">Sign in</strong> opens a browser window on the orchestrator's machine: sign in once with your UAT test account (SSO works)
+            and the session is saved (<code class="font-mono">.sdlc/uat/sessions</code>, readable only by you) and reused by every task testing that application.
+            Your everyday Chrome session cannot be reused — Chrome keeps it encrypted in its own profile. Login steps may use
             <code class="font-mono">${UAT_USERNAME}</code> / <code class="font-mono">${UAT_PASSWORD}</code>, read from the daemon's environment —
             never written into the guide.
           </p>
@@ -521,6 +571,11 @@ onBeforeUnmount(() => poll && clearInterval(poll))
       </div>
       <div v-else-if="missingEnv.length && status?.stage_ready" class="p-3 rounded-lg border border-slate-800 text-xs text-slate-400 flex items-start gap-2">
         <AlertCircle class="w-4 h-4 flex-shrink-0 mt-px" /> Set the environment URL for {{ missingEnv.join(', ') }} to capture its screenshots.
+      </div>
+      <div v-if="noSession.length && status?.stage_ready" class="p-3 rounded-lg border border-amber-800/60 bg-amber-950/30 text-xs text-amber-200 flex flex-wrap items-center gap-2">
+        <LogIn class="w-4 h-4 flex-shrink-0" />
+        Not signed in to {{ noSession.join(', ') }} — its screenshots will show the login page.
+        <button type="button" class="ml-auto underline hover:text-amber-100" @click="showSettings = true">Sign in</button>
       </div>
       <div v-if="missingVars.length && status?.stage_ready" class="p-3 rounded-lg border border-amber-800/60 bg-amber-950/30 text-xs text-amber-200 flex flex-wrap items-center gap-2">
         <AlertCircle class="w-4 h-4 flex-shrink-0" />
