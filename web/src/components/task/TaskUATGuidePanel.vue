@@ -7,7 +7,7 @@ import MarkdownView from '../common/MarkdownView.vue'
 import type { Task, UATGuideStatusDTO } from '../../types'
 import {
   ClipboardCheck, Download, Loader2, RefreshCw, AlertCircle, Camera, Settings2, ListChecks, CheckCircle2, MessageSquareWarning,
-  Plus, X, Lock,
+  Plus, X, Lock, Wand2, Copy, ClipboardPaste, ShieldCheck, ShieldAlert,
 } from 'lucide-vue-next'
 
 const props = defineProps<{ task: Task }>()
@@ -42,7 +42,117 @@ const missingEnv = computed(() => webApps.value.filter((a) => !a.base_url).map((
 const variables = computed(() => status.value?.variables || [])
 const testDataVars = computed(() => variables.value.filter((v) => !v.secret))
 const secretVars = computed(() => variables.value.filter((v) => v.secret && v.used))
-const missingVars = computed(() => variables.value.filter((v) => v.used && v.source === 'missing').map((v) => v.name))
+// Only values a replayed screen step needs block the screenshots; API-only ones are for engineers.
+const missingVars = computed(() => variables.value
+  .filter((v) => v.browser && !v.secret && v.source === 'missing' && !vars.value[v.name]).map((v) => v.name))
+const shownVars = computed(() => testDataVars.value.filter((v) => !removedVars.value.includes(v.name)))
+const varGroups = computed(() => [
+  { key: 'screen', title: 'Needed for screenshots', open: true, list: shownVars.value.filter((v) => v.browser) },
+  { key: 'api', title: 'Used only in API / engineer steps', open: false, list: shownVars.value.filter((v) => v.used && !v.browser) },
+  { key: 'unused', title: 'Saved but not in the current plan', open: false, list: shownVars.value.filter((v) => !v.used) },
+])
+const seed = computed(() => status.value?.seed || null)
+const SEED_EXT: Record<string, string> = { ruby: 'rb', rb: 'rb', python: 'py', py: 'py', javascript: 'js', js: 'js', ts: 'ts', typescript: 'ts', sql: 'sql', bash: 'sh', sh: 'sh' }
+const seedFile = computed(() => `uat_seed.${SEED_EXT[(seed.value?.language || '').toLowerCase()] || 'txt'}`)
+const pasteText = ref('')
+const seedCheck = computed(() => status.value?.seed_check || null)
+const seedErrors = computed(() => (seedCheck.value?.issues || []).filter((i) => i.severity === 'error'))
+const seedWarnings = computed(() => (seedCheck.value?.issues || []).filter((i) => i.severity !== 'error'))
+const seedBlocked = computed(() => !!seedCheck.value && (seedErrors.value.length > 0 || (seedCheck.value.syntax.checked && !seedCheck.value.syntax.ok)))
+// The dry run executes every lookup and query read-only; only UAT_SEED_APPLY=1 writes.
+const seedApplyRun = computed(() => seed.value?.run ? `UAT_SEED_APPLY=1 ${seed.value.run}` : '')
+const runError = ref('')
+
+function copySeed() {
+  if (!seed.value) return
+  navigator.clipboard.writeText(seed.value.script)
+    .then(() => toast.success('Seed script copied', seed.value?.run ? `Run: ${seed.value.run}` : ''))
+    .catch(() => toast.error('Could not copy', 'Use Download instead.'))
+}
+
+function downloadSeed() {
+  if (!seed.value) return
+  const url = URL.createObjectURL(new Blob([seed.value.script], { type: 'text/plain' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = seedFile.value
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// Parses NAME=value lines (the seed script's output or a .env file) into the test data.
+function applyPaste() {
+  let applied = 0
+  const skipped: string[] = []
+  for (const raw of pasteText.value.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    const m = line.match(/^(?:export\s+)?\$?\{?([A-Za-z][A-Za-z0-9_]{0,63})\}?\s*[=:]\s*(.*)$/)
+    if (!m) continue
+    const [, name, rawValue] = m
+    const value = rawValue.trim().replace(/^(['"])(.*)\1$/, '$2')
+    if (variables.value.some((v) => v.name === name && v.secret)) {
+      skipped.push(name)
+      continue
+    }
+    vars.value[name] = value
+    removedVars.value = removedVars.value.filter((n) => n !== name)
+    applied++
+  }
+  pasteText.value = ''
+  if (skipped.length) toast.error('Credentials not stored', `${skipped.join(', ')}: set these in the orchestrator's environment.`)
+  if (applied) toast.success(`${applied} value(s) applied`, 'Save to keep them for this task.')
+  else if (!skipped.length) toast.error('Nothing to apply', 'Paste lines like UAT_PI_ID_MANUAL=4250.')
+}
+
+// Send the stage back with the error the engineer got (or the checks that failed) so the agent fixes the script.
+async function requestSeedFix() {
+  if (requesting.value) return
+  const problems = [
+    ...seedErrors.value.map((i) => `- ${i.line ? `line ${i.line}: ` : ''}${i.message}`),
+    ...seedWarnings.value.map((i) => `- (check) ${i.line ? `line ${i.line}: ` : ''}${i.message}`),
+    ...(seedCheck.value?.syntax.checked && !seedCheck.value.syntax.ok ? [`- syntax: ${seedCheck.value.syntax.message}`] : []),
+  ]
+  const error = runError.value.trim().slice(0, 4000)
+  if (!error && !problems.length) {
+    toast.error('Nothing to send', 'Paste the error you got when running the script.')
+    return
+  }
+  requesting.value = true
+  try {
+    await api.gateApproval(props.task.id, false,
+      'Keep the UAT plan as it is and fix the ```uat-seed``` script so it runs without errors and follows every seed rule. ' +
+      'Open the definition of every class, method and scope it uses and match the real code; qualify raw SQL columns with their table in joined queries.' +
+      (error ? `\n\nRunning it failed with:\n${error}` : '') +
+      (problems.length ? `\n\nChecks that failed:\n${problems.join('\n')}` : ''))
+    runError.value = ''
+    await taskStore.fetchTask(props.task.id)
+    toast.info('Sent back to the agent', 'The UAT stage re-runs to fix the seed script.')
+  } catch (err: any) {
+    toast.error('Could not send the stage back', err?.message || 'Unknown error')
+  } finally {
+    requesting.value = false
+  }
+}
+
+// Send the stage back so the agent adds a script that prepares every record the plan uses.
+async function requestSeed() {
+  if (requesting.value) return
+  requesting.value = true
+  try {
+    const names = variables.value.filter((v) => v.used && !v.secret).map((v) => placeholderOf(v.name))
+    await api.gateApproval(props.task.id, false,
+      'Keep the UAT plan as it is, and add the ```uat-seed <language>``` block described in the plan rules: one script an engineer runs once in the UAT ' +
+      'environment that creates every test record in the exact state its scenario needs and prints one NAME=value line per placeholder' +
+      (names.length ? `: ${names.join(', ')}` : '') + '.')
+    await taskStore.fetchTask(props.task.id)
+    toast.info('Sent back to the agent', 'The UAT stage re-runs to add the seed script.')
+  } catch (err: any) {
+    toast.error('Could not send the stage back', err?.message || 'Unknown error')
+  } finally {
+    requesting.value = false
+  }
+}
 const extraVarNames = computed(() => Object.keys(vars.value).filter((n) => !testDataVars.value.some((v) => v.name === n)))
 const placeholderOf = (name: string) => '${' + name + '}'
 
@@ -207,26 +317,107 @@ onBeforeUnmount(() => poll && clearInterval(poll))
             <code class="font-mono">${UAT_USERNAME}</code> / <code class="font-mono">${UAT_PASSWORD}</code>, read from the daemon's environment —
             never written into the guide.
           </p>
-          <fieldset class="space-y-2">
+          <fieldset class="space-y-3">
             <legend class="text-xs font-semibold text-slate-200">Test data</legend>
             <p class="text-[11px] text-slate-500 leading-relaxed">
-              Values for the <code class="font-mono">${…}</code> placeholders in the plan — the staging records each scenario opens
-              (e.g. a proforma invoice id). They are saved with this task and shown to testers in the guide, so use test records only.
+              Values for the <code class="font-mono">${…}</code> placeholders in the plan — the staging records each scenario uses. They are saved with
+              this task and shown in the guide, so use test records only. Only values used on a screen are needed for screenshots.
             </p>
-            <div v-if="!testDataVars.length && !extraVarNames.length" class="text-[11px] text-slate-500">The current plan uses no test-data placeholders.</div>
-            <div v-for="v in testDataVars.filter((x) => !removedVars.includes(x.name))" :key="v.name" class="grid gap-2 sm:grid-cols-[minmax(0,16rem)_1fr_auto] items-center">
-              <code class="font-mono text-xs text-slate-300 truncate" :title="placeholderOf(v.name)">{{ placeholderOf(v.name) }}</code>
-              <input v-model="vars[v.name]" type="text" :placeholder="v.source === 'environment' ? 'set in the orchestrator environment' : 'test record value'"
-                :aria-label="`Value for ${v.name}`"
-                class="w-full h-9 px-3 rounded-lg bg-slate-950 border text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
-                :class="v.used && !vars[v.name] && v.source !== 'environment' ? 'border-amber-700' : 'border-slate-700'" />
-              <span class="text-[11px] whitespace-nowrap" :class="v.used ? 'text-slate-500' : 'text-slate-600'">
-                {{ v.used ? (v.source === 'environment' && !vars[v.name] ? 'from environment' : 'used by plan') : 'not in plan' }}
-                <button v-if="!v.used" type="button" class="ml-1 text-slate-500 hover:text-rose-300" :aria-label="`Remove ${v.name}`" @click="removeVar(v.name)">
-                  <X class="w-3.5 h-3.5 inline" />
+
+            <!-- Prepare every record at once with the agent's seed script, then paste its output. -->
+            <div class="p-3 rounded-lg border border-slate-800 bg-slate-950/60 space-y-2">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="text-xs font-semibold text-slate-200 flex items-center gap-1.5"><Wand2 class="w-3.5 h-3.5 text-violet-300" /> Prepare test data</span>
+                <template v-if="seed">
+                  <button type="button" @click="copySeed" :disabled="seedBlocked" :title="seedBlocked ? 'Fix the failed checks before running it' : ''"
+                    class="disabled:opacity-50 disabled:cursor-not-allowed ml-auto h-7 px-2.5 rounded-lg border border-slate-700 text-[11px] text-slate-200 hover:bg-slate-800 flex items-center gap-1">
+                    <Copy class="w-3.5 h-3.5" /> Copy script
+                  </button>
+                  <button type="button" @click="downloadSeed" class="h-7 px-2.5 rounded-lg border border-slate-700 text-[11px] text-slate-200 hover:bg-slate-800 flex items-center gap-1">
+                    <Download class="w-3.5 h-3.5" /> {{ seedFile }}
+                  </button>
+                </template>
+                <button v-else-if="status?.can_request_changes" type="button" @click="requestSeed" :disabled="requesting"
+                  class="ml-auto h-7 px-2.5 rounded-lg border border-violet-700 bg-violet-950/40 hover:bg-violet-900/40 text-[11px] text-violet-100 flex items-center gap-1 disabled:opacity-50">
+                  <Loader2 v-if="requesting" class="w-3.5 h-3.5 animate-spin" /><Wand2 v-else class="w-3.5 h-3.5" /> Ask the agent for a seed script
                 </button>
-              </span>
+              </div>
+              <div v-if="seed && seedCheck" class="text-[11px] space-y-1">
+                <div class="flex items-center gap-1.5" :class="seedBlocked ? 'text-rose-300' : seedWarnings.length ? 'text-amber-200' : 'text-emerald-300'">
+                  <ShieldAlert v-if="seedBlocked || seedWarnings.length" class="w-3.5 h-3.5" /><ShieldCheck v-else class="w-3.5 h-3.5" />
+                  <span v-if="seedBlocked">Do not run this script yet — it failed the safety checks. Ask the agent to fix it.</span>
+                  <span v-else-if="seedWarnings.length">Passed the safety checks with {{ seedWarnings.length }} point(s) to review.</span>
+                  <span v-else>Passed the safety checks.</span>
+                  <span class="text-slate-500">
+                    · syntax {{ seedCheck.syntax.checked ? (seedCheck.syntax.ok ? 'OK' : 'error') : 'not checked' }}<template v-if="seedCheck.syntax.tool"> ({{ seedCheck.syntax.tool }})</template>
+                  </span>
+                </div>
+                <ul v-if="seedCheck.issues.length || (seedCheck.syntax.checked && !seedCheck.syntax.ok)" class="pl-5 list-disc space-y-0.5">
+                  <li v-for="(i, n) in seedCheck.issues" :key="n" :class="i.severity === 'error' ? 'text-rose-300' : 'text-amber-200'">
+                    <template v-if="i.line">line {{ i.line }}: </template>{{ i.message }}
+                  </li>
+                  <li v-if="seedCheck.syntax.checked && !seedCheck.syntax.ok" class="text-rose-300 font-mono whitespace-pre-wrap">{{ seedCheck.syntax.message }}</li>
+                </ul>
+                <p class="text-slate-500">These checks read the script; they cannot prove it matches the data in your environment — that is what the dry run is for.</p>
+              </div>
+              <ol v-if="seed && !seedBlocked" class="text-[11px] text-slate-400 leading-relaxed list-decimal pl-5 space-y-0.5">
+                <li>Review the script — it creates records in the environment it runs in.</li>
+                <li>Dry run (reads only, writes nothing)<template v-if="seed.run">: <code class="font-mono text-slate-200">{{ seed.run }}</code></template>.</li>
+                <li>If the dry run is clean, create the records<template v-if="seedApplyRun">: <code class="font-mono text-slate-200">{{ seedApplyRun }}</code></template>.</li>
+                <li>Paste its <code class="font-mono">NAME=value</code> output below and save.</li>
+              </ol>
+              <div v-if="seed && status?.can_request_changes" class="space-y-1.5">
+                <textarea v-model="runError" rows="2" spellcheck="false" aria-label="Error from running the seed script"
+                  placeholder="Got an error running it? Paste it here, e.g. Mysql2::Error: Column 'name' in where clause is ambiguous"
+                  class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 font-mono text-xs text-slate-100 focus:outline-none focus:border-rose-500" />
+                <button type="button" @click="requestSeedFix" :disabled="requesting || (!runError.trim() && !seedBlocked && !seedWarnings.length)"
+                  class="h-7 px-2.5 rounded-lg border border-rose-800 bg-rose-950/40 hover:bg-rose-900/40 text-[11px] text-rose-100 flex items-center gap-1 disabled:opacity-50">
+                  <Loader2 v-if="requesting" class="w-3.5 h-3.5 animate-spin" /><Wand2 v-else class="w-3.5 h-3.5" /> Ask the agent to fix the script
+                </button>
+              </div>
+              <p v-else class="text-[11px] text-slate-500 leading-relaxed">
+                The current plan has no seed script. <template v-if="status?.can_request_changes">Ask the agent to write one that creates every record in the state each
+                scenario needs</template><template v-else>Re-run the uat_verification stage to get one</template>, or paste values prepared by hand.
+              </p>
+              <details v-if="seed" class="text-[11px]">
+                <summary class="cursor-pointer text-slate-400 hover:text-slate-200">Show script</summary>
+                <pre class="mt-2 max-h-72 overflow-auto p-2 rounded bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 whitespace-pre">{{ seed.script }}</pre>
+              </details>
+              <textarea v-model="pasteText" rows="3" spellcheck="false" aria-label="Paste NAME=value lines"
+                placeholder="UAT_PI_ID_SC_UNPAID=4242&#10;UAT_PI_ID_MANUAL=4250&#10;…"
+                class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 font-mono text-xs text-slate-100 focus:outline-none focus:border-emerald-500" />
+              <div class="flex items-center gap-2">
+                <button type="button" @click="applyPaste" :disabled="!pasteText.trim()"
+                  class="h-7 px-2.5 rounded-lg border border-slate-700 text-[11px] text-slate-200 hover:bg-slate-800 disabled:opacity-50 flex items-center gap-1">
+                  <ClipboardPaste class="w-3.5 h-3.5" /> Apply pasted values
+                </button>
+                <span class="text-[11px] text-slate-500">Accepts <code class="font-mono">NAME=value</code>, <code class="font-mono">export NAME="value"</code> or <code class="font-mono">${NAME}=value</code>.</span>
+              </div>
             </div>
+
+            <div v-if="!testDataVars.length && !extraVarNames.length" class="text-[11px] text-slate-500">The current plan uses no test-data placeholders.</div>
+            <template v-for="group in varGroups" :key="group.key">
+              <details v-if="group.list.length" :open="group.open" class="space-y-2">
+                <summary class="cursor-pointer text-[11px] uppercase tracking-wide text-slate-500 hover:text-slate-300">
+                  {{ group.title }} ({{ group.list.filter((v) => vars[v.name]).length }}/{{ group.list.length }} filled)
+                </summary>
+                <div class="space-y-2 pt-2">
+                  <div v-for="v in group.list" :key="v.name" class="grid gap-2 sm:grid-cols-[minmax(0,16rem)_1fr_auto] items-center">
+                    <code class="font-mono text-xs text-slate-300 truncate" :title="placeholderOf(v.name)">{{ placeholderOf(v.name) }}</code>
+                    <input v-model="vars[v.name]" type="text" :placeholder="v.source === 'environment' ? 'set in the orchestrator environment' : 'test record value'"
+                      :aria-label="`Value for ${v.name}`"
+                      class="w-full h-9 px-3 rounded-lg bg-slate-950 border text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                      :class="v.browser && !vars[v.name] && v.source !== 'environment' ? 'border-amber-700' : 'border-slate-700'" />
+                    <span class="text-[11px] whitespace-nowrap text-slate-500">
+                      {{ !v.used ? 'not in plan' : v.source === 'environment' && !vars[v.name] ? 'from environment' : v.browser ? 'screen step' : 'API / engineer step' }}
+                      <button v-if="!v.used" type="button" class="ml-1 text-slate-500 hover:text-rose-300" :aria-label="`Remove ${v.name}`" @click="removeVar(v.name)">
+                        <X class="w-3.5 h-3.5 inline" />
+                      </button>
+                    </span>
+                  </div>
+                </div>
+              </details>
+            </template>
             <div v-for="name in extraVarNames" :key="name" class="grid gap-2 sm:grid-cols-[minmax(0,16rem)_1fr_auto] items-center">
               <code class="font-mono text-xs text-slate-300 truncate">{{ placeholderOf(name) }}</code>
               <input v-model="vars[name]" type="text" placeholder="test record value" :aria-label="`Value for ${name}`"
@@ -333,7 +524,7 @@ onBeforeUnmount(() => poll && clearInterval(poll))
       </div>
       <div v-if="missingVars.length && status?.stage_ready" class="p-3 rounded-lg border border-amber-800/60 bg-amber-950/30 text-xs text-amber-200 flex flex-wrap items-center gap-2">
         <AlertCircle class="w-4 h-4 flex-shrink-0" />
-        The plan needs {{ missingVars.length }} test-data value(s):
+        Screenshots need {{ missingVars.length }} test-data value(s):
         <span class="font-mono">{{ missingVars.map(placeholderOf).join(', ') }}</span>
         <button type="button" class="ml-auto underline hover:text-amber-100" @click="showSettings = true">Fill them in</button>
       </div>

@@ -223,10 +223,17 @@ func TestUATTestDataFillsPlanPlaceholders(t *testing.T) {
 	r.saveStageDocument("TASK-5", "uat_verification", "m", "```uat-plan\n"+
 		`{"feature":"Void","scenarios":[{"id":"S1","title":"Void","steps":[`+
 		`{"action":"goto","target":"/proforma-invoices/${PI_ID_PAID}","description":"Open PI ${PI_ID_PAID}"},`+
-		`{"action":"fill","target":"label=Password","value":"${UAT_PASSWORD}"}]}]}`+"\n```\n")
+		`{"action":"fill","target":"label=Password","value":"${UAT_PASSWORD}"}]}]}`+"\n```\n\n"+
+		"```uat-seed ruby\n# run: bundle exec rails runner tmp/uat_seed.rb\nputs \"PI_ID_PAID=#{pi.id}\"\n```\n")
+	if w := do(r, http.MethodGet, "/api/v1/tasks/TASK-5/uat-guide", ""); !strings.Contains(w.Body.String(), `"seed":{"language":"ruby","run":"bundle exec rails runner tmp/uat_seed.rb"`) {
+		t.Fatalf("status must offer the seed script: %s", w.Body.String())
+	}
+	if w := do(r, http.MethodGet, "/api/v1/tasks/TASK-5/uat-guide", ""); !strings.Contains(w.Body.String(), `"seed_check":{"issues":[{"severity":"error","message":"no production guard`) {
+		t.Fatalf("a seed without a production guard must be flagged: %s", w.Body.String())
+	}
 
 	w := do(r, http.MethodGet, "/api/v1/tasks/TASK-5/uat-guide", "")
-	if !strings.Contains(w.Body.String(), `{"name":"PI_ID_PAID","source":"missing","secret":false,"used":true}`) ||
+	if !strings.Contains(w.Body.String(), `{"name":"PI_ID_PAID","source":"missing","secret":false,"used":true,"browser":true}`) ||
 		!strings.Contains(w.Body.String(), `"name":"UAT_PASSWORD"`) || !strings.Contains(w.Body.String(), `"secret":true`) {
 		t.Fatalf("status must list the plan's placeholders: %s", w.Body.String())
 	}
@@ -255,7 +262,7 @@ func TestUATTestDataFillsPlanPlaceholders(t *testing.T) {
 		t.Fatalf("credentials stay placeholders for the runner's environment, got %q", steps[1].Value)
 	}
 	w = do(r, http.MethodGet, "/api/v1/tasks/TASK-5/uat-guide", "")
-	if !strings.Contains(w.Body.String(), `{"name":"PI_ID_PAID","value":"4242","source":"task","secret":false,"used":true}`) {
+	if !strings.Contains(w.Body.String(), `{"name":"PI_ID_PAID","value":"4242","source":"task","secret":false,"used":true,"browser":true}`) {
 		t.Fatalf("saved value must be reported: %s", w.Body.String())
 	}
 }

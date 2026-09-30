@@ -1,7 +1,9 @@
 package uat
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -222,8 +224,13 @@ func TestPlanPlaceholdersAndFill(t *testing.T) {
 		{Action: ActionFill, Target: "label=Password", Value: "${UAT_PASSWORD}"},
 		{Action: ActionFill, Target: "label=Code", Value: "${UAT_PRODUCT_CODE}-${PI_ID}"},
 	}}}}
-	if got := strings.Join(p.Placeholders(), ","); got != "PI_ID,UAT_PASSWORD,UAT_PRODUCT_CODE" {
+	names, browser := p.Placeholders()
+	if got := strings.Join(names, ","); got != "PI_ID,UAT_PASSWORD,UAT_PRODUCT_CODE" {
 		t.Fatalf("placeholders = %s", got)
+	}
+	api := &Plan{Scenarios: []Scenario{{Steps: []Step{{Action: ActionAPI, Target: "POST /pi/${UAT_SERIAL}"}, {Action: ActionGoto, Target: "/pi/${UAT_PI_ID}"}}}}}
+	if _, b := api.Placeholders(); b["UAT_SERIAL"] || !b["UAT_PI_ID"] || !browser["PI_ID"] {
+		t.Fatalf("only browser-driven steps need a value for the capture: %v", b)
 	}
 	p.Fill(map[string]string{"PI_ID": "42", "UAT_PASSWORD": "leak", "UAT_PRODUCT_CODE": ""})
 	st := p.Scenarios[0].Steps
@@ -244,6 +251,56 @@ func TestPlanPlaceholdersAndFill(t *testing.T) {
 	for _, n := range []string{"UAT_PI_ID_PAID", "PI_ID", "UAT_PRODUCT_CODE", "UAT_USERNAME"} {
 		if IsSecretName(n) {
 			t.Errorf("%s is test data, not a credential", n)
+		}
+	}
+}
+
+func TestExtractSeed(t *testing.T) {
+	doc := "Plan…\n\n```uat-seed ruby\n# run: bundle exec rails runner tmp/uat_seed.rb\nabort if Rails.env.production?\nputs \"UAT_PI_ID=#{pi.id}\"\n```\n"
+	s, ok := ExtractSeed(doc)
+	if !ok || s.Language != "ruby" || s.Run != "bundle exec rails runner tmp/uat_seed.rb" || !strings.Contains(s.Script, "abort if Rails.env.production?") {
+		t.Fatalf("seed = %+v %v", s, ok)
+	}
+	if _, ok := ExtractSeed("```uat-plan\n{}\n```"); ok {
+		t.Fatal("no seed block must report none")
+	}
+}
+
+func TestSeedLintCatchesUnsafeAndAmbiguousScripts(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "seed_ambiguous.rb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Seed{Language: "ruby", Script: string(raw)}
+	got := map[string]bool{}
+	for _, i := range s.Lint() {
+		got[i.Severity+":"+strings.SplitN(i.Message, ":", 2)[0]] = true
+	}
+	for _, want := range []string{
+		"warning:merges another model's scope into a join",
+		"error:raw SQL column without its table name in a joined query",
+		"error:no dry-run switch",
+		"error:looks like a hard-coded credential; read it from ENV instead",
+		"error:bulk write or delete",
+	} {
+		if !got[want] {
+			t.Errorf("missing %q in %v", want, got)
+		}
+	}
+
+	safe := &Seed{Language: "ruby", Run: "bundle exec rails runner tmp/uat_seed.rb", Script: "abort('no') if Rails.env.production?\n" +
+		"APPLY = ENV['UAT_SEED_APPLY'] == '1'\n" +
+		"pkg = Package.joins(:app).where(App.arel_table[:name].matches('%qontak%')).first\n" +
+		"token = ENV.fetch('UAT_API_TOKEN')\n"}
+	if issues := safe.Lint(); len(issues) != 0 {
+		t.Fatalf("a safe script must pass: %+v", issues)
+	}
+	if _, err := exec.LookPath("ruby"); err == nil {
+		if c := safe.CheckSyntax(context.Background()); !c.Checked || !c.OK {
+			t.Fatalf("valid ruby must parse: %+v", c)
+		}
+		if c := (&Seed{Language: "ruby", Script: "def x(\n"}).CheckSyntax(context.Background()); !c.Checked || c.OK || c.Message == "" {
+			t.Fatalf("broken ruby must fail the syntax check: %+v", c)
 		}
 	}
 }

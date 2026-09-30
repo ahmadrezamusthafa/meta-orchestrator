@@ -399,16 +399,19 @@ type UATVariable struct {
 	Source string `json:"source"`          // "task", "environment" or "missing"
 	Secret bool   `json:"secret"`          // read from the orchestrator's environment only
 	Used   bool   `json:"used"`            // referenced by the current plan
+	// Browser is true when a replayed step needs the value; api/manual-only names are for the
+	// engineer and do not block the screenshot run.
+	Browser bool `json:"browser"`
 }
 
 // uatVariables lists the placeholders the current plan needs plus any value saved for the task.
 func (r *Router) uatVariables(t *types.Task) []UATVariable {
 	var names []string
-	used := map[string]bool{}
+	used, browser := map[string]bool{}, map[string]bool{}
 	if plan, err := uat.ExtractPlan(r.readStageDoc(t.ID, "uat_verification")); err == nil {
-		for _, n := range plan.Placeholders() {
+		names, browser = plan.Placeholders()
+		for _, n := range names {
 			used[n] = true
-			names = append(names, n)
 		}
 	}
 	vars := uatVars(t)
@@ -421,7 +424,7 @@ func (r *Router) uatVariables(t *types.Task) []UATVariable {
 	sort.Strings(extra)
 	out := make([]UATVariable, 0, len(names)+len(extra))
 	for _, n := range append(names, extra...) {
-		v := UATVariable{Name: n, Secret: uat.IsSecretName(n), Used: used[n], Source: "missing"}
+		v := UATVariable{Name: n, Secret: uat.IsSecretName(n), Used: used[n], Browser: browser[n], Source: "missing"}
 		if val, ok := vars[n]; ok && val != "" && !v.Secret {
 			v.Value, v.Source = val, "task"
 		} else if _, ok := os.LookupEnv(n); ok && strings.HasPrefix(n, "UAT_") {
@@ -525,6 +528,12 @@ func (r *Router) uatGuideStatus(t *types.Task) map[string]interface{} {
 	if status == "" {
 		status = "NOT_STARTED"
 	}
+	var seedCheck *uat.SeedCheck
+	seed, _ := uat.ExtractSeed(r.readStageDoc(t.ID, "uat_verification"))
+	if seed != nil {
+		c := seed.Check(context.Background()) // lint + parse only; the script is never executed here
+		seedCheck = &c
+	}
 	apps := r.taskApps(t)
 	cases, source, atddErr := r.loadATDD(t)
 	scope := atdd.UATScope(cases)
@@ -564,6 +573,8 @@ func (r *Router) uatGuideStatus(t *types.Task) map[string]interface{} {
 		"html_path":           exists(uatGuideHTML),
 		"apps":                apps,
 		"variables":           r.uatVariables(t),
+		"seed":                seed,
+		"seed_check":          seedCheck,
 		"atdd": map[string]interface{}{
 			"source": source, "path": t.Metadata["uat_atdd_path"], "error": atddError,
 			"total": len(cases), "in_scope": len(scope), "sanity": sanity, "cases": list,

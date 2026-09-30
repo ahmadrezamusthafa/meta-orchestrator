@@ -223,25 +223,30 @@ func ValidVarName(name string) bool { return varName.MatchString(name) }
 
 var varName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
 
-// Placeholders lists every ${NAME} the plan uses, in first-use order.
-func (p *Plan) Placeholders() []string {
-	var out []string
+// Placeholders lists every ${NAME} the plan uses, in first-use order, and which of them a
+// browser-driven step needs. Names used only by api/manual steps are for the engineer; the
+// screenshot run does not need them.
+func (p *Plan) Placeholders() (names []string, browser map[string]bool) {
 	seen := map[string]bool{}
-	add := func(v string) {
+	browser = map[string]bool{}
+	add := func(v string, automated bool) {
 		for _, m := range placeholder.FindAllStringSubmatch(v, -1) {
 			if !seen[m[1]] {
 				seen[m[1]] = true
-				out = append(out, m[1])
+				names = append(names, m[1])
+			}
+			if automated {
+				browser[m[1]] = true
 			}
 		}
 	}
 	for _, s := range p.Scenarios {
 		for _, st := range s.Steps {
-			add(st.Target)
-			add(st.Value)
+			add(st.Target, st.Automated())
+			add(st.Value, st.Automated())
 		}
 	}
-	return out
+	return names, browser
 }
 
 // Fill substitutes test-data values into the plan so the runner opens the real record and the

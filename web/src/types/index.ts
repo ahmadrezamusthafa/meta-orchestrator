@@ -122,6 +122,7 @@ export interface UATVariableDTO {
   source: 'task' | 'environment' | 'missing' | string
   secret: boolean
   used: boolean
+  browser: boolean
 }
 
 export interface UATGuideStatusDTO {
@@ -136,6 +137,11 @@ export interface UATGuideStatusDTO {
   html_path?: string
   apps: UATAppDTO[]
   variables?: UATVariableDTO[]
+  seed?: { language?: string; run?: string; script: string } | null
+  seed_check?: {
+    issues: { severity: 'error' | 'warning' | string; line?: number; message: string }[]
+    syntax: { checked: boolean; ok: boolean; tool?: string; message?: string }
+  } | null
   atdd: { source: string; path?: string; error?: string; total: number; in_scope: number; sanity: number; cases: UATScopeCaseDTO[] }
   coverage: { planned?: string; missing?: string[] }
 }
