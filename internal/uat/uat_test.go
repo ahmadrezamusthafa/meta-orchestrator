@@ -304,3 +304,10 @@ func TestSeedLintCatchesUnsafeAndAmbiguousScripts(t *testing.T) {
 		}
 	}
 }
+
+func TestSeedRunDropsTrailingComment(t *testing.T) {
+	s, ok := ExtractSeed("```uat-seed ruby\n# run: bundle exec rails runner tmp/uat_seed.rb      # 1) dry run: read-only\nputs 1\n```")
+	if !ok || s.Run != "bundle exec rails runner tmp/uat_seed.rb" {
+		t.Fatalf("run = %q", s.Run)
+	}
+}

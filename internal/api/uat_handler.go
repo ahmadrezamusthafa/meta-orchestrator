@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -228,8 +229,10 @@ func (r *Router) setUATStatus(taskID, status, errMsg string, extra map[string]st
 	r.broadcastTask(r.taskSnapshot(taskID))
 }
 
-// startUATGuide generates the guide in the background unless a run is already in progress.
-func (r *Router) startUATGuide(taskID string) bool {
+// startUATGuide generates the guide in the background unless a run is already in progress. With
+// rerender it keeps the last screenshots and only rewrites the guide (e.g. with a fresh data set).
+func (r *Router) startUATGuide(taskID string, rerender ...bool) bool {
+	again := len(rerender) > 0 && rerender[0]
 	key := "uat:" + taskID
 	if _, busy := r.busyOps.LoadOrStore(key, true); busy {
 		return false
@@ -237,7 +240,7 @@ func (r *Router) startUATGuide(taskID string) bool {
 	r.setUATStatus(taskID, "GENERATING", "", nil)
 	go func() {
 		defer r.busyOps.Delete(key)
-		r.generateUATGuide(context.Background(), taskID)
+		r.generateUATGuide(context.Background(), taskID, again)
 	}()
 	return true
 }
@@ -254,7 +257,7 @@ func (r *Router) writeArtifact(taskID, name string, data []byte) error {
 }
 
 // generateUATGuide builds the guide from the latest uat_verification output and the ATDD sheet.
-func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
+func (r *Router) generateUATGuide(ctx context.Context, taskID string, rerender bool) {
 	fail := func(msg string) {
 		r.setUATStatus(taskID, "FAILED", msg, nil)
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindError, Content: "UAT guide not generated: " + msg})
@@ -271,7 +274,10 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 	apps := r.taskApps(t)
 	cases, source, atddErr := r.loadATDD(t)
 	cov := uat.ApplyCoverage(plan, atdd.UATScope(cases), apps)
-	plan.Fill(uatVars(t)) // test-data ids from the UAT Guide tab; secrets stay in the environment
+	vars := uatVars(t)
+	dataNames, _ := plan.Placeholders()
+	dataUse := plan.ScenarioPlaceholders()
+	plan.Fill(vars) // test-data ids from the UAT Guide tab; secrets stay in the environment
 
 	appOf := map[string]uat.App{}
 	for _, a := range apps {
@@ -304,12 +310,38 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 		fail(err.Error())
 		return
 	}
-	_ = os.RemoveAll(shotDir) // screenshots always match the current plan
+	var lastResults []uat.StepResult
+	if rerender {
+		if p, err := r.resolveArtifactPath(taskID, uatResultsDoc); err == nil {
+			if raw, err := os.ReadFile(p); err == nil {
+				_ = json.Unmarshal(raw, &lastResults)
+			}
+		}
+		rerender = len(lastResults) > 0 // nothing captured yet: capture now
+	}
+	if !rerender {
+		_ = os.RemoveAll(shotDir) // screenshots always match the current plan
+	}
 
 	meta := uat.GuideMeta{TaskID: taskID, JiraKey: t.Metadata["jira_key"], JiraURL: t.Metadata["jira_url"], ATDDSource: source,
 		GeneratedAt: time.Now(), ImageURL: func(file string) string {
 			return fmt.Sprintf("/api/v1/artifacts/%s/%s/%s", url.PathEscape(taskID), uatShotsDir, url.PathEscape(file))
 		}}
+	meta.DataTag = vars[uatSeedTagVar]
+	for _, n := range dataNames {
+		row := uat.TestDataRow{Name: n, Secret: uat.IsSecretName(n)}
+		if !row.Secret {
+			row.Value = vars[n]
+		}
+		for _, s := range plan.Scenarios {
+			for _, used := range dataUse[s.ID] {
+				if used == n {
+					row.UsedIn = append(row.UsedIn, s.ID)
+				}
+			}
+		}
+		meta.TestData = append(meta.TestData, row)
+	}
 	var notes []string
 	if atddErr != nil {
 		notes = append(notes, "The ATDD sheet could not be read ("+atddErr.Error()+"), so coverage could not be checked.")
@@ -352,7 +384,9 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 		notes = append(notes, "No environment URL is set for "+strings.Join(names, ", ")+", so those scenarios are shown as step cards instead of real screens. Set it in the UAT Guide tab and regenerate.")
 	}
 	var results []uat.StepResult
-	if len(job.Scenarios) > 0 {
+	if rerender {
+		results = lastResults
+	} else if len(job.Scenarios) > 0 {
 		job.OutDir, job.IgnoreHTTPS = shotDir, t.Metadata["uat_ignore_https"] == "true"
 		job.Label = strings.Join(nonEmpty(taskID, t.Metadata["jira_key"], "UAT"), " · ")
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
@@ -360,6 +394,9 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 		results, err = r.screenshotRunner().Capture(ctx, job)
 		if err != nil {
 			notes = append(notes, "Screenshots could not be captured ("+err.Error()+"). The written steps are complete; verify them by hand.")
+		}
+		if raw, err := json.Marshal(results); err == nil {
+			_ = r.writeArtifact(taskID, uatResultsDoc, raw)
 		}
 	}
 	notes = append(notes, uatResultNotes(results)...)
@@ -379,6 +416,17 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 	status := "READY"
 	extra := map[string]string{"uat_coverage": fmt.Sprintf("%d/%d", cov.Planned, len(cov.Cases)),
 		"uat_coverage_missing": strings.Join(cov.Missing, ",")}
+	if !rerender {
+		// The capture really clicks through staging: records a replayed scenario acted on (paid,
+		// voided, saved…) are no longer in their starting state for testers.
+		usedBy, usedVars := consumedData(job, results, dataUse)
+		extra["uat_data_used_at"] = ""
+		if len(usedBy) > 0 {
+			extra["uat_data_used_at"] = time.Now().Format(time.RFC3339)
+		}
+		extra["uat_data_used_by"] = strings.Join(usedBy, ",")
+		extra["uat_data_used_vars"] = strings.Join(usedVars, ",")
+	}
 	r.setUATStatus(taskID, status, meta.Note, extra)
 	note := fmt.Sprintf("UAT guide ready: %d scenario(s), %d step(s), %d screenshot(s).", len(scenarios), sum.Steps, sum.Captured)
 	if len(cov.Cases) > 0 {
@@ -393,6 +441,57 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 		note += fmt.Sprintf(" %d step(s) need to be verified by hand.", sum.Failed)
 	}
 	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: note + " Open the UAT Guide tab to review or download it."})
+}
+
+const (
+	uatResultsDoc = "uat/results.json" // the last capture's step results, reused by a re-render
+	uatSeedTagVar = "UAT_SEED_TAG"     // the seed script's data-set tag, pasted with its output
+)
+
+// mutatingActions change data in the application when replayed.
+var mutatingActions = map[string]bool{uat.ActionClick: true, uat.ActionFill: true, uat.ActionSelect: true, uat.ActionCheck: true, uat.ActionPress: true}
+
+// consumedData lists the replayed scenarios that acted on test data, and the placeholders they used.
+func consumedData(job uat.CaptureJob, results []uat.StepResult, dataUse map[string][]string) (scenarios, vars []string) {
+	acted := map[string]bool{}
+	for _, res := range results {
+		acted[fmt.Sprintf("%s#%d", res.Scenario, res.Step)] = res.OK && !res.Skipped
+	}
+	seen := map[string]bool{}
+	for _, js := range job.Scenarios {
+		if !js.Replay || len(dataUse[js.ID]) == 0 {
+			continue
+		}
+		for i, st := range js.Steps {
+			if mutatingActions[st.Action] && acted[fmt.Sprintf("%s#%d", js.ID, i+1)] {
+				scenarios = append(scenarios, js.ID)
+				for _, v := range dataUse[js.ID] {
+					if !seen[v] && !uat.IsSecretName(v) {
+						seen[v] = true
+						vars = append(vars, v)
+					}
+				}
+				break
+			}
+		}
+	}
+	return scenarios, vars
+}
+
+// nextSeedTag is the tag of the next fresh data set: 01 → 02, uat-7 → uat-8, abc → abc-2.
+func nextSeedTag(tag string) string {
+	if tag == "" {
+		return "02"
+	}
+	i := len(tag)
+	for i > 0 && tag[i-1] >= '0' && tag[i-1] <= '9' {
+		i--
+	}
+	if i == len(tag) {
+		return tag + "-2"
+	}
+	n, _ := strconv.Atoi(tag[i:])
+	return tag[:i] + fmt.Sprintf("%0*d", len(tag)-i, n+1)
 }
 
 func nonEmpty(values ...string) []string {
@@ -428,6 +527,8 @@ type UATVariable struct {
 	// Browser is true when a replayed step needs the value; api/manual-only names are for the
 	// engineer and do not block the screenshot run.
 	Browser bool `json:"browser"`
+	// Consumed is true when the last capture acted on this record, so testers need a fresh one.
+	Consumed bool `json:"consumed,omitempty"`
 }
 
 // uatVariables lists the placeholders the current plan needs plus any value saved for the task.
@@ -442,15 +543,19 @@ func (r *Router) uatVariables(t *types.Task) []UATVariable {
 	}
 	vars := uatVars(t)
 	var extra []string
+	consumed := map[string]bool{}
+	for _, n := range strings.Split(t.Metadata["uat_data_used_vars"], ",") {
+		consumed[n] = n != ""
+	}
 	for n := range vars {
-		if !used[n] {
+		if !used[n] && n != uatSeedTagVar {
 			extra = append(extra, n)
 		}
 	}
 	sort.Strings(extra)
 	out := make([]UATVariable, 0, len(names)+len(extra))
 	for _, n := range append(names, extra...) {
-		v := UATVariable{Name: n, Secret: uat.IsSecretName(n), Used: used[n], Browser: browser[n], Source: "missing"}
+		v := UATVariable{Name: n, Secret: uat.IsSecretName(n), Used: used[n], Browser: browser[n], Source: "missing", Consumed: consumed[n]}
 		if val, ok := vars[n]; ok && val != "" && !v.Secret {
 			v.Value, v.Source = val, "task"
 		} else if _, ok := os.LookupEnv(n); ok && strings.HasPrefix(n, "UAT_") {
@@ -459,6 +564,33 @@ func (r *Router) uatVariables(t *types.Task) []UATVariable {
 		out = append(out, v)
 	}
 	return out
+}
+
+// UATDataSet is the test data a task's guide uses and whether a capture has used it up.
+type UATDataSet struct {
+	Tag     string   `json:"tag,omitempty"`
+	NextTag string   `json:"next_tag"`
+	SavedAt string   `json:"saved_at,omitempty"`
+	UsedAt  string   `json:"used_at,omitempty"` // the capture that acted on it
+	UsedBy  []string `json:"used_by,omitempty"` // scenarios that changed their records
+	UsedIn  []string `json:"used_vars,omitempty"`
+	Refresh string   `json:"refresh_command,omitempty"` // seed command for a fresh set
+}
+
+func (r *Router) uatDataSet(t *types.Task, seed *uat.Seed) UATDataSet {
+	split := func(s string) []string {
+		if s == "" {
+			return nil
+		}
+		return strings.Split(s, ",")
+	}
+	tag := t.Metadata[uatVarPrefix+uatSeedTagVar]
+	d := UATDataSet{Tag: tag, NextTag: nextSeedTag(tag), SavedAt: t.Metadata["uat_data_saved_at"], UsedAt: t.Metadata["uat_data_used_at"],
+		UsedBy: split(t.Metadata["uat_data_used_by"]), UsedIn: split(t.Metadata["uat_data_used_vars"])}
+	if seed != nil && seed.Run != "" {
+		d.Refresh = fmt.Sprintf("%s=1 %s=%s %s", uat.SeedApplyEnv, uatSeedTagVar, d.NextTag, seed.Run)
+	}
+	return d
 }
 
 // uatResultNotes explains runs that reached the wrong page or lacked test data, which otherwise
@@ -650,6 +782,9 @@ type UATGuideRequest struct {
 	StorageState *string `json:"storage_state,omitempty"`
 	// Only save the settings; do not regenerate.
 	SaveOnly bool `json:"save_only,omitempty"`
+	// Rewrite the guide with the current settings (e.g. a fresh data set) and keep the last
+	// screenshots, so the new records are not used up by another capture.
+	Rerender bool `json:"rerender,omitempty"`
 }
 
 // handleTaskUATGuide serves GET (status) and POST (settings + regenerate) /api/v1/tasks/{id}/uat-guide.
@@ -671,7 +806,7 @@ func (r *Router) handleTaskUATGuide(w http.ResponseWriter, req *http.Request, t 
 				r.writeError(w, http.StatusConflict, "run the uat_verification stage first — the guide is built from its plan")
 				return
 			}
-			if !r.startUATGuide(t.ID) {
+			if !r.startUATGuide(t.ID, body.Rerender) {
 				r.writeError(w, http.StatusConflict, "the UAT guide is already being generated")
 				return
 			}
@@ -743,6 +878,7 @@ func (r *Router) uatGuideStatus(t *types.Task) map[string]interface{} {
 		"apps":                apps,
 		"variables":           r.uatVariables(t),
 		"sessions":            r.uatSessions(t, apps),
+		"test_data":           r.uatDataSet(t, seed),
 		"seed":                seed,
 		"seed_check":          seedCheck,
 		"atdd": map[string]interface{}{
@@ -837,11 +973,21 @@ func (r *Router) applyUATSettings(taskID string, body UATGuideRequest) error {
 		set("uat_app."+id+".url", a.URL)
 		set("uat_app."+id+".storage_state", a.StorageState)
 	}
+	changed := false
 	for name, v := range body.Variables {
-		if v = strings.TrimSpace(v); v == "" {
+		v = strings.TrimSpace(v)
+		changed = changed || t.Metadata[uatVarPrefix+name] != v
+		if v == "" {
 			delete(t.Metadata, uatVarPrefix+name)
 		} else {
 			t.Metadata[uatVarPrefix+name] = v
+		}
+	}
+	if changed {
+		// New values are a fresh data set: nothing has used them up yet.
+		t.Metadata["uat_data_saved_at"] = time.Now().Format(time.RFC3339)
+		for _, k := range []string{"uat_data_used_at", "uat_data_used_by", "uat_data_used_vars"} {
+			delete(t.Metadata, k)
 		}
 	}
 	if body.IgnoreHTTPS != nil {

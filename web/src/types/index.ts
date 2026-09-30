@@ -123,6 +123,7 @@ export interface UATVariableDTO {
   secret: boolean
   used: boolean
   browser: boolean
+  consumed?: boolean
 }
 
 export interface UATGuideStatusDTO {
@@ -137,6 +138,7 @@ export interface UATGuideStatusDTO {
   html_path?: string
   apps: UATAppDTO[]
   variables?: UATVariableDTO[]
+  test_data?: { tag?: string; next_tag: string; saved_at?: string; used_at?: string; used_by?: string[]; used_vars?: string[]; refresh_command?: string }
   sessions?: { app: string; source: 'task' | 'shared' | 'none' | string; saved_at?: string; login?: 'waiting' | 'ok' | 'failed' | string; error?: string }[]
   seed?: { language?: string; run?: string; script: string } | null
   seed_check?: {
@@ -153,6 +155,7 @@ export interface UATGuideSettings {
   variables?: Record<string, string>
   ignore_https_errors?: boolean
   save_only?: boolean
+  rerender?: boolean
 }
 
 export interface TaskArtifactDTO {

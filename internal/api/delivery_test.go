@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -332,5 +333,89 @@ func TestUATSignInSavesASharedSession(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("session file must be removed: %v", err)
+	}
+}
+
+// consumingStub reports every step as replayed successfully, like a capture that clicked through.
+type consumingStub struct{ stubRunner }
+
+func (s *consumingStub) Capture(_ context.Context, job uat.CaptureJob) ([]uat.StepResult, error) {
+	s.job = job
+	_ = os.MkdirAll(job.OutDir, 0o755)
+	var out []uat.StepResult
+	for _, js := range job.Scenarios {
+		for i := range js.Steps {
+			name := fmt.Sprintf("%s-%02d.png", js.ID, i+1)
+			_ = os.WriteFile(filepath.Join(job.OutDir, name), []byte("png"), 0o644)
+			out = append(out, uat.StepResult{Scenario: js.ID, Step: i + 1, OK: true, Screenshot: name})
+		}
+	}
+	return out, nil
+}
+
+func TestUATDataSetUsedByCaptureAndRefreshedWithoutRecapture(t *testing.T) {
+	r := NewRouter(RouterConfig{RootDir: t.TempDir()})
+	stub := &consumingStub{}
+	r.uatRunner = stub
+	r.mu.Lock()
+	r.tasks["TASK-8"] = &types.Task{ID: "TASK-8", Title: "Void", CurrentStageID: "uat_verification", State: types.TaskStateWaitingGateApproval,
+		Metadata: map[string]string{"uat_app.subscription_backyard.url": "https://backyard.example.com/billing"}}
+	r.mu.Unlock()
+	r.saveStageDocument("TASK-8", "uat_verification", "m", "```uat-plan\n"+
+		`{"feature":"Void","test_data":["${UAT_PI_ID}: an unpaid PI"],"scenarios":[{"id":"S1","title":"Void PI ${UAT_PI_ID}","app":"subscription_backyard","steps":[`+
+		`{"action":"goto","target":"/proforma-invoices/${UAT_PI_ID}"},{"action":"click","target":"text=Void"}]}]}`+"\n```\n\n"+
+		"```uat-seed ruby\n# run: bundle exec rails runner tmp/uat_seed.rb   # dry run\nabort if Rails.env.production?\n```\n")
+	wait := func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if st := r.taskSnapshot("TASK-8").Metadata["uat_guide_status"]; st == "READY" || st == "FAILED" {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-8/uat-guide", `{"variables":{"UAT_PI_ID":"4242","UAT_SEED_TAG":"01"}}`); w.Code != 200 {
+		t.Fatalf("generate → %d %s", w.Code, w.Body.String())
+	}
+	wait()
+	guide := do(r, http.MethodGet, "/api/v1/artifacts/TASK-8/uat/UAT_GUIDE.md", "").Body.String()
+	for _, want := range []string{"Test data for this run** (data set `01`)", "| `UAT_PI_ID` | `4242` | S1 |", "`4242` (UAT_PI_ID): an unpaid PI", "Void PI 4242"} {
+		if !strings.Contains(guide, want) {
+			t.Errorf("guide missing %q", want)
+		}
+	}
+	if strings.Contains(guide, "${UAT_PI_ID}") {
+		t.Errorf("a saved value must replace its placeholder everywhere in the guide")
+	}
+	w := do(r, http.MethodGet, "/api/v1/tasks/TASK-8/uat-guide", "")
+	if !strings.Contains(w.Body.String(), `"used_by":["S1"]`) || !strings.Contains(w.Body.String(), `"refresh_command":"UAT_SEED_APPLY=1 UAT_SEED_TAG=02 bundle exec rails runner tmp/uat_seed.rb"`) ||
+		!strings.Contains(w.Body.String(), `"consumed":true`) {
+		t.Fatalf("the capture clicked through S1, so its data set is used up: %s", w.Body.String())
+	}
+
+	// A fresh set, written into the guide without another capture.
+	captures := len(stub.job.Scenarios)
+	stub.job = uat.CaptureJob{}
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-8/uat-guide", `{"rerender":true,"variables":{"UAT_PI_ID":"5151","UAT_SEED_TAG":"02"}}`); w.Code != 200 {
+		t.Fatalf("rerender → %d %s", w.Code, w.Body.String())
+	}
+	wait()
+	if len(stub.job.Scenarios) != 0 || captures == 0 {
+		t.Fatalf("a re-render must not capture again: %+v", stub.job)
+	}
+	guide = do(r, http.MethodGet, "/api/v1/artifacts/TASK-8/uat/UAT_GUIDE.md", "").Body.String()
+	if !strings.Contains(guide, "| `UAT_PI_ID` | `5151` | S1 |") || !strings.Contains(guide, "/uat/screenshots/S1-02.png") {
+		t.Fatalf("re-rendered guide must carry the new data and keep the screenshots:\n%s", guide)
+	}
+	if w := do(r, http.MethodGet, "/api/v1/tasks/TASK-8/uat-guide", ""); strings.Contains(w.Body.String(), `"used_by"`) {
+		t.Fatalf("a fresh set is not used up: %s", w.Body.String())
+	}
+}
+
+func TestNextSeedTag(t *testing.T) {
+	for in, want := range map[string]string{"": "02", "01": "02", "09": "10", "uat-7": "uat-8", "abc": "abc-2", "run99": "run100"} {
+		if got := nextSeedTag(in); got != want {
+			t.Errorf("nextSeedTag(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

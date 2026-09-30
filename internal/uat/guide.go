@@ -25,6 +25,16 @@ type GuideMeta struct {
 	GeneratedAt time.Time
 	ImageURL    func(file string) string // screenshot link used in the markdown guide
 	Note        string                   // why screenshots are missing, if they are
+	TestData    []TestDataRow            // the values this run used, shown as one table
+	DataTag     string                   // the seed script's UAT_SEED_TAG for this data set
+}
+
+// TestDataRow is one ${NAME} of the plan and the value testers use for it.
+type TestDataRow struct {
+	Name   string
+	Value  string   // empty when not set
+	Secret bool     // a credential: never shown, the tester uses their own
+	UsedIn []string // scenario IDs
 }
 
 // GuideStep is one rendered step: the plan step plus what the runner captured.
@@ -308,8 +318,25 @@ func RenderMarkdown(p *Plan, scenarios []GuideScenario, sum Summary, cov Coverag
 	for _, pre := range p.Preconditions {
 		w("- [ ] %s\n", pre)
 	}
+	if len(meta.TestData) > 0 {
+		b.WriteString("\n**Test data for this run**")
+		if meta.DataTag != "" {
+			w(" (data set `%s`)", meta.DataTag)
+		}
+		b.WriteString("\n\n| Name | Value | Used in |\n|---|---|---|\n")
+		for _, d := range meta.TestData {
+			val := "`" + d.Value + "`"
+			switch {
+			case d.Secret:
+				val = "_your own — never written here_"
+			case d.Value == "":
+				val = "**not set — ask the engineer**"
+			}
+			w("| `%s` | %s | %s |\n", d.Name, cell(val), strings.Join(d.UsedIn, ", "))
+		}
+	}
 	if len(p.TestData) > 0 {
-		b.WriteString("\n**Test data to use**\n\n")
+		b.WriteString("\n**What each record is**\n\n")
 		for _, d := range p.TestData {
 			w("- %s\n", d)
 		}

@@ -153,7 +153,14 @@ async function requestSeed() {
     requesting.value = false
   }
 }
-const extraVarNames = computed(() => Object.keys(vars.value).filter((n) => !testDataVars.value.some((v) => v.name === n)))
+const extraVarNames = computed(() => Object.keys(vars.value).filter((n) => n !== 'UAT_SEED_TAG' && !testDataVars.value.some((v) => v.name === n)))
+const dataSet = computed(() => status.value?.test_data || null)
+const dataUsed = computed(() => !!dataSet.value?.used_at && (dataSet.value?.used_by?.length || 0) > 0)
+const when = (iso?: string) => (iso ? new Date(iso).toLocaleString() : '')
+
+function copyText(text: string, what: string) {
+  navigator.clipboard.writeText(text).then(() => toast.success(`${what} copied`, text)).catch(() => toast.error('Could not copy', text))
+}
 const placeholderOf = (name: string) => '${' + name + '}'
 
 function addVar() {
@@ -233,7 +240,7 @@ async function load() {
   }
 }
 
-async function submit(saveOnly: boolean) {
+async function submit(saveOnly: boolean, rerender = false) {
   if (starting.value || generating.value) return
   starting.value = true
   try {
@@ -246,9 +253,11 @@ async function submit(saveOnly: boolean) {
       },
       ignore_https_errors: ignoreHTTPS.value,
       save_only: saveOnly,
+      rerender,
     })
     showSettings.value = false
     if (saveOnly) toast.success('UAT settings saved', 'They apply the next time the guide is generated.')
+    else if (rerender) toast.info('Updating the guide', 'The new test data is written into the guide; the screenshots are kept.')
     else toast.info('Generating UAT guide', 'Replaying each scenario in its application to capture screenshots.')
   } catch (err: any) {
     toast.error(saveOnly ? 'Could not save the UAT settings' : 'Could not generate the UAT guide', err?.message || 'Unknown error')
@@ -374,6 +383,42 @@ onBeforeUnmount(() => poll && clearInterval(poll))
               this task and shown in the guide, so use test records only. Only values used on a screen are needed for screenshots.
             </p>
 
+            <!-- Which data set the guide uses, and whether the last capture used it up. -->
+            <div v-if="dataSet" class="p-3 rounded-lg border text-[11px] space-y-2"
+              :class="dataUsed ? 'border-amber-800/70 bg-amber-950/30 text-amber-100' : 'border-slate-800 bg-slate-950/60 text-slate-400'">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-semibold text-slate-200">Data set {{ dataSet.tag ? `“${dataSet.tag}”` : '(no tag yet)' }}</span>
+                <span v-if="dataSet.saved_at">· values saved {{ when(dataSet.saved_at) }}</span>
+                <span v-if="!dataUsed && dataSet.saved_at" class="text-emerald-300">· fresh — not used by a capture yet</span>
+              </div>
+              <template v-if="dataUsed">
+                <p class="leading-relaxed">
+                  The screenshot capture on {{ when(dataSet.used_at) }} really ran <span class="font-mono">{{ dataSet.used_by!.join(', ') }}</span> in the
+                  environment, so their records were paid, voided or changed and are no longer in their starting state. Testers need a fresh set —
+                  nothing has to be reset or deleted:
+                </p>
+                <ol class="list-decimal pl-5 space-y-1">
+                  <li>Create a new data set<template v-if="dataSet.refresh_command">:
+                    <code class="font-mono text-amber-50">{{ dataSet.refresh_command }}</code>
+                    <button type="button" class="ml-1 underline hover:text-white" @click="copyText(dataSet.refresh_command!, 'Command')">Copy</button></template>
+                    <template v-else> — run the seed script again with <code class="font-mono">UAT_SEED_TAG={{ dataSet.next_tag }}</code>.</template>
+                  </li>
+                  <li>Paste its output below and click <em>Apply pasted values</em>.</li>
+                  <li>Click <strong>Update guide with new data</strong>: it saves the values and writes them into the guide, keeping the screenshots, so the new records stay untouched for testers.</li>
+                </ol>
+              </template>
+              <p v-else-if="dataSet.saved_at" class="leading-relaxed">
+                Regenerating captures the screens by really running the scenarios, which uses these records up. To hand testers untouched data, capture first,
+                then create a fresh set and use <strong>Update guide with new data</strong>.
+              </p>
+              <div v-if="status?.guide_path" class="flex justify-end">
+                <button type="button" @click="submit(false, true)" :disabled="starting || generating"
+                  class="h-7 px-2.5 rounded-lg border border-slate-600 bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-100 disabled:opacity-50">
+                  Update guide with new data (keep screenshots)
+                </button>
+              </div>
+            </div>
+
             <!-- Prepare every record at once with the agent's seed script, then paste its output. -->
             <div class="p-3 rounded-lg border border-slate-800 bg-slate-950/60 space-y-2">
               <div class="flex flex-wrap items-center gap-2">
@@ -459,6 +504,7 @@ onBeforeUnmount(() => poll && clearInterval(poll))
                       class="w-full h-9 px-3 rounded-lg bg-slate-950 border text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
                       :class="v.browser && !vars[v.name] && v.source !== 'environment' ? 'border-amber-700' : 'border-slate-700'" />
                     <span class="text-[11px] whitespace-nowrap text-slate-500">
+                      <span v-if="v.consumed" class="text-amber-300" title="The last capture acted on this record">used by capture · </span>
                       {{ !v.used ? 'not in plan' : v.source === 'environment' && !vars[v.name] ? 'from environment' : v.browser ? 'screen step' : 'API / engineer step' }}
                       <button v-if="!v.used" type="button" class="ml-1 text-slate-500 hover:text-rose-300" :aria-label="`Remove ${v.name}`" @click="removeVar(v.name)">
                         <X class="w-3.5 h-3.5 inline" />

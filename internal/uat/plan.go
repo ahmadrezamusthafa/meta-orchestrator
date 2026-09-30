@@ -223,6 +223,25 @@ func ValidVarName(name string) bool { return varName.MatchString(name) }
 
 var varName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
 
+// ScenarioPlaceholders maps each scenario to the ${NAME}s its steps use.
+func (p *Plan) ScenarioPlaceholders() map[string][]string {
+	out := map[string][]string{}
+	for _, s := range p.Scenarios {
+		seen := map[string]bool{}
+		for _, st := range s.Steps {
+			for _, v := range []string{st.Target, st.Value} {
+				for _, m := range placeholder.FindAllStringSubmatch(v, -1) {
+					if !seen[m[1]] {
+						seen[m[1]] = true
+						out[s.ID] = append(out[s.ID], m[1])
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
 // Placeholders lists every ${NAME} the plan uses, in first-use order, and which of them a
 // browser-driven step needs. Names used only by api/manual steps are for the engineer; the
 // screenshot run does not need them.
@@ -255,17 +274,29 @@ func (p *Plan) Fill(vars map[string]string) {
 	if len(vars) == 0 {
 		return
 	}
-	sub := func(v string) string {
+	fill := func(v string, labelled bool) string {
 		return placeholder.ReplaceAllStringFunc(v, func(m string) string {
 			name := m[2 : len(m)-1]
 			if val, ok := vars[name]; ok && val != "" && !IsSecretName(name) {
+				if labelled {
+					return "`" + val + "` (" + name + ")" // the test-data list keeps the name next to its value
+				}
 				return val
 			}
 			return m
 		})
 	}
+	sub := func(v string) string { return fill(v, false) }
+	p.Objective = sub(p.Objective)
+	for i := range p.Preconditions {
+		p.Preconditions[i] = sub(p.Preconditions[i])
+	}
+	for i := range p.TestData {
+		p.TestData[i] = fill(p.TestData[i], true)
+	}
 	for i := range p.Scenarios {
 		s := &p.Scenarios[i]
+		s.Title, s.AcceptanceCriterion, s.ExpectedResult = sub(s.Title), sub(s.AcceptanceCriterion), sub(s.ExpectedResult)
 		for j := range s.Steps {
 			st := &s.Steps[j]
 			st.Target, st.Value, st.Where = sub(st.Target), sub(st.Value), sub(st.Where)

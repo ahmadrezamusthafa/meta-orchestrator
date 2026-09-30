@@ -19,6 +19,7 @@ import (
 const SeedFence = "uat-seed"
 
 var seedBlock = regexp.MustCompile("(?s)```" + SeedFence + `(?:[ \t]+([A-Za-z0-9_+-]+))?[ \t]*\n(.*?)\n\s*` + "```")
+var trailingComment = regexp.MustCompile(`\s+#.*$`)
 var seedRun = regexp.MustCompile(`(?m)^\s*(?:#|//|--)\s*run:\s*(.+?)\s*$`)
 
 // Seed is a script an engineer runs once in the UAT environment to create every test record the
@@ -38,7 +39,8 @@ func ExtractSeed(content string) (*Seed, bool) {
 	}
 	s := &Seed{Language: m[1], Script: m[2]}
 	if r := seedRun.FindStringSubmatch(m[2]); r != nil {
-		s.Run = r[1]
+		s.Run = strings.TrimSpace(trailingComment.ReplaceAllString(r[1], "")) // "cmd   # 1) dry run" → "cmd"
+		s.Run = strings.TrimSpace(strings.TrimPrefix(s.Run, SeedApplyEnv+"=1"))
 	}
 	return s, true
 }
