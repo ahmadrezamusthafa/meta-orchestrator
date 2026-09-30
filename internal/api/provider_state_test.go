@@ -20,7 +20,7 @@ import (
 func isolateProviderState(t *testing.T, path string) {
 	t.Helper()
 	providerAuthStore.mu.Lock()
-	prevState, prevQuotas, prevPath := providerAuthStore.state, providerQuotas, providerStatePath
+	prevState, prevQuotas, prevPath, prevRouter := providerAuthStore.state, providerQuotas, providerStatePath, routerSettingsState
 	prevProviders := append([]ProviderDTO(nil), defaultProviders...)
 	providerAuthStore.state = map[string]*ProviderAuthState{}
 	providerQuotas = map[string]ProviderQuota{}
@@ -29,6 +29,7 @@ func isolateProviderState(t *testing.T, path string) {
 	t.Cleanup(func() {
 		providerAuthStore.mu.Lock()
 		providerAuthStore.state, providerQuotas, providerStatePath = prevState, prevQuotas, prevPath
+		routerSettingsState = prevRouter
 		defaultProviders = prevProviders
 		providerAuthStore.mu.Unlock()
 	})

@@ -131,6 +131,52 @@ func (r *Router) addApprovalRule(taskID string, rule approvalRule) {
 	r.mu.Unlock()
 }
 
+// allowAllLabel is the rule shown on requests the "allow all" bypass answered.
+const allowAllLabel = "everything in this task (allow all)"
+
+func (r *Router) taskAllowsAll(taskID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t := r.tasks[taskID]
+	return t != nil && t.Metadata["approve_all"] == "true"
+}
+
+// setAllowAll turns the task's "allow all" bypass on or off. Turning it on also releases every
+// request of the task that is still waiting for the operator.
+func (r *Router) setAllowAll(taskID string, on bool) bool {
+	r.mu.Lock()
+	t := r.tasks[taskID]
+	if t == nil {
+		r.mu.Unlock()
+		return false
+	}
+	if on {
+		t.Metadata["approve_all"] = "true"
+	} else {
+		delete(t.Metadata, "approve_all")
+	}
+	t.UpdatedAt = time.Now()
+	snap := cloneTask(t)
+	r.mu.Unlock()
+	r.broadcastTask(snap)
+	r.saveBoardNow()
+	if on {
+		r.approvals.mu.Lock()
+		var waiting []*pendingApproval
+		for id, p := range r.approvals.pending {
+			if p.taskID == taskID {
+				waiting = append(waiting, p)
+				delete(r.approvals.pending, id)
+			}
+		}
+		r.approvals.mu.Unlock()
+		for _, p := range waiting {
+			p.ch <- approvalAnswer{decision: types.ApprovalAll}
+		}
+	}
+	return true
+}
+
 // setPendingApprovals updates the count the board shows as "Needs approval".
 func (r *Router) setPendingApprovals(taskID string, delta int) {
 	r.mu.Lock()
@@ -156,6 +202,13 @@ func (r *Router) setPendingApprovals(taskID string, delta int) {
 func (r *Router) approverFor(taskID, turnID string) llm.Approver {
 	return func(ctx context.Context, req llm.ApprovalRequest) llm.ApprovalDecision {
 		summary := approvalSummary(req.ToolName, req.Input)
+		if r.taskAllowsAll(taskID) {
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindApproval, TurnID: turnID, Status: types.ConsoleDone,
+				Content: req.Description, Tool: &types.ConsoleTool{ID: req.ToolUseID, Name: req.ToolName, Input: req.Input},
+				Approval: &types.ConsoleApproval{ID: r.console.nextID("apr"), ToolName: req.ToolName, Summary: summary,
+					RuleLabel: allowAllLabel, Decision: types.ApprovalAutomatic, DecidedAt: time.Now()}})
+			return llm.ApprovalDecision{Allow: true}
+		}
 		for _, rule := range r.taskApprovalRules(taskID) {
 			if rule.matches(req.ToolName, req.Input) {
 				r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindApproval, TurnID: turnID, Status: types.ConsoleDone,
@@ -178,6 +231,14 @@ func (r *Router) approverFor(taskID, turnID string) llm.Approver {
 		r.approvals.pending[p.id] = p
 		r.approvals.mu.Unlock()
 		r.setPendingApprovals(taskID, +1)
+		if r.taskAllowsAll(taskID) { // "allow all" was switched on while this request was being filed
+			r.approvals.mu.Lock()
+			if r.approvals.pending[p.id] == p {
+				delete(r.approvals.pending, p.id)
+				p.ch <- approvalAnswer{decision: types.ApprovalAll}
+			}
+			r.approvals.mu.Unlock()
+		}
 
 		var ans approvalAnswer
 		timer := time.NewTimer(approvalTimeout)
@@ -199,8 +260,9 @@ func (r *Router) approverFor(taskID, turnID string) llm.Approver {
 			r.addApprovalRule(taskID, rule)
 			r.saveBoardNow()
 		}
+		allow := ans.decision == types.ApprovalAllowed || ans.decision == types.ApprovalAlways || ans.decision == types.ApprovalAll
 		status := types.ConsoleDone
-		if ans.decision != types.ApprovalAllowed && ans.decision != types.ApprovalAlways {
+		if !allow {
 			status = types.ConsoleFailed
 		}
 		r.updateEntry(taskID, p.entryID, func(e *types.ConsoleEntry) {
@@ -209,7 +271,6 @@ func (r *Router) approverFor(taskID, turnID string) llm.Approver {
 			e.Approval.Message = ans.message
 			e.Approval.DecidedAt = time.Now()
 		})
-		allow := ans.decision == types.ApprovalAllowed || ans.decision == types.ApprovalAlways
 		msg := ans.message
 		if !allow && ans.decision == types.ApprovalDenied {
 			msg = "The operator denied this action."
@@ -221,12 +282,28 @@ func (r *Router) approverFor(taskID, turnID string) llm.Approver {
 	}
 }
 
-// handleTaskApprovals serves GET /api/v1/tasks/{id}/approvals (pending requests) and
-// POST /api/v1/tasks/{id}/approvals/{approval_id} {"decision":"allow|always|deny","message":""}.
+// handleTaskApprovals serves GET /api/v1/tasks/{id}/approvals (pending requests),
+// POST /api/v1/tasks/{id}/approvals {"allow_all":true|false} (the bypass that answers every request) and
+// POST /api/v1/tasks/{id}/approvals/{approval_id} {"decision":"allow|always|all|deny","message":""}.
 func (r *Router) handleTaskApprovals(w http.ResponseWriter, req *http.Request, taskID string, parts []string) {
 	if len(parts) < 3 || parts[2] == "" {
+		if req.Method == http.MethodPost {
+			var body struct {
+				AllowAll *bool `json:"allow_all"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil || body.AllowAll == nil {
+				r.writeError(w, http.StatusBadRequest, `body must be {"allow_all": true|false}`)
+				return
+			}
+			if !r.setAllowAll(taskID, *body.AllowAll) {
+				r.writeError(w, http.StatusNotFound, "Task not found")
+				return
+			}
+			r.writeJSON(w, http.StatusOK, map[string]interface{}{"task_id": taskID, "allow_all": *body.AllowAll})
+			return
+		}
 		if req.Method != http.MethodGet {
-			r.writeError(w, http.StatusMethodNotAllowed, "GET required")
+			r.writeError(w, http.StatusMethodNotAllowed, "GET or POST required")
 			return
 		}
 		r.approvals.mu.Lock()
@@ -237,7 +314,8 @@ func (r *Router) handleTaskApprovals(w http.ResponseWriter, req *http.Request, t
 			}
 		}
 		r.approvals.mu.Unlock()
-		r.writeJSON(w, http.StatusOK, map[string]interface{}{"task_id": taskID, "pending": ids, "rules": r.taskApprovalRules(taskID)})
+		r.writeJSON(w, http.StatusOK, map[string]interface{}{"task_id": taskID, "pending": ids, "rules": r.taskApprovalRules(taskID),
+			"allow_all": r.taskAllowsAll(taskID)})
 		return
 	}
 	if req.Method != http.MethodPost {
@@ -252,9 +330,10 @@ func (r *Router) handleTaskApprovals(w http.ResponseWriter, req *http.Request, t
 		r.writeError(w, http.StatusBadRequest, "Invalid JSON payload")
 		return
 	}
-	decision := map[string]string{"allow": types.ApprovalAllowed, "always": types.ApprovalAlways, "deny": types.ApprovalDenied}[body.Decision]
+	decision := map[string]string{"allow": types.ApprovalAllowed, "always": types.ApprovalAlways, "all": types.ApprovalAll,
+		"deny": types.ApprovalDenied}[body.Decision]
 	if decision == "" {
-		r.writeError(w, http.StatusBadRequest, `decision must be "allow", "always" or "deny"`)
+		r.writeError(w, http.StatusBadRequest, `decision must be "allow", "always", "all" or "deny"`)
 		return
 	}
 	r.approvals.mu.Lock()
@@ -270,5 +349,8 @@ func (r *Router) handleTaskApprovals(w http.ResponseWriter, req *http.Request, t
 		return
 	}
 	p.ch <- approvalAnswer{decision: decision, message: strings.TrimSpace(body.Message)}
+	if decision == types.ApprovalAll {
+		r.setAllowAll(taskID, true)
+	}
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{"status": decision, "approval_id": p.id, "rule": p.rule.label()})
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { Trash2, Copy, Check, Download } from 'lucide-vue-next'
+import { Trash2, Copy, Check, Download, ShieldAlert, ShieldCheck } from 'lucide-vue-next'
 import { api } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import { useAgentConsole } from '../../composables/useAgentConsole'
@@ -59,6 +59,23 @@ const task = computed(() => c.task.value)
 const stage = computed(() => task.value?.current_stage_id || '')
 const isWaitingGate = computed(() => task.value?.state === 'WAITING_GATE_APPROVAL')
 const showGate = computed(() => isWaitingGate.value && !gateFeedbackMode.value)
+const allowAll = computed(() => task.value?.metadata?.approve_all === 'true')
+const allowAllPending = ref(false)
+
+async function toggleAllowAll() {
+  if (allowAllPending.value) return
+  const next = !allowAll.value
+  if (next && !window.confirm('Allow every action the agent asks for in this task, without asking? Pending requests are allowed too.')) return
+  allowAllPending.value = true
+  try {
+    await api.setAllowAllApprovals(props.taskId, next)
+    emit('task-updated')
+  } catch (err: any) {
+    toast.error('Approval mode', err?.message || 'Could not change the approval mode')
+  } finally {
+    allowAllPending.value = false
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Transcript rows: tool_result entries nest under their tool_use (by tool.id)
@@ -424,6 +441,20 @@ const promptPlaceholder = computed(() =>
             ></span>
             ws {{ wsLabel }}
           </span>
+          <span aria-hidden="true">·</span>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 rounded hover:text-slate-400 focus:outline-none focus-visible:ring-1 focus-visible:ring-slate-500 disabled:opacity-50"
+            :class="allowAll ? 'text-amber-400 hover:text-amber-300' : ''"
+            :disabled="allowAllPending || !task"
+            :aria-pressed="allowAll"
+            :title="allowAll ? 'Every permission request in this task is allowed without asking. Click to ask again.' : 'The agent asks before gated actions. Click to allow all without asking.'"
+            @click="toggleAllowAll"
+          >
+            <ShieldAlert v-if="allowAll" class="h-3 w-3" />
+            <ShieldCheck v-else class="h-3 w-3" />
+            approvals: {{ allowAll ? 'allow all' : 'ask' }}
+          </button>
           <button
             type="button"
             class="ml-auto rounded hover:text-slate-400 focus:outline-none focus-visible:ring-1 focus-visible:ring-slate-500"

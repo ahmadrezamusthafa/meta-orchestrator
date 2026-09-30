@@ -60,6 +60,7 @@ type MatrixCell struct {
 	Samples       int      `json:"samples"`
 	ParetoFront   []string `json:"pareto_front,omitempty"` // "Method@model" candidates not dominated
 	RunnerUp      string   `json:"runner_up,omitempty"`
+	Source        string   `json:"source,omitempty"` // shadow_benchmark (measured) or default (policy)
 }
 
 // BestMethodsMatrix is the router-facing optimal method table.
@@ -213,7 +214,8 @@ func (b *MatrixBuilder) Build(sweepID string, results []CellResult, now time.Tim
 		cell := MatrixCell{StageID: t.Stage, Complexity: t.Complexity, OptimalMethod: w.Result.Cell.Method,
 			WinningModel: w.Result.Cell.Model, ModelTier: w.Result.Cell.Tier, FPVRPercent: round1(w.Result.FPVR * 100),
 			AvgTokens: math.Round(w.Result.AvgTokens), AvgDurationS: round1(w.Result.AvgTTRSeconds),
-			AvgCostUSD: w.Result.AvgCostUSD, Score: math.Round(w.Score*1e4) / 1e4, Samples: w.Result.Samples}
+			AvgCostUSD: w.Result.AvgCostUSD, Score: math.Round(w.Score*1e4) / 1e4, Samples: w.Result.Samples,
+			Source: SourceShadowBenchmark}
 		for _, c := range t.Candidates {
 			if c.Pareto {
 				cell.ParetoFront = append(cell.ParetoFront, c.Label())
@@ -299,10 +301,52 @@ func DefaultMatrix(now time.Time) BestMethodsMatrix {
 			case st == "e2e_validation" || st == "signoff_merge":
 				method, tier = "Superpower", "tier2"
 			}
-			m.Cells = append(m.Cells, MatrixCell{StageID: st, Complexity: cx, OptimalMethod: method, ModelTier: tier})
+			m.Cells = append(m.Cells, MatrixCell{StageID: st, Complexity: cx, OptimalMethod: method, ModelTier: tier,
+				Source: SourceDefault})
 		}
 	}
 	return m
+}
+
+// FillDefaults returns m with every cell tagged by source and any of the 36 canonical cells
+// it lacks taken from DefaultMatrix. It is for display only: the store keeps measured cells
+// alone so the router never mistakes policy for evidence.
+func FillDefaults(m BestMethodsMatrix, now time.Time) BestMethodsMatrix {
+	out := m
+	out.Cells = make([]MatrixCell, 0, len(Stages)*len(Complexities))
+	have := map[[2]string]bool{}
+	for _, c := range m.Cells {
+		if c.Source == "" {
+			c.Source = m.Source
+		}
+		if c.Source == "" {
+			c.Source = SourceDefault
+		}
+		have[[2]string{c.StageID, c.Complexity}] = true
+		out.Cells = append(out.Cells, c)
+	}
+	def := DefaultMatrix(now)
+	for _, c := range def.Cells {
+		if !have[[2]string{c.StageID, c.Complexity}] {
+			out.Cells = append(out.Cells, c)
+		}
+	}
+	if len(m.Cells) == 0 {
+		out.GeneratedAt, out.Source, out.Weights = def.GeneratedAt, def.Source, def.Weights
+	}
+	sortMatrixCells(out.Cells)
+	return out
+}
+
+// MeasuredCells counts cells backed by shadow benchmark samples.
+func (m BestMethodsMatrix) MeasuredCells() int {
+	n := 0
+	for _, c := range m.Cells {
+		if c.Source == SourceShadowBenchmark {
+			n++
+		}
+	}
+	return n
 }
 
 // WriteMatrixFile writes the matrix atomically (temp file + rename).

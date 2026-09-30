@@ -106,6 +106,7 @@ const (
 	ApprovalExpired   = "expired"
 	ApprovalCancelled = "cancelled"
 	ApprovalAutomatic = "auto" // matched a rule the operator saved earlier
+	ApprovalAll       = "all"  // allowed, and every later request in the task is allowed too
 )
 
 // ConsoleApproval is a permission request from the agent and its outcome.

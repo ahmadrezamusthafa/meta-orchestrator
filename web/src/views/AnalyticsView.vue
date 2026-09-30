@@ -278,6 +278,7 @@ const isEmpty = computed(() => !!summary.value && (summary.value.totals?.runs ??
         :cells="benchmarks.matrix ?? []"
         :source="benchmarks.source"
         :generated-at="benchmarks.generated_at"
+        :measured-cells="benchmarks.measured_cells"
       />
     </main>
   </div>

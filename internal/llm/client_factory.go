@@ -120,13 +120,11 @@ func (f *ClientFactory) GetClient(modelStr string) (ProviderClient, string, erro
 		}
 	}
 
+	// An unknown provider is an error, not a silent reroute to Claude: the failover chain then
+	// moves on to the next model the operator actually allowed.
 	client, exists := f.providers[providerName]
-	if !exists {
-		// Fallback to claude
-		client = f.providers["claude"]
-		if client == nil {
-			return nil, "", fmt.Errorf("no provider available for %s", modelStr)
-		}
+	if !exists || client == nil {
+		return nil, "", fmt.Errorf("provider %q is not configured for %s", providerName, modelStr)
 	}
 
 	return client, modelID, nil

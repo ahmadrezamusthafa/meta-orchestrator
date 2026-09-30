@@ -468,7 +468,7 @@ async function addCustomModelToProvider() {
               class="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1 font-mono transition-colors"
             >
               <Plus class="w-3 h-3" />
-              <span>+ Add custom model identifier (e.g. claude-opus-5-5)</span>
+              <span>Add custom model identifier (e.g. claude-opus-5-5)</span>
             </button>
             <div v-else class="flex items-center gap-1.5">
               <input

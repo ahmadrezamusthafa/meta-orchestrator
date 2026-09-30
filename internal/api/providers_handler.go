@@ -144,10 +144,28 @@ var defaultProviders = []ProviderDTO{
 	},
 }
 
-var currentTierMapping = TierMappingDTO{
-	Tier1Reasoning:  TierEntry{ProviderID: "claude", ModelID: "claude-3-5-sonnet-20241022"},
-	Tier2CodeGen:    TierEntry{ProviderID: "claude", ModelID: "claude-3-5-sonnet-20241022"},
-	Tier3LogParsing: TierEntry{ProviderID: "antigravity", ModelID: "gemini-2.0-flash"},
+// tierMapping is the model each tier actually resolves to under the current priority chain.
+func (r *Router) tierMapping() TierMappingDTO {
+	_, tiers := r.strategyRouter.Preview(nil)
+	entry := func(model string) TierEntry {
+		p, m, ok := strings.Cut(model, "/")
+		if !ok {
+			return TierEntry{ProviderID: "claude", ModelID: model}
+		}
+		return TierEntry{ProviderID: p, ModelID: m}
+	}
+	var out TierMappingDTO
+	for _, t := range tiers {
+		switch t.Tier {
+		case router.TierReasoning:
+			out.Tier1Reasoning = entry(t.Model)
+		case router.TierCodeGen:
+			out.Tier2CodeGen = entry(t.Model)
+		case router.TierLogParse:
+			out.Tier3LogParsing = entry(t.Model)
+		}
+	}
+	return out
 }
 
 // getProvidersWithAuthState returns a copy of defaultProviders with saved auth state merged in.
@@ -175,7 +193,7 @@ func (r *Router) handleProviders(w http.ResponseWriter, req *http.Request) {
 	case http.MethodGet:
 		r.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"providers":    getProvidersWithAuthState(),
-			"tier_mapping": currentTierMapping,
+			"tier_mapping": r.tierMapping(),
 			"is_override":  false,
 		})
 
@@ -267,8 +285,9 @@ type AvailableModelDTO struct {
 	ProviderName string  `json:"provider_name"`
 	ModelID      string  `json:"model_id"`
 	ModelName    string  `json:"model_name"`
-	CostPer1k    float64 `json:"cost_per_1k"`
-	LatencyMs    int     `json:"latency_ms"`
+	CostPer1k    float64  `json:"cost_per_1k"`
+	LatencyMs    int      `json:"latency_ms"`
+	Tiers        []string `json:"tiers"` // inferred tier tags, the default when added to the chain
 }
 
 type RouterModeDTO struct {
@@ -281,12 +300,12 @@ var availableRouterModes = []RouterModeDTO{
 	{
 		ID:          "priority_sequence",
 		Name:        "Priority Sequence (Custom Waterfall)",
-		Description: "Cascades through custom prioritized AI models with automatic failover (9router style).",
+		Description: "Always starts at rank #1 of your chain and fails over down the list.",
 	},
 	{
 		ID:          "best_practice",
 		Name:        "Tiered Best Practice",
-		Description: "Routes automatically based on SDLC phase and architectural complexity.",
+		Description: "Picks the best chain model per SDLC stage and complexity; suggests stronger models you have not allowed.",
 	},
 	{
 		ID:          "cost_optimized",
@@ -444,6 +463,7 @@ func getAllAvailableModels() []AvailableModelDTO {
 				ModelName:    name,
 				CostPer1k:    cost,
 				LatencyMs:    latency,
+				Tiers:        router.InferTiers(m),
 			})
 		}
 	}
@@ -454,11 +474,15 @@ func (r *Router) handleRouterSettings(w http.ResponseWriter, req *http.Request) 
 	switch req.Method {
 	case http.MethodGet:
 		settings := r.strategyRouter.GetSettings()
+		preview, tiers := r.strategyRouter.Preview(nil)
 		r.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"mode":            settings.Mode,
 			"priority_chain":  settings.PriorityChain,
+			"default_chain":   router.DefaultPriorityChain(),
 			"available_modes": availableRouterModes,
 			"all_models":      getAllAvailableModels(),
+			"preview":         preview,
+			"tiers":           tiers,
 		})
 
 	case http.MethodPost:
@@ -477,16 +501,38 @@ func (r *Router) handleRouterSettings(w http.ResponseWriter, req *http.Request) 
 				PriorityChain: body.PriorityChain,
 			})
 			registerChainModels(body.PriorityChain)
+			if err := saveRouterSettings(r.strategyRouter.GetSettings()); err != nil {
+				r.writeError(w, http.StatusInternalServerError, fmt.Sprintf("settings applied but not saved: %v", err))
+				return
+			}
 		}
 
+		preview, tiers := r.strategyRouter.Preview(nil)
 		r.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"status":   "updated",
 			"settings": r.strategyRouter.GetSettings(),
+			"preview":  preview,
+			"tiers":    tiers,
 		})
 
 	default:
 		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
+}
+
+// handleRouterPreview shows what an unsaved mode/chain would route to, without applying it.
+func (r *Router) handleRouterPreview(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		r.writeError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	var body router.RouterSettings
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		r.writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+	preview, tiers := r.strategyRouter.Preview(&body)
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{"preview": preview, "tiers": tiers})
 }
 
 func (r *Router) handleRegisterModel(w http.ResponseWriter, req *http.Request) {

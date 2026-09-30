@@ -7,7 +7,7 @@ import type {
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
   UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse,
   PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
-  OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO,
+  OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO, RoutePreviewDTO, TierAssignmentDTO,
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
   TaskActivityResponse, TaskChatResponse, TaskDiffDTO, DiffAgainst, TaskArtifactDTO
 } from '../types'
@@ -152,7 +152,7 @@ export const api = {
     return res.json()
   },
 
-  async decideApproval(taskId: string, approvalId: string, decision: 'allow' | 'always' | 'deny', message?: string): Promise<{ status: string }> {
+  async decideApproval(taskId: string, approvalId: string, decision: 'allow' | 'always' | 'all' | 'deny', message?: string): Promise<{ status: string }> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/approvals/${encodeURIComponent(approvalId)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -161,6 +161,19 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => null)
       throw new Error(err?.error || 'Could not send the decision')
+    }
+    return res.json()
+  },
+
+  async setAllowAllApprovals(taskId: string, allowAll: boolean): Promise<{ allow_all: boolean }> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/approvals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allow_all: allowAll }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => null)
+      throw new Error(err?.error || 'Could not change the approval mode')
     }
     return res.json()
   },
@@ -343,6 +356,16 @@ export const api = {
       const err = await res.json().catch(() => ({ error: 'Failed to update router settings' }))
       throw new Error(err.error || 'Failed to update router settings')
     }
+    return res.json()
+  },
+
+  async previewRouter(payload: { mode: RouterMode; priority_chain: PriorityModelItem[] }): Promise<{ preview: RoutePreviewDTO[]; tiers: TierAssignmentDTO[] }> {
+    const res = await fetch(`${BASE_URL}/router/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!res.ok) throw new Error('Failed to preview routing')
     return res.json()
   },
 

@@ -26,13 +26,14 @@ const remaining = computed(() => {
 const OUTCOME: Record<string, { text: string; cls: string }> = {
   allowed: { text: 'Allowed once', cls: 'text-emerald-400' },
   always: { text: 'Allowed — saved as a rule for this task', cls: 'text-emerald-400' },
+  all: { text: 'Allowed — every later request in this task is allowed too', cls: 'text-amber-300' },
   auto: { text: 'Auto-approved by your rule', cls: 'text-emerald-400/80' },
   denied: { text: 'Denied', cls: 'text-rose-400' },
   expired: { text: 'Expired — no answer in time, so it was denied', cls: 'text-amber-400' },
   cancelled: { text: 'Cancelled — the run stopped first', cls: 'text-slate-500' },
 }
 
-async function decide(decision: 'allow' | 'always' | 'deny') {
+async function decide(decision: 'allow' | 'always' | 'all' | 'deny') {
   if (sending.value) return
   sending.value = true
   error.value = ''
@@ -68,7 +69,7 @@ onUnmounted(() => clearInterval(clock))
   >
     <header class="flex items-center gap-2 px-3 pt-2.5 text-xs">
       <ShieldAlert v-if="pending" class="h-4 w-4 text-amber-400" />
-      <ShieldX v-else-if="a.decision !== 'allowed' && a.decision !== 'always'" class="h-4 w-4 text-rose-400/80" />
+      <ShieldX v-else-if="a.decision !== 'allowed' && a.decision !== 'always' && a.decision !== 'all'" class="h-4 w-4 text-rose-400/80" />
       <ShieldCheck v-else class="h-4 w-4 text-emerald-400" />
       <span :class="pending ? 'font-semibold text-amber-200' : 'text-slate-300'">
         {{ pending ? 'Permission needed' : 'Permission request' }} · {{ a.tool_name }}
@@ -92,6 +93,11 @@ onUnmounted(() => clearInterval(clock))
         <button v-if="a.rule_label" type="button" :disabled="sending" @click="decide('always')" :title="`Don't ask again in this task for ${a.rule_label}`"
           class="h-7 rounded border border-emerald-800 bg-emerald-950/60 px-3 text-xs text-emerald-200 hover:bg-emerald-900/60 disabled:opacity-50">
           Always allow {{ a.rule_label }}
+        </button>
+        <button type="button" :disabled="sending" @click="decide('all')"
+          title="Allow this and every later request in this task without asking. Turn it off from the console footer."
+          class="h-7 rounded border border-amber-700 bg-amber-950/60 px-3 text-xs text-amber-200 hover:bg-amber-900/60 disabled:opacity-50">
+          Allow all
         </button>
         <button type="button" :disabled="sending" @click="denying = true"
           class="h-7 rounded border border-slate-700 bg-slate-800 px-3 text-xs text-slate-200 hover:bg-slate-700 disabled:opacity-50">
