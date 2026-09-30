@@ -40,6 +40,7 @@ type taskConsole struct {
 type consoleHub struct {
 	mu       sync.Mutex
 	consoles map[string]*taskConsole
+	dirty    map[string]bool // transcripts changed since the last persist (console_store.go)
 	seq      atomic.Int64
 }
 
@@ -83,6 +84,7 @@ func (r *Router) addEntry(taskID string, e types.ConsoleEntry) types.ConsoleEntr
 	if over := len(c.entries) - maxConsoleEntries; over > 0 {
 		c.entries = append([]types.ConsoleEntry(nil), c.entries[over:]...)
 	}
+	h.markDirty(taskID)
 	h.mu.Unlock()
 	r.broadcast(taskID, types.EventAgentActivity, e)
 	return e
@@ -100,6 +102,7 @@ func (r *Router) updateEntry(taskID, id string, fn func(e *types.ConsoleEntry)) 
 			c.entries[i].UpdatedAt = time.Now()
 			cp := c.entries[i]
 			out = &cp
+			h.markDirty(taskID)
 			break
 		}
 	}
@@ -118,6 +121,7 @@ func (r *Router) appendDelta(taskID, id, kind, text string) {
 		if c.entries[i].ID == id {
 			c.entries[i].Content += text
 			c.entries[i].UpdatedAt = time.Now()
+			h.markDirty(taskID)
 			break
 		}
 	}
@@ -194,6 +198,7 @@ func (r *Router) endTurn(taskID, turnID string, resp *llm.LLMResponse, model str
 			c.sessionID = resp.SessionID
 		}
 		c.model = servedModel(model, resp)
+		h.markDirty(taskID)
 	}
 }
 
@@ -448,6 +453,7 @@ func (r *Router) handleTaskConsole(w http.ResponseWriter, req *http.Request, tas
 			c := h.get(taskID)
 			c.entries = nil
 			c.sessionID = "" // /clear starts a fresh conversation, like the CLI
+			h.markDirty(taskID)
 			h.mu.Unlock()
 			r.broadcast(taskID, types.EventAgentActivityClear, map[string]string{"task_id": taskID})
 			r.writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})

@@ -239,3 +239,71 @@ func TestJiraSyncSkipsFinishedIssuesAndRecordsEpic(t *testing.T) {
 		t.Fatalf("epic not recorded: %v", task.Metadata)
 	}
 }
+
+func taskActivity(t *testing.T, r *Router, taskID string) activityResp {
+	t.Helper()
+	w := do(r, http.MethodGet, "/api/v1/tasks/"+taskID+"/activity", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("activity → %d %s", w.Code, w.Body.String())
+	}
+	var a activityResp
+	_ = json.Unmarshal(w.Body.Bytes(), &a)
+	return a
+}
+
+func TestConsoleTranscriptSurvivesRestart(t *testing.T) {
+	root := t.TempDir()
+	r := persistentRouter(t, root, nil)
+	task := decodeTask(t, do(r, http.MethodPost, "/api/v1/tasks", `{"title":"Refund endpoint"}`).Body.Bytes())
+	r.addEntry(task.ID, types.ConsoleEntry{Kind: types.ConsoleKindUser, TurnID: "turn_1", Content: "why?"})
+	live := r.addEntry(task.ID, types.ConsoleEntry{Kind: types.ConsoleKindAssistant, TurnID: "turn_1", Status: types.ConsoleStreaming})
+	r.appendDelta(task.ID, live.ID, "assistant", "because")
+	r.addEntry(task.ID, types.ConsoleEntry{Kind: types.ConsoleKindApproval, TurnID: "turn_1",
+		Approval: &types.ConsoleApproval{ID: "apr_1", Decision: types.ApprovalPending}})
+	r.console.mu.Lock()
+	r.console.get(task.ID).sessionID = "sess-1"
+	r.console.markDirty(task.ID)
+	r.console.mu.Unlock()
+	_ = r.Close()
+
+	restarted := persistentRouter(t, root, nil)
+	a := taskActivity(t, restarted, task.ID)
+	var hasUser bool
+	for _, e := range a.Entries {
+		switch {
+		case e.Kind == types.ConsoleKindUser:
+			hasUser = e.Content == "why?"
+		case e.ID == live.ID:
+			if e.Content != "because" || e.Status != types.ConsoleCancelled {
+				t.Fatalf("interrupted stream must keep its text and read as cancelled, got %+v", e)
+			}
+		case e.Kind == types.ConsoleKindApproval:
+			if e.Approval.Decision != types.ApprovalExpired {
+				t.Fatalf("a pending approval cannot survive a restart, got %s", e.Approval.Decision)
+			}
+		}
+	}
+	if !hasUser {
+		t.Fatalf("transcript lost across restart: %+v", a.Entries)
+	}
+	if a.SessionID != "sess-1" || a.Busy {
+		t.Fatalf("expected idle console resuming sess-1, got busy=%v session=%q", a.Busy, a.SessionID)
+	}
+
+	file := filepath.Join(root, ".sdlc", "consoles", task.ID+".json")
+	do(restarted, http.MethodDelete, "/api/v1/tasks/"+task.ID+"/activity", "")
+	restarted.saveConsolesNow()
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("cleared transcript must be removed from disk, stat err=%v", err)
+	}
+
+	restarted.addEntry(task.ID, types.ConsoleEntry{Kind: types.ConsoleKindUser, Content: "again"})
+	restarted.saveConsolesNow()
+	if _, err := os.Stat(file); err != nil {
+		t.Fatalf("transcript not written: %v", err)
+	}
+	do(restarted, http.MethodDelete, "/api/v1/tasks/"+task.ID, "")
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("deleted task's transcript must be removed, stat err=%v", err)
+	}
+}
