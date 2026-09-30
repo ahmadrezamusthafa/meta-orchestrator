@@ -22,10 +22,8 @@ function resolved(v) {
   const left = [...out.matchAll(/\$\{([A-Za-z0-9_]+)\}/g)].map(m => m[1])
   if (left.length) {
     const names = [...new Set(left)]
-    const hint = names.every(n => n.startsWith('UAT_'))
-      ? `set ${names.join(', ')} in the orchestrator's environment to a test record`
-      : `${names.map(n => '${' + n + '}').join(', ')} is not a \${UAT_…} variable the runner can fill`
-    throw new StepError(`needs test data: ${hint}`, 'placeholder')
+    throw new StepError(`needs test data: no value for ${names.map(n => '${' + n + '}').join(', ')} — ` +
+      `fill it under Environments › Test data in the UAT Guide tab (credentials: the orchestrator's environment)`, 'placeholder')
   }
   return out
 }

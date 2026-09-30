@@ -7,6 +7,7 @@ import MarkdownView from '../common/MarkdownView.vue'
 import type { Task, UATGuideStatusDTO } from '../../types'
 import {
   ClipboardCheck, Download, Loader2, RefreshCw, AlertCircle, Camera, Settings2, ListChecks, CheckCircle2, MessageSquareWarning,
+  Plus, X, Lock,
 } from 'lucide-vue-next'
 
 const props = defineProps<{ task: Task }>()
@@ -22,6 +23,11 @@ const showSettings = ref(false)
 const showScope = ref(false)
 const envs = ref<Record<string, { url: string; storage_state: string }>>({})
 const atddPath = ref('')
+// Test-data values for the plan's ${NAME} placeholders; removed holds names to clear on save.
+const vars = ref<Record<string, string>>({})
+const removedVars = ref<string[]>([])
+const newVarName = ref('')
+const VAR_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
 const ignoreHTTPS = ref(false)
 let poll: ReturnType<typeof setInterval> | null = null
 
@@ -33,6 +39,28 @@ const appName = (id: string) => status.value?.apps.find((a) => a.id === id)?.nam
 const missing = computed(() => status.value?.coverage?.missing?.filter(Boolean) || [])
 const scope = computed(() => status.value?.atdd)
 const missingEnv = computed(() => webApps.value.filter((a) => !a.base_url).map((a) => a.name))
+const variables = computed(() => status.value?.variables || [])
+const testDataVars = computed(() => variables.value.filter((v) => !v.secret))
+const secretVars = computed(() => variables.value.filter((v) => v.secret && v.used))
+const missingVars = computed(() => variables.value.filter((v) => v.used && v.source === 'missing').map((v) => v.name))
+const extraVarNames = computed(() => Object.keys(vars.value).filter((n) => !testDataVars.value.some((v) => v.name === n)))
+const placeholderOf = (name: string) => '${' + name + '}'
+
+function addVar() {
+  const name = newVarName.value.trim().replace(/^\$\{|\}$/g, '')
+  if (!VAR_NAME.test(name)) {
+    toast.error('Invalid name', 'Use letters, digits and _ only, e.g. UAT_PI_ID_PAID.')
+    return
+  }
+  if (!(name in vars.value)) vars.value[name] = ''
+  removedVars.value = removedVars.value.filter((n) => n !== name)
+  newVarName.value = ''
+}
+
+function removeVar(name: string) {
+  delete vars.value[name]
+  if (!removedVars.value.includes(name)) removedVars.value.push(name)
+}
 const KIND_BADGE: Record<string, string> = {
   Sanity: 'bg-amber-950/60 border-amber-800/70 text-amber-200',
   UAT: 'bg-sky-950/60 border-sky-800/70 text-sky-200',
@@ -50,6 +78,8 @@ function syncPolling() {
 function adoptSettings(s: UATGuideStatusDTO) {
   envs.value = Object.fromEntries((s.apps || []).map((a) => [a.id, { url: a.base_url || '', storage_state: a.storage_state || '' }]))
   atddPath.value = s.atdd?.path || ''
+  vars.value = Object.fromEntries((s.variables || []).filter((v) => !v.secret).map((v) => [v.name, v.value || '']))
+  removedVars.value = []
   ignoreHTTPS.value = s.ignore_https_errors
 }
 
@@ -78,6 +108,10 @@ async function submit(saveOnly: boolean) {
     status.value = await api.generateUATGuide(props.task.id, {
       apps: Object.fromEntries(Object.entries(envs.value).map(([id, e]) => [id, { url: e.url.trim(), storage_state: e.storage_state.trim() }])),
       atdd_path: atddPath.value.trim(),
+      variables: {
+        ...Object.fromEntries(removedVars.value.map((n) => [n, ''])),
+        ...Object.fromEntries(Object.entries(vars.value).map(([n, v]) => [n, v.trim()])),
+      },
       ignore_https_errors: ignoreHTTPS.value,
       save_only: saveOnly,
     })
@@ -173,6 +207,48 @@ onBeforeUnmount(() => poll && clearInterval(poll))
             <code class="font-mono">${UAT_USERNAME}</code> / <code class="font-mono">${UAT_PASSWORD}</code>, read from the daemon's environment —
             never written into the guide.
           </p>
+          <fieldset class="space-y-2">
+            <legend class="text-xs font-semibold text-slate-200">Test data</legend>
+            <p class="text-[11px] text-slate-500 leading-relaxed">
+              Values for the <code class="font-mono">${…}</code> placeholders in the plan — the staging records each scenario opens
+              (e.g. a proforma invoice id). They are saved with this task and shown to testers in the guide, so use test records only.
+            </p>
+            <div v-if="!testDataVars.length && !extraVarNames.length" class="text-[11px] text-slate-500">The current plan uses no test-data placeholders.</div>
+            <div v-for="v in testDataVars.filter((x) => !removedVars.includes(x.name))" :key="v.name" class="grid gap-2 sm:grid-cols-[minmax(0,16rem)_1fr_auto] items-center">
+              <code class="font-mono text-xs text-slate-300 truncate" :title="placeholderOf(v.name)">{{ placeholderOf(v.name) }}</code>
+              <input v-model="vars[v.name]" type="text" :placeholder="v.source === 'environment' ? 'set in the orchestrator environment' : 'test record value'"
+                :aria-label="`Value for ${v.name}`"
+                class="w-full h-9 px-3 rounded-lg bg-slate-950 border text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                :class="v.used && !vars[v.name] && v.source !== 'environment' ? 'border-amber-700' : 'border-slate-700'" />
+              <span class="text-[11px] whitespace-nowrap" :class="v.used ? 'text-slate-500' : 'text-slate-600'">
+                {{ v.used ? (v.source === 'environment' && !vars[v.name] ? 'from environment' : 'used by plan') : 'not in plan' }}
+                <button v-if="!v.used" type="button" class="ml-1 text-slate-500 hover:text-rose-300" :aria-label="`Remove ${v.name}`" @click="removeVar(v.name)">
+                  <X class="w-3.5 h-3.5 inline" />
+                </button>
+              </span>
+            </div>
+            <div v-for="name in extraVarNames" :key="name" class="grid gap-2 sm:grid-cols-[minmax(0,16rem)_1fr_auto] items-center">
+              <code class="font-mono text-xs text-slate-300 truncate">{{ placeholderOf(name) }}</code>
+              <input v-model="vars[name]" type="text" placeholder="test record value" :aria-label="`Value for ${name}`"
+                class="w-full h-9 px-3 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-emerald-500" />
+              <button type="button" class="text-slate-500 hover:text-rose-300" :aria-label="`Remove ${name}`" @click="removeVar(name)"><X class="w-3.5 h-3.5" /></button>
+            </div>
+            <div class="flex items-center gap-2">
+              <input v-model="newVarName" type="text" placeholder="UAT_PI_ID_PAID" aria-label="New test data name" @keydown.enter.prevent="addVar"
+                class="w-64 h-8 px-3 rounded-lg bg-slate-950 border border-slate-700 font-mono text-xs text-slate-100 focus:outline-none focus:border-emerald-500" />
+              <button type="button" @click="addVar" class="h-8 px-2.5 rounded-lg border border-slate-700 text-xs text-slate-200 hover:bg-slate-800 flex items-center gap-1">
+                <Plus class="w-3.5 h-3.5" /> Add
+              </button>
+            </div>
+            <p v-if="secretVars.length" class="text-[11px] text-slate-500 flex items-start gap-1.5">
+              <Lock class="w-3.5 h-3.5 flex-shrink-0 mt-px" />
+              <span>
+                Credentials (<code class="font-mono">{{ secretVars.map((v) => v.name).join(', ') }}</code>) are never stored with the task — set them in the
+                orchestrator's environment before starting it<template v-if="secretVars.some((v) => v.source === 'missing')">; missing:
+                  <span class="text-amber-300 font-mono">{{ secretVars.filter((v) => v.source === 'missing').map((v) => v.name).join(', ') }}</span></template>.
+              </span>
+            </p>
+          </fieldset>
           <label class="block space-y-1">
             <span class="text-[11px] uppercase tracking-wide text-slate-500">ATDD sheet (optional)</span>
             <input v-model="atddPath" type="text" placeholder="/path/to/initiative-atdd.csv"
@@ -254,6 +330,12 @@ onBeforeUnmount(() => poll && clearInterval(poll))
       </div>
       <div v-else-if="missingEnv.length && status?.stage_ready" class="p-3 rounded-lg border border-slate-800 text-xs text-slate-400 flex items-start gap-2">
         <AlertCircle class="w-4 h-4 flex-shrink-0 mt-px" /> Set the environment URL for {{ missingEnv.join(', ') }} to capture its screenshots.
+      </div>
+      <div v-if="missingVars.length && status?.stage_ready" class="p-3 rounded-lg border border-amber-800/60 bg-amber-950/30 text-xs text-amber-200 flex flex-wrap items-center gap-2">
+        <AlertCircle class="w-4 h-4 flex-shrink-0" />
+        The plan needs {{ missingVars.length }} test-data value(s):
+        <span class="font-mono">{{ missingVars.map(placeholderOf).join(', ') }}</span>
+        <button type="button" class="ml-auto underline hover:text-amber-100" @click="showSettings = true">Fill them in</button>
       </div>
 
       <div v-if="loading" class="text-xs text-slate-500 animate-pulse">Loading UAT guide…</div>

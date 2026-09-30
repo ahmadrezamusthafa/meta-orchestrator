@@ -265,6 +265,7 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 	apps := r.taskApps(t)
 	cases, source, atddErr := r.loadATDD(t)
 	cov := uat.ApplyCoverage(plan, atdd.UATScope(cases), apps)
+	plan.Fill(uatVars(t)) // test-data ids from the UAT Guide tab; secrets stay in the environment
 
 	appOf := map[string]uat.App{}
 	for _, a := range apps {
@@ -378,6 +379,59 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string) {
 	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: note + " Open the UAT Guide tab to review or download it."})
 }
 
+// uatVarPrefix keys the per-task test-data values (${NAME} → value) in task metadata.
+const uatVarPrefix = "uat_var."
+
+func uatVars(t *types.Task) map[string]string {
+	out := map[string]string{}
+	for k, v := range t.Metadata {
+		if name, ok := strings.CutPrefix(k, uatVarPrefix); ok {
+			out[name] = v
+		}
+	}
+	return out
+}
+
+// UATVariable is one ${NAME} placeholder of the plan and where its value comes from.
+type UATVariable struct {
+	Name   string `json:"name"`
+	Value  string `json:"value,omitempty"` // only for task test data; environment values are never returned
+	Source string `json:"source"`          // "task", "environment" or "missing"
+	Secret bool   `json:"secret"`          // read from the orchestrator's environment only
+	Used   bool   `json:"used"`            // referenced by the current plan
+}
+
+// uatVariables lists the placeholders the current plan needs plus any value saved for the task.
+func (r *Router) uatVariables(t *types.Task) []UATVariable {
+	var names []string
+	used := map[string]bool{}
+	if plan, err := uat.ExtractPlan(r.readStageDoc(t.ID, "uat_verification")); err == nil {
+		for _, n := range plan.Placeholders() {
+			used[n] = true
+			names = append(names, n)
+		}
+	}
+	vars := uatVars(t)
+	var extra []string
+	for n := range vars {
+		if !used[n] {
+			extra = append(extra, n)
+		}
+	}
+	sort.Strings(extra)
+	out := make([]UATVariable, 0, len(names)+len(extra))
+	for _, n := range append(names, extra...) {
+		v := UATVariable{Name: n, Secret: uat.IsSecretName(n), Used: used[n], Source: "missing"}
+		if val, ok := vars[n]; ok && val != "" && !v.Secret {
+			v.Value, v.Source = val, "task"
+		} else if _, ok := os.LookupEnv(n); ok && strings.HasPrefix(n, "UAT_") {
+			v.Source = "environment"
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
 // uatResultNotes explains runs that reached the wrong page or lacked test data, which otherwise
 // show up only as a 404 or blank screenshot inside one step.
 func uatResultNotes(results []uat.StepResult) []string {
@@ -398,8 +452,9 @@ func uatResultNotes(results []uat.StepResult) []string {
 			strings.Join(notFound, ", ")))
 	}
 	if len(placeholder) > 0 {
-		notes = append(notes, fmt.Sprintf("%s need a test record (a ${UAT_…} value) the orchestrator was not given; "+
-			"set those variables in the orchestrator's environment and regenerate.", strings.Join(placeholder, ", ")))
+		notes = append(notes, fmt.Sprintf("%s need a test-data value the orchestrator was not given; "+
+			"fill it under Environments › Test data in the UAT Guide tab (credentials go in the orchestrator's environment) and regenerate.",
+			strings.Join(placeholder, ", ")))
 	}
 	return notes
 }
@@ -412,9 +467,12 @@ type UATAppSettings struct {
 
 // UATGuideRequest updates the guide settings and regenerates it.
 type UATGuideRequest struct {
-	Apps        map[string]UATAppSettings `json:"apps,omitempty"`
-	ATDDPath    *string                   `json:"atdd_path,omitempty"`
-	IgnoreHTTPS *bool                     `json:"ignore_https_errors,omitempty"`
+	Apps     map[string]UATAppSettings `json:"apps,omitempty"`
+	ATDDPath *string                   `json:"atdd_path,omitempty"`
+	// Test-data values for ${NAME} placeholders (record ids, codes). An empty value removes one.
+	// Credentials are refused: they are read from the orchestrator's environment only.
+	Variables   map[string]string `json:"variables,omitempty"`
+	IgnoreHTTPS *bool             `json:"ignore_https_errors,omitempty"`
 	// Deprecated single-environment fields (applied to every web app without its own URL).
 	BaseURL      *string `json:"base_url,omitempty"`
 	StorageState *string `json:"storage_state,omitempty"`
@@ -505,6 +563,7 @@ func (r *Router) uatGuideStatus(t *types.Task) map[string]interface{} {
 		"guide_path":          exists(uatGuideDoc),
 		"html_path":           exists(uatGuideHTML),
 		"apps":                apps,
+		"variables":           r.uatVariables(t),
 		"atdd": map[string]interface{}{
 			"source": source, "path": t.Metadata["uat_atdd_path"], "error": atddError,
 			"total": len(cases), "in_scope": len(scope), "sanity": sanity, "cases": list,
@@ -548,6 +607,17 @@ func (r *Router) applyUATSettings(taskID string, body UATGuideRequest) error {
 			return perr
 		}
 	}
+	for name, v := range body.Variables {
+		if !uat.ValidVarName(name) {
+			return fmt.Errorf("invalid test data name %q: use letters, digits and _ only", name)
+		}
+		if uat.IsSecretName(name) && strings.TrimSpace(v) != "" {
+			return fmt.Errorf("%s looks like a credential; set it in the orchestrator's environment instead of the task", name)
+		}
+		if len(v) > 512 || strings.ContainsAny(v, "\r\n") {
+			return fmt.Errorf("the value of %s must be a single line of at most 512 characters", name)
+		}
+	}
 	for id, a := range body.Apps {
 		if !safeTaskID.MatchString(id) {
 			return fmt.Errorf("invalid application id %q", id)
@@ -585,6 +655,13 @@ func (r *Router) applyUATSettings(taskID string, body UATGuideRequest) error {
 	for id, a := range body.Apps {
 		set("uat_app."+id+".url", a.URL)
 		set("uat_app."+id+".storage_state", a.StorageState)
+	}
+	for name, v := range body.Variables {
+		if v = strings.TrimSpace(v); v == "" {
+			delete(t.Metadata, uatVarPrefix+name)
+		} else {
+			t.Metadata[uatVarPrefix+name] = v
+		}
 	}
 	if body.IgnoreHTTPS != nil {
 		t.Metadata["uat_ignore_https"] = fmt.Sprint(*body.IgnoreHTTPS)

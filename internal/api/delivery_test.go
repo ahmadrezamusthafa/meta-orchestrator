@@ -211,3 +211,51 @@ func TestUATGuideCoversEveryATDDUATAndSanityCase(t *testing.T) {
 		}
 	}
 }
+
+func TestUATTestDataFillsPlanPlaceholders(t *testing.T) {
+	r := NewRouter(RouterConfig{RootDir: t.TempDir()})
+	stub := &stubRunner{}
+	r.uatRunner = stub
+	r.mu.Lock()
+	r.tasks["TASK-5"] = &types.Task{ID: "TASK-5", Title: "Void PI", CurrentStageID: "uat_verification", State: types.TaskStateWaitingGateApproval,
+		Metadata: map[string]string{}}
+	r.mu.Unlock()
+	r.saveStageDocument("TASK-5", "uat_verification", "m", "```uat-plan\n"+
+		`{"feature":"Void","scenarios":[{"id":"S1","title":"Void","steps":[`+
+		`{"action":"goto","target":"/proforma-invoices/${PI_ID_PAID}","description":"Open PI ${PI_ID_PAID}"},`+
+		`{"action":"fill","target":"label=Password","value":"${UAT_PASSWORD}"}]}]}`+"\n```\n")
+
+	w := do(r, http.MethodGet, "/api/v1/tasks/TASK-5/uat-guide", "")
+	if !strings.Contains(w.Body.String(), `{"name":"PI_ID_PAID","source":"missing","secret":false,"used":true}`) ||
+		!strings.Contains(w.Body.String(), `"name":"UAT_PASSWORD"`) || !strings.Contains(w.Body.String(), `"secret":true`) {
+		t.Fatalf("status must list the plan's placeholders: %s", w.Body.String())
+	}
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-5/uat-guide", `{"save_only":true,"variables":{"UAT_PASSWORD":"hunter2"}}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("a credential must not be stored with the task → %d", w.Code)
+	}
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-5/uat-guide", `{"save_only":true,"variables":{"bad name":"1"}}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid name → %d", w.Code)
+	}
+	body := `{"apps":{"subscription_backyard":{"url":"https://backyard.example.com/billing"}},"variables":{"PI_ID_PAID":"4242","OLD":""}}`
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-5/uat-guide", body); w.Code != 200 {
+		t.Fatalf("generate → %d %s", w.Code, w.Body.String())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for r.taskSnapshot("TASK-5").Metadata["uat_guide_status"] != "READY" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(stub.job.Scenarios) != 1 {
+		t.Fatalf("runner job = %+v", stub.job)
+	}
+	steps := stub.job.Scenarios[0].Steps
+	if steps[0].Target != "https://backyard.example.com/billing/proforma-invoices/4242" || steps[0].Description != "Open PI 4242" {
+		t.Fatalf("test data must be filled into the plan: %+v", steps[0])
+	}
+	if steps[1].Value != "${UAT_PASSWORD}" {
+		t.Fatalf("credentials stay placeholders for the runner's environment, got %q", steps[1].Value)
+	}
+	w = do(r, http.MethodGet, "/api/v1/tasks/TASK-5/uat-guide", "")
+	if !strings.Contains(w.Body.String(), `{"name":"PI_ID_PAID","value":"4242","source":"task","secret":false,"used":true}`) {
+		t.Fatalf("saved value must be reported: %s", w.Body.String())
+	}
+}

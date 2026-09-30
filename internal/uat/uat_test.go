@@ -215,3 +215,35 @@ func TestResolveTargetsRewritesOnlyScenariosWithAnEnvironment(t *testing.T) {
 		t.Fatalf("a scenario without an environment must keep its target, got %q", got)
 	}
 }
+
+func TestPlanPlaceholdersAndFill(t *testing.T) {
+	p := &Plan{Scenarios: []Scenario{{ID: "S1", Preconditions: []string{"PI ${PI_ID} is paid"}, Steps: []Step{
+		{Action: ActionGoto, Target: "/pi/${PI_ID}", Description: "Open ${PI_ID}"},
+		{Action: ActionFill, Target: "label=Password", Value: "${UAT_PASSWORD}"},
+		{Action: ActionFill, Target: "label=Code", Value: "${UAT_PRODUCT_CODE}-${PI_ID}"},
+	}}}}
+	if got := strings.Join(p.Placeholders(), ","); got != "PI_ID,UAT_PASSWORD,UAT_PRODUCT_CODE" {
+		t.Fatalf("placeholders = %s", got)
+	}
+	p.Fill(map[string]string{"PI_ID": "42", "UAT_PASSWORD": "leak", "UAT_PRODUCT_CODE": ""})
+	st := p.Scenarios[0].Steps
+	if st[0].Target != "/pi/42" || st[0].Description != "Open 42" || p.Scenarios[0].Preconditions[0] != "PI 42 is paid" {
+		t.Fatalf("fill = %+v %v", st[0], p.Scenarios[0].Preconditions)
+	}
+	if st[1].Value != "${UAT_PASSWORD}" {
+		t.Fatalf("a credential must never be filled from task data, got %q", st[1].Value)
+	}
+	if st[2].Value != "${UAT_PRODUCT_CODE}-42" {
+		t.Fatalf("an empty value leaves the placeholder, got %q", st[2].Value)
+	}
+	for _, n := range []string{"UAT_PASSWORD", "UAT_API_TOKEN", "UAT_OTP", "UAT_SECRET_KEY"} {
+		if !IsSecretName(n) {
+			t.Errorf("%s must be treated as a credential", n)
+		}
+	}
+	for _, n := range []string{"UAT_PI_ID_PAID", "PI_ID", "UAT_PRODUCT_CODE", "UAT_USERNAME"} {
+		if IsSecretName(n) {
+			t.Errorf("%s is test data, not a credential", n)
+		}
+	}
+}

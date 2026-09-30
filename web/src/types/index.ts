@@ -116,6 +116,14 @@ export interface UATScopeCaseDTO {
   app: string
 }
 
+export interface UATVariableDTO {
+  name: string
+  value?: string
+  source: 'task' | 'environment' | 'missing' | string
+  secret: boolean
+  used: boolean
+}
+
 export interface UATGuideStatusDTO {
   task_id: string
   status: 'NOT_STARTED' | 'GENERATING' | 'READY' | 'FAILED' | string
@@ -127,6 +135,7 @@ export interface UATGuideStatusDTO {
   guide_path?: string
   html_path?: string
   apps: UATAppDTO[]
+  variables?: UATVariableDTO[]
   atdd: { source: string; path?: string; error?: string; total: number; in_scope: number; sanity: number; cases: UATScopeCaseDTO[] }
   coverage: { planned?: string; missing?: string[] }
 }
@@ -134,6 +143,7 @@ export interface UATGuideStatusDTO {
 export interface UATGuideSettings {
   apps?: Record<string, { url?: string; storage_state?: string }>
   atdd_path?: string
+  variables?: Record<string, string>
   ignore_https_errors?: boolean
   save_only?: boolean
 }

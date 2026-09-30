@@ -211,6 +211,67 @@ func (p *Plan) ResolveTargets(baseURL func(Scenario) string) error {
 // placeholder matches any ${NAME} reference in a target or value.
 var placeholder = regexp.MustCompile(`\$\{([A-Za-z0-9_]+)\}`)
 
+// secretName marks a placeholder whose value is a credential. Those are read only from the
+// orchestrator's environment and are never stored with the task or written into the guide.
+var secretName = regexp.MustCompile(`(?i)PASS|PWD|TOKEN|SECRET|KEY|CREDENTIAL|OTP|PIN$|COOKIE|SESSION`)
+
+// IsSecretName reports whether a ${NAME} placeholder holds a credential rather than test data.
+func IsSecretName(name string) bool { return secretName.MatchString(name) }
+
+// ValidVarName reports whether name can be used as a ${NAME} placeholder.
+func ValidVarName(name string) bool { return varName.MatchString(name) }
+
+var varName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
+
+// Placeholders lists every ${NAME} the plan uses, in first-use order.
+func (p *Plan) Placeholders() []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(v string) {
+		for _, m := range placeholder.FindAllStringSubmatch(v, -1) {
+			if !seen[m[1]] {
+				seen[m[1]] = true
+				out = append(out, m[1])
+			}
+		}
+	}
+	for _, s := range p.Scenarios {
+		for _, st := range s.Steps {
+			add(st.Target)
+			add(st.Value)
+		}
+	}
+	return out
+}
+
+// Fill substitutes test-data values into the plan so the runner opens the real record and the
+// guide shows testers which record to use. Secret names are never substituted.
+func (p *Plan) Fill(vars map[string]string) {
+	if len(vars) == 0 {
+		return
+	}
+	sub := func(v string) string {
+		return placeholder.ReplaceAllStringFunc(v, func(m string) string {
+			name := m[2 : len(m)-1]
+			if val, ok := vars[name]; ok && val != "" && !IsSecretName(name) {
+				return val
+			}
+			return m
+		})
+	}
+	for i := range p.Scenarios {
+		s := &p.Scenarios[i]
+		for j := range s.Steps {
+			st := &s.Steps[j]
+			st.Target, st.Value, st.Where = sub(st.Target), sub(st.Value), sub(st.Where)
+			st.Description, st.Expected = sub(st.Description), sub(st.Expected)
+		}
+		for j := range s.Preconditions {
+			s.Preconditions[j] = sub(s.Preconditions[j])
+		}
+	}
+}
+
 // ScreenshotName is the file a step's screenshot is saved as.
 func ScreenshotName(scenarioID string, step int) string {
 	return fmt.Sprintf("%s-%02d.png", scenarioID, step)
