@@ -99,15 +99,15 @@ export function taskLifecycle(task: Task | null | undefined, opts: { busy?: bool
       return {
         tone: 'warn', status: 'Paused', isRunning: false,
         title: `Paused at ${s}`,
-        detail: 'Nothing is running. Resume to run this stage again with the conversation so far.',
-        primary: { kind: 'resume', label: 'Resume', hint: `Run ${s} again.` },
+        detail: 'Nothing is running. Resume to continue the agent\'s session where it stopped.',
+        primary: { kind: 'resume', label: 'Resume', hint: `Continue ${s} where the agent stopped.` },
       }
     case 'FAILED':
       return {
         tone: 'error', status: 'Failed', isRunning: false,
         title: `${s} failed`,
         detail: meta.last_error || 'The last run ended with an error.',
-        primary: { kind: 'run', label: 'Retry', hint: `Run ${s} again.` },
+        primary: { kind: 'resume', label: 'Continue', hint: `Continue ${s} in the same agent session, without starting over.` },
       }
     case 'BLOCKED_FRUSTRATION':
       return {
