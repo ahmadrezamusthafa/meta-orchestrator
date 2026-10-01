@@ -129,3 +129,42 @@ func TestRoutingPlanEditValidates(t *testing.T) {
 		t.Fatalf("task = %+v", task)
 	}
 }
+
+// Built-in models always carry catalog metadata: a stale chain item or a custom registration
+// with the wrong price must not change what cost-optimized routing sorts on.
+func TestCatalogIsSourceOfTruthForBuiltinModels(t *testing.T) {
+	stale := []router.PriorityModelItem{{Provider: "claude", Model: "claude-sonnet-5-5", Name: "Next-Gen Frontier", CostPer1k: 0.015, LatencyMs: 250}}
+	got := withCatalogMeta(stale)[0]
+	if got.CostPer1k != 0.002 || got.Name != "Claude Sonnet 5.5" || got.LatencyMs != 140 {
+		t.Fatalf("healed item = %+v", got)
+	}
+	registerCustomModel("claude", "claude-haiku-4-5", "Wrong", 9, 9)
+	for _, m := range getAllAvailableModels() {
+		if m.ModelID == "claude-haiku-4-5" && (m.CostPer1k != 0.001 || m.ModelName != "Claude Haiku 4.5") {
+			t.Fatalf("custom registration overwrote the catalog: %+v", m)
+		}
+	}
+}
+
+func TestRouterPreviewIncludesFullMatrix(t *testing.T) {
+	r := planRouter(t, "")
+	w := do(r, http.MethodPost, "/api/v1/router/preview", `{"mode":"cost_optimized"}`)
+	var resp struct {
+		Matrix []router.MatrixCell `json:"matrix"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp.Matrix) != len(stagePipeline)*4 {
+		t.Fatalf("matrix cells = %d", len(resp.Matrix))
+	}
+	methods := map[string]bool{}
+	for _, c := range resp.Matrix {
+		methods[c.Decision.Method] = true
+		if c.Decision.TierSource != "mode" {
+			t.Fatalf("cost-optimized cell %s/%s tier source = %q", c.StageID, c.Complexity, c.Decision.TierSource)
+		}
+	}
+	// Chain modes order models only; the method still follows stage and complexity.
+	if len(methods) < 2 {
+		t.Fatalf("every cell uses the same method %v", methods)
+	}
+}

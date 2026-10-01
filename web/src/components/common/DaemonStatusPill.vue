@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { wsService } from '../../services/websocket'
 
-const { isConnected, isReconnecting } = wsService
+const { isConnected, isReconnecting, reconnectCount } = wsService
 </script>
 
 <template>
-  <div class="flex items-center gap-2 px-2.5 py-1 bg-slate-950/80 border border-slate-800 rounded-full text-xs font-mono">
+  <div
+    role="status"
+    class="flex items-center gap-2 px-2.5 py-1 bg-slate-950/80 border rounded-full text-xs font-mono"
+    :class="isConnected ? 'border-slate-800' : 'border-amber-800/80'"
+    :title="isConnected ? 'Live updates connected' : `Lost connection to the daemon. Reconnecting (attempt ${reconnectCount}); live updates resume once it is back.`"
+  >
     <span class="relative flex h-2 w-2">
       <span
         v-if="isConnected"
@@ -21,7 +26,7 @@ const { isConnected, isReconnecting } = wsService
       ></span>
     </span>
     <span class="text-slate-300">
-      {{ isConnected ? 'Daemon Online' : isReconnecting ? 'Reconnecting...' : 'Daemon Offline' }}
+      {{ isConnected ? 'Daemon Online' : isReconnecting ? `Reconnecting… (${reconnectCount})` : 'Daemon Offline' }}
     </span>
   </div>
 </template>

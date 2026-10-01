@@ -224,12 +224,12 @@ async function addCustomModelToProvider() {
 <template>
   <div class="p-4 bg-slate-900/80 border border-slate-800 rounded-xl space-y-3 shadow-sm hover:border-slate-700 transition-colors">
     <!-- Header: name + one clear status -->
-    <div class="flex items-center justify-between gap-2">
+    <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex items-center gap-2.5 min-w-0">
         <div class="w-8 h-8 shrink-0 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-center text-sky-400">
           <Cpu class="w-4 h-4" />
         </div>
-        <h3 class="text-xs font-bold text-slate-100 truncate">{{ provider.name }}</h3>
+        <h3 class="text-xs font-bold text-slate-100 leading-snug break-words">{{ provider.name }}</h3>
       </div>
       <span
         class="shrink-0 h-6 px-2 rounded-full border text-[10px] font-medium flex items-center gap-1"
@@ -249,7 +249,7 @@ async function addCustomModelToProvider() {
             <Terminal v-if="conn?.method === 'claude_cli'" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
             <Key v-else-if="conn?.method === 'api_key'" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
             <Server v-else-if="conn?.method === 'local_endpoint'" class="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <span class="truncate">{{ connectionTitle }}</span>
+            <span class="break-words">{{ connectionTitle }}</span>
           </div>
           <div v-if="conn?.detail" class="text-[10px] text-slate-400 mt-0.5 break-words">{{ conn.detail }}</div>
           <div class="text-[9px] font-mono text-slate-500 mt-0.5">

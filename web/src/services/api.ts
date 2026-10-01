@@ -11,7 +11,7 @@ import type {
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
   TaskActivityResponse, TaskChatResponse, TaskDiffDTO, DiffAgainst, TaskArtifactDTO,
   PullRequestDraftDTO, PullRequestOpenedDTO, UATGuideStatusDTO, UATGuideSettings,
-  TaskAnalysisDTO, TaskRoutingDTO, StageRoute
+  TaskAnalysisDTO, TaskRoutingDTO, StageRoute, RouteMatrixCellDTO
 } from '../types'
 
 
@@ -437,7 +437,7 @@ export const api = {
     return res.json()
   },
 
-  async previewRouter(payload: { mode: RouterMode; priority_chain: PriorityModelItem[] }): Promise<{ preview: RoutePreviewDTO[]; tiers: TierAssignmentDTO[] }> {
+  async previewRouter(payload: { mode: RouterMode; priority_chain: PriorityModelItem[] }): Promise<{ preview: RoutePreviewDTO[]; matrix?: RouteMatrixCellDTO[]; tiers: TierAssignmentDTO[] }> {
     const res = await fetch(`${BASE_URL}/router/preview`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

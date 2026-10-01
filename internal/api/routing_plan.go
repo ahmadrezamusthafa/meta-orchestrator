@@ -18,7 +18,11 @@ import (
 // proposes a method and model per stage, and the operator confirms or changes them before the
 // task is created. The confirmed plan is what each stage runs with.
 
-const analysisTimeout = 25 * time.Second
+// analysisTimeout bounds the interactive complexity grading; past it the keyword heuristic answers.
+const analysisTimeout = 15 * time.Second
+
+// analysisAttempts caps how many chain models grading tries before falling back to the heuristic.
+const analysisAttempts = 2
 
 // methodOption describes an execution method for the plan editor.
 type methodOption struct {
@@ -86,6 +90,9 @@ func (r *Router) classifier() router.Classifier {
 		}
 		if len(models) == 0 {
 			return "", "", fmt.Errorf("no model configured")
+		}
+		if len(models) > analysisAttempts {
+			models = models[:analysisAttempts]
 		}
 		var lastErr error
 		for _, model := range models {

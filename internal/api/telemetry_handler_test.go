@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/shadow"
@@ -96,12 +97,14 @@ func TestBenchmarksServeDefaultMatrixAndWeightLockAPI(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/benchmarks", nil))
 	var bench struct {
 		TotalCells int                 `json:"total_cells"`
+		Measured   int                 `json:"measured_cells"`
 		Source     string              `json:"source"`
 		Matrix     []shadow.MatrixCell `json:"matrix"`
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &bench)
-	if bench.TotalCells != 36 || bench.Source != shadow.SourceDefault {
-		t.Fatalf("benchmarks = %d cells, source %q", bench.TotalCells, bench.Source)
+	// The shipped default-policy matrix is not evidence: nothing is reported as measured.
+	if bench.TotalCells != 32 || bench.Measured != 0 || len(bench.Matrix) != 0 || bench.Source != shadow.SourceDefault {
+		t.Fatalf("benchmarks = %d cells, %d measured, source %q", bench.TotalCells, bench.Measured, bench.Source)
 	}
 
 	lock := func(body string) *httptest.ResponseRecorder {
@@ -148,5 +151,48 @@ func TestReplayExpectationsFromAssertions(t *testing.T) {
 	}
 	if got := replayExpectations(shadow.ReplaySpec{Title: "Refund webhook retries"}); len(got) == 0 || got[0] != "refund" {
 		t.Fatalf("title fallback = %v", got)
+	}
+}
+
+func TestBenchmarksReportWhetherRoutingAppliesEachCell(t *testing.T) {
+	r := hermeticRouter(t)
+	res := func(stage, cx string, n, fp int) shadow.CellResult {
+		return shadow.CellResult{Cell: shadow.Cell{Stage: stage, Complexity: cx, Method: "ReAct", Model: "claude/claude-sonnet-5-5", Tier: "tier2"},
+			Samples: n, FirstPasses: fp, FPVR: float64(fp) / float64(n), AvgCostUSD: 0.01, AvgTTRSeconds: 10}
+	}
+	b := shadow.NewMatrixBuilder(shadow.BuilderConfig{Weights: shadow.DefaultBuilderConfig().Weights, MinSamples: 1, MinFPVR: 0.5})
+	m := b.Build("s1", []shadow.CellResult{res("task_implementation", "LOW", 10, 10), res("e2e_validation", "MEDIUM", 2, 2)}, time.Now())
+	if err := r.telemetry.matrix.Update(m, ""); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/benchmarks", nil))
+	var bench struct {
+		Measured int `json:"measured_cells"`
+		Applied  int `json:"applied_cells"`
+		Matrix   []struct {
+			StageID        string `json:"stage_id"`
+			BenchmarkStage string `json:"benchmark_stage"`
+			Complexity     string `json:"complexity"`
+			Applied        bool   `json:"applied"`
+			Reason         string `json:"not_applied_reason"`
+		} `json:"matrix"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &bench)
+	// e2e_validation/MEDIUM also routes uat_verification/MEDIUM, so it appears twice.
+	if bench.Measured != 3 || bench.Applied != 1 {
+		t.Fatalf("measured=%d applied=%d: %s", bench.Measured, bench.Applied, w.Body.String())
+	}
+	for _, c := range bench.Matrix {
+		switch c.StageID {
+		case "task_implementation":
+			if !c.Applied {
+				t.Fatalf("10/10 cell not applied: %+v", c)
+			}
+		case "uat_verification":
+			if c.BenchmarkStage != "e2e_validation" || c.Applied || c.Reason != "2 samples (needs 3)" {
+				t.Fatalf("uat cell = %+v", c)
+			}
+		}
 	}
 }

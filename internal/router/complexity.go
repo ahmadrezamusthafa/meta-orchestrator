@@ -74,8 +74,10 @@ Reply with exactly: {"complexity": "LOW|MEDIUM|HIGH|SYSTEM", "task_type": "<one 
 	if a.TaskType == "" {
 		a.TaskType = heuristic.TaskType
 	}
-	// Scope the model cannot see from text alone: more than two repositories is never LOW/MEDIUM.
-	if len(repos) > 2 && (a.Complexity == "LOW" || a.Complexity == "MEDIUM") {
+	// Scope the model cannot see from text alone: a standard feature across more than two
+	// repositories is cross-service work. A change the model grades LOW stays LOW — a typo fix
+	// does not grow because more repositories happen to be selected.
+	if len(repos) > 2 && a.Complexity == "MEDIUM" {
 		a.Complexity = "HIGH"
 		a.Signals = append(a.Signals, fmt.Sprintf("%d repositories in scope", len(repos)))
 	}
@@ -147,15 +149,16 @@ func HeuristicComplexity(title, description string, repos []string) ComplexityAs
 	case len(sys) > 0:
 		a.Complexity, a.Signals = "SYSTEM", sys
 		a.Rationale = "Mentions infrastructure or environment changes."
-	case len(high) > 0 || len(repos) > 2:
+	case len(high) > 0:
 		a.Complexity, a.Signals = "HIGH", high
 		a.Rationale = "Mentions cross-cutting or high-risk work."
-		if len(repos) > 2 {
-			a.Signals = append(a.Signals, fmt.Sprintf("%d repositories in scope", len(repos)))
-		}
 	case len(low) > 0:
+		// Clear small-change signals outrank repository count (the selection often defaults to all repos).
 		a.Complexity, a.Signals = "LOW", low
 		a.Rationale = "A small, contained change."
+	case len(repos) > 2:
+		a.Complexity, a.Signals = "HIGH", []string{fmt.Sprintf("%d repositories in scope", len(repos))}
+		a.Rationale = "Spans more than two repositories."
 	default:
 		a.Complexity = "MEDIUM"
 		a.Rationale = "No strong signals either way; treated as a standard feature."
@@ -171,6 +174,8 @@ type PlannedStage struct {
 	Tier      string `json:"tier,omitempty"`
 	Reasoning string `json:"reasoning"`
 	Strategy  string `json:"strategy"`
+	// Wanted is the recommended model when the chain could not run it (not allowed or not connected).
+	Wanted string `json:"wanted,omitempty"`
 }
 
 // Plan proposes the routing of each stage for a task without changing router state.
@@ -180,7 +185,44 @@ func (r *Router) Plan(stages []string, complexity, taskType string, repos []stri
 	out := make([]PlannedStage, 0, len(stages))
 	for _, st := range stages {
 		d := r.route(r.mode, r.priorityChain, st, complexity, taskType, repos, false)
-		out = append(out, PlannedStage{StageID: st, Method: d.Method, Model: d.Model, Tier: d.Tier, Reasoning: d.Reasoning, Strategy: d.Strategy})
+		ps := PlannedStage{StageID: st, Method: d.Method, Model: d.Model, Tier: d.Tier, Reasoning: d.Reasoning, Strategy: d.Strategy}
+		if d.Suggestion != nil {
+			ps.Wanted = d.Suggestion.Model
+		}
+		out = append(out, ps)
+	}
+	return out
+}
+
+// Complexities are the routing strata, in display order.
+var Complexities = []string{"LOW", "MEDIUM", "HIGH", "SYSTEM"}
+
+// MatrixCell is what the router would decide for one stage at one complexity.
+type MatrixCell struct {
+	StageID    string           `json:"stage_id"`
+	Complexity string           `json:"complexity"`
+	Decision   *RoutingDecision `json:"decision"`
+}
+
+// PreviewMatrix routes every stage at every complexity under settings (or the live settings when
+// nil) without changing router state, so the UI can show exactly what will run.
+func (r *Router) PreviewMatrix(settings *RouterSettings, stages []string) []MatrixCell {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	mode, chain := r.mode, r.priorityChain
+	if settings != nil {
+		if settings.Mode != "" {
+			mode = settings.Mode
+		}
+		if settings.PriorityChain != nil {
+			chain = settings.PriorityChain
+		}
+	}
+	out := make([]MatrixCell, 0, len(stages)*len(Complexities))
+	for _, st := range stages {
+		for _, cx := range Complexities {
+			out = append(out, MatrixCell{StageID: st, Complexity: cx, Decision: r.route(mode, chain, st, cx, "", nil, false)})
+		}
 	}
 	return out
 }
@@ -248,7 +290,7 @@ func ApplyPlan(d *RoutingDecision, method, model, tier string, overridden bool) 
 		}
 	}
 	if overridden {
-		d.Strategy = "user_override"
+		d.Strategy, d.MethodSource, d.TierSource = "user_override", "user", "user"
 		d.Reasoning = fmt.Sprintf("Operator choice: %s on %s (router would pick %s)", d.Method, d.Model, proposed)
 	} else {
 		d.Reasoning = fmt.Sprintf("Confirmed plan: %s on %s | %s", d.Method, d.Model, d.Reasoning)

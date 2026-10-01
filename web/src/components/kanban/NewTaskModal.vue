@@ -75,8 +75,8 @@ async function analyze(complexity?: Complexity) {
     analysis.value = res
     planRows.value = res.plan.map((p) => {
       const k = kept.get(p.stage_id)
-      if (k) return { ...k, overridden: k.method !== p.method || k.model !== p.model, reasoning: p.reasoning }
-      return { stage_id: p.stage_id, method: p.method, model: p.model, tier: p.tier, reasoning: p.reasoning, overridden: false }
+      if (k) return { ...k, overridden: k.method !== p.method || k.model !== p.model, reasoning: p.reasoning, wanted: p.wanted }
+      return { stage_id: p.stage_id, method: p.method, model: p.model, tier: p.tier, reasoning: p.reasoning, wanted: p.wanted, overridden: false }
     })
     step.value = 'review'
   } catch (err: any) {

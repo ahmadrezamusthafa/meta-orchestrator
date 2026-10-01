@@ -9,6 +9,8 @@ import { RotateCcw } from 'lucide-vue-next'
 const props = defineProps<{
   rows: StageRoute[]
   proposed: Record<string, { method: string; model: string }>
+  // What the router recommends right now, when it differs from the saved plan (task page only)
+  current?: Record<string, { method: string; model: string }>
   methods: MethodOptionDTO[]
   models: ModelOptionDTO[]
   disabled?: boolean
@@ -18,6 +20,27 @@ const emit = defineEmits<{ (e: 'update:rows', rows: StageRoute[]): void }>()
 
 const methodName = (id: string) => props.methods.find((m) => m.id === id)?.name || id
 const modelChoices = computed(() => props.models.map((m) => m.model))
+const TIER: Record<string, string> = { tier1: 'Tier 1', tier2: 'Tier 2', tier3: 'Tier 3' }
+
+// "claude/claude-sonnet-5-5" → "claude-sonnet-5-5"; the provider shows in the option title.
+function shortModel(m?: string) {
+  if (!m) return ''
+  const i = m.indexOf('/')
+  return i >= 0 ? m.slice(i + 1) : m
+}
+function modelLabel(m: ModelOptionDTO) {
+  const tiers = (m.tiers ?? []).map((t) => TIER[t] || t).join(', ')
+  return tiers ? `${shortModel(m.model)} · ${tiers}` : shortModel(m.model)
+}
+// The policy sentence only; chain fallback details are summarized by the "wanted" note.
+function shortReason(r?: string) {
+  if (!r) return ''
+  return r.split(' | ')[0].replace(/^Best practice:\s*/, '')
+}
+function drift(r: StageRoute) {
+  const c = props.current?.[r.stage_id]
+  return !r.overridden && c && (c.method !== r.method || c.model !== r.model) ? c : null
+}
 
 function set(i: number, patch: Partial<StageRoute>) {
   const rows = props.rows.map((r, j) => {
@@ -61,8 +84,14 @@ const overriddenCount = computed(() => props.rows.filter((r) => r.overridden).le
             <td class="px-3 py-1.5 align-top min-w-[150px]">
               <div class="text-slate-200">{{ stageName(r.stage_id) }}</div>
               <div class="text-[10px] text-slate-500 leading-snug max-w-[260px]" :title="r.reasoning">
-                <template v-if="r.overridden">Proposed: {{ methodName(proposed[r.stage_id]?.method) }} on {{ proposed[r.stage_id]?.model }}</template>
-                <template v-else>{{ r.reasoning }}</template>
+                <template v-if="r.overridden">Proposed: {{ methodName(proposed[r.stage_id]?.method) }} on {{ shortModel(proposed[r.stage_id]?.model) }}</template>
+                <template v-else>{{ shortReason(r.reasoning) }}</template>
+              </div>
+              <div v-if="r.wanted && !r.overridden" class="text-[10px] text-amber-300 leading-snug max-w-[260px]">
+                Wanted {{ shortModel(r.wanted) }}, not available — using a fallback
+              </div>
+              <div v-if="drift(r)" class="text-[10px] text-sky-300 leading-snug max-w-[260px]">
+                Router now recommends {{ methodName(drift(r)!.method) }} on {{ shortModel(drift(r)!.model) }}
               </div>
             </td>
             <td class="px-2 py-1.5 align-top">
@@ -83,14 +112,12 @@ const overriddenCount = computed(() => props.rows.filter((r) => r.overridden).le
                 :value="r.model"
                 :disabled="disabled"
                 :aria-label="`Model for ${stageName(r.stage_id)}`"
-                class="h-7 max-w-[230px] px-1.5 bg-slate-900 border rounded text-[11px] font-mono text-slate-200 focus:outline-none focus:border-emerald-500"
+                class="h-7 w-full min-w-[13rem] px-1.5 bg-slate-900 border rounded text-[11px] font-mono text-slate-200 focus:outline-none focus:border-emerald-500"
                 :class="r.overridden && r.model !== proposed[r.stage_id]?.model ? 'border-amber-600' : 'border-slate-700'"
                 @change="set(i, { model: ($event.target as HTMLSelectElement).value, tier: '' })"
               >
-                <option v-if="!modelChoices.includes(r.model)" :value="r.model">{{ r.model }}</option>
-                <option v-for="m in models" :key="m.model" :value="m.model">
-                  {{ m.model }}<template v-if="m.tiers?.length"> ({{ m.tiers.join(', ') }})</template>
-                </option>
+                <option v-if="!modelChoices.includes(r.model)" :value="r.model">{{ shortModel(r.model) }} · not in your list</option>
+                <option v-for="m in models" :key="m.model" :value="m.model" :title="m.model">{{ modelLabel(m) }}</option>
               </select>
             </td>
             <td class="px-2 py-1.5 align-top">

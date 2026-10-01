@@ -62,7 +62,9 @@ func TestAnalyzeComplexityFallsBackToHeuristic(t *testing.T) {
 	for name, classify := range map[string]Classifier{
 		"error":   func(context.Context, string, string) (string, string, error) { return "", "", errors.New("timeout") },
 		"garbage": func(context.Context, string, string) (string, string, error) { return "it is fairly simple", "m", nil },
-		"unknown": func(context.Context, string, string) (string, string, error) { return `{"complexity":"EASY"}`, "m", nil },
+		"unknown": func(context.Context, string, string) (string, string, error) {
+			return `{"complexity":"EASY"}`, "m", nil
+		},
 	} {
 		a := AnalyzeComplexity(context.Background(), classify, "Fix typo in README", "", []string{"web"})
 		if a.Source != SourceHeuristic || a.Complexity != "LOW" || a.Fallback == "" {
@@ -83,8 +85,12 @@ func TestHeuristicComplexity(t *testing.T) {
 			t.Errorf("%q = %s, want %s", title, got.Complexity, want)
 		}
 	}
-	if got := HeuristicComplexity("Fix typo", "", []string{"a", "b", "c"}); got.Complexity != "HIGH" {
-		t.Errorf("3 repositories = %s, want HIGH", got.Complexity)
+	if got := HeuristicComplexity("Add audit endpoint", "", []string{"a", "b", "c"}); got.Complexity != "HIGH" {
+		t.Errorf("feature over 3 repositories = %s, want HIGH", got.Complexity)
+	}
+	// A clear small change stays LOW even when every repository is selected.
+	if got := HeuristicComplexity("Fix typo in README", "", []string{"a", "b", "c"}); got.Complexity != "LOW" {
+		t.Errorf("typo over 3 repositories = %s, want LOW", got.Complexity)
 	}
 }
 

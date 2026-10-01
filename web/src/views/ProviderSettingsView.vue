@@ -7,7 +7,6 @@ import ProviderConfigCard from '../components/providers/ProviderConfigCard.vue'
 import TierModelMatrix from '../components/providers/TierModelMatrix.vue'
 import ProjectSettingsDrawer from '../components/providers/ProjectSettingsDrawer.vue'
 import RouterConfigurator from '../components/router/RouterConfigurator.vue'
-import StageComplexityMatrix from '../components/benchmark/StageComplexityMatrix.vue'
 import { Sliders, Settings2, CheckCircle2, Wifi, RefreshCw } from 'lucide-vue-next'
 
 const providers = ref<ProviderDTO[]>([])
@@ -161,7 +160,7 @@ async function testAllConnections() {
             </button>
           </div>
         </div>
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-4 gap-4">
           <ProviderConfigCard
             v-for="p in providers"
             :key="p.id"
@@ -184,8 +183,10 @@ async function testAllConnections() {
       <!-- 3. Dual Router Configurator -->
       <RouterConfigurator />
 
-      <!-- 4. Stage x Complexity Empirical Benchmark Matrix -->
-      <StageComplexityMatrix />
+      <p class="text-[11px] text-slate-500">
+        Shadow-benchmark measurements, and whether routing uses them, are on
+        <router-link to="/analytics" class="text-sky-400 hover:text-sky-300 underline-offset-2 hover:underline">Analytics → Benchmark results</router-link>.
+      </p>
     </main>
 
     <!-- Project Settings Drawer -->

@@ -5,6 +5,7 @@ import (
 	"math"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -173,5 +174,17 @@ func TestCurrentClaudeModelsArePriced(t *testing.T) {
 		if got, ok := p.Lookup(model); !ok || got.InputPer1M != in {
 			t.Fatalf("%s = %+v (found %v), want input $%v/1M", model, got, ok, in)
 		}
+	}
+}
+
+func TestSummaryMergesMethodSpellings(t *testing.T) {
+	d := NewMemoryDatastore()
+	now := time.Now()
+	for _, m := range []string{"bmad", "BMAD", "react"} {
+		_ = d.RecordRun(RunRecord{RunMeta: RunMeta{TaskID: m, Method: m}, Success: true, FirstPass: true, StartedAt: now, FinishedAt: now})
+	}
+	s := Summarize(d, "all", "", now)
+	if len(s.Methods) != 2 || s.Methods[0].Method != "BMAD" || s.Methods[0].Runs != 2 || s.Methods[1].Method != "ReAct" {
+		t.Fatalf("methods = %+v", s.Methods)
 	}
 }

@@ -119,7 +119,9 @@ async function handleRefresh() {
       <!-- Workflow Selector -->
       <select
         v-model="workflowStore.activeWorkflowId"
-        class="h-8 px-2.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 focus:outline-none focus:border-blue-500 max-w-[190px] truncate"
+        aria-label="Workflow"
+        :title="workflowStore.workflows.find((w) => w.id === workflowStore.activeWorkflowId)?.name"
+        class="h-8 pl-2.5 pr-7 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 focus:outline-none focus:border-blue-500 min-w-[15rem] max-w-full"
       >
         <option v-if="workflowStore.workflows.length === 0" value="general_ai_sdlc">
           General AI SDLC (8 Stages)

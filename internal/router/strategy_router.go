@@ -51,6 +51,12 @@ type RoutingDecision struct {
 	Reasoning      string           `json:"reasoning"`
 	RequiresDocker bool             `json:"requires_docker"`
 	Suggestion     *ModelSuggestion `json:"suggestion,omitempty"` // recommended model the chain did not allow
+	// MethodSource says where Method came from: "policy" (stage × complexity best practice),
+	// "benchmark" (a measured shadow-benchmark winner), "rule" (a custom rule) or "user" (the task's plan).
+	MethodSource string `json:"method_source,omitempty"`
+	// TierSource says where the model choice came from: "policy", "benchmark", "calibrated"
+	// (learned from run history), "mode" (chain order of a non-tiered mode), "rule" or "user".
+	TierSource string `json:"tier_source,omitempty"`
 }
 
 // TierAdvisor supplies calibrated tier overrides for best-practice routing (see router/feedback).
@@ -240,6 +246,7 @@ func (r *Router) route(mode RouterMode, chain []PriorityModelItem, stageID, comp
 		if decision := r.routeCustom(stageID, complexity, repoTypes); decision != nil {
 			candidates, _ := r.usableItems(enabledItems(chain))
 			decision.FallbackChain = withPrimary(decision.Model, candidates)
+			decision.MethodSource, decision.TierSource = "rule", "rule"
 			return decision
 		}
 		return r.routeRecommended(chain, stageID, complexity, taskType, repoTypes)
@@ -281,6 +288,10 @@ func (r *Router) route(mode RouterMode, chain []PriorityModelItem, stageID, comp
 	default:
 		return r.routeRecommended(chain, stageID, complexity, taskType, repoTypes)
 	}
+	// The mode only orders the models; the method and budget still follow the stage and complexity.
+	policy := r.applyMethodAdvisor(r.routeBestPractice(stageID, complexity, repoTypes), stageID, complexity)
+	d.Method, d.MethodSource, d.TokenBudget, d.RequiresDocker = policy.Method, policy.MethodSource, policy.TokenBudget, policy.RequiresDocker
+	d.TierSource = "mode"
 	if degraded {
 		d.Reasoning += " | Warning: no provider in your chain is verified as connected; trying them anyway"
 	}
@@ -311,6 +322,8 @@ func (r *Router) routeOrdered(mode RouterMode, items []PriorityModelItem, budget
 		TokenBudget:    budget,
 		Reasoning:      reasoning(items[0], len(items)),
 		RequiresDocker: true,
+		MethodSource:   "policy",
+		TierSource:     "mode",
 	}
 }
 
@@ -334,21 +347,7 @@ func (r *Router) applyAdvisor(d *RoutingDecision, stageID, complexity, taskType 
 	if d == nil {
 		return d
 	}
-	if r.methodAdvisor != nil {
-		if method, tier, model, reason, ok := r.methodAdvisor.AdviseMethod(stageID, complexity); ok {
-			d.Method = method
-			// Prefer the benchmarked model itself; bindToPool falls back to the tier when the
-			// operator's chain does not include it.
-			if model == "" {
-				model = r.modelForTier(tier)
-			}
-			if model != "" {
-				d.Tier = tier
-				d.Model = model
-			}
-			d.Reasoning = fmt.Sprintf("%s | %s", d.Reasoning, reason)
-		}
-	}
+	d = r.applyMethodAdvisor(d, stageID, complexity)
 	if r.advisor == nil || taskType == "" {
 		return d
 	}
@@ -362,7 +361,31 @@ func (r *Router) applyAdvisor(d *RoutingDecision, stageID, complexity, taskType 
 	}
 	d.Tier = tier
 	d.Model = model
+	d.TierSource = "calibrated"
 	d.Reasoning = fmt.Sprintf("%s | Calibrated: %s", d.Reasoning, reason)
+	return d
+}
+
+// applyMethodAdvisor replaces the policy method (and model) with the benchmark winner when the
+// benchmark matrix has an applicable measurement for this stage and complexity.
+func (r *Router) applyMethodAdvisor(d *RoutingDecision, stageID, complexity string) *RoutingDecision {
+	if r.methodAdvisor != nil {
+		if method, tier, model, reason, ok := r.methodAdvisor.AdviseMethod(stageID, complexity); ok {
+			d.Method = method
+			// Prefer the benchmarked model itself; bindToPool falls back to the tier when the
+			// operator's chain does not include it.
+			if model == "" {
+				model = r.modelForTier(tier)
+			}
+			d.MethodSource = "benchmark"
+			if model != "" {
+				d.Tier = tier
+				d.Model = model
+				d.TierSource = "benchmark"
+			}
+			d.Reasoning = fmt.Sprintf("%s | %s", d.Reasoning, reason)
+		}
+	}
 	return d
 }
 
@@ -482,6 +505,8 @@ func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes 
 		TokenBudget:    budget,
 		Reasoning:      "Best practice: " + why,
 		RequiresDocker: class == classImplement || class == classVerify || stage == "ATDD_RED_PHASE" || cx == "SYSTEM",
+		MethodSource:   "policy",
+		TierSource:     "policy",
 	}
 }
 

@@ -17,8 +17,10 @@ const error = ref('')
 const options = ref<Pick<TaskAnalysisDTO, 'methods' | 'models'>>({ methods: [], models: [] })
 const assessment = ref<ComplexityAssessment | null>(null)
 const rows = ref<StageRoute[]>([])
-// What the router proposes for the current complexity; rows that differ are the operator's changes.
+// proposed is each row's baseline (its saved value unless the operator changed it); current is what
+// the router recommends now, shown as a hint where it differs from a saved, unchanged row.
 const proposed = ref<Record<string, { method: string; model: string }>>({})
+const current = ref<Record<string, { method: string; model: string }>>({})
 const dirty = ref(false)
 
 const confirmed = computed(() => props.task.metadata?.routing_confirmed === 'true')
@@ -41,23 +43,25 @@ async function load(regrade?: Complexity) {
       assigned_repos: props.task.assigned_repos, complexity: cx, task_type: props.task.metadata?.task_type,
       start_stage: start, halt_stage: halt })
     options.value = { methods: a.methods, models: a.models }
-    proposed.value = Object.fromEntries(a.plan.map((p) => [p.stage_id, { method: p.method, model: p.model }]))
+    current.value = Object.fromEntries(a.plan.map((p) => [p.stage_id, { method: p.method, model: p.model }]))
     assessment.value = {
       ...a.assessment,
       source: regrade ? 'operator' : ((r.complexity_source || 'heuristic') as ComplexityAssessment['source']),
       rationale: regrade ? 'Set by you.' : r.complexity_rationale || a.assessment.rationale,
     }
     const reasoning = Object.fromEntries(a.plan.map((p) => [p.stage_id, p.reasoning]))
+    const wanted = Object.fromEntries(a.plan.map((p) => [p.stage_id, p.wanted]))
     const base: StageRoute[] = plan.length ? plan : a.plan.map((p) => ({ stage_id: p.stage_id, method: p.method, model: p.model, tier: p.tier }))
     rows.value = base.map((s) => {
-      const p = proposed.value[s.stage_id]
-      // On re-grade, rows the operator never changed follow the new proposal.
-      const follow = regrade && !s.overridden && p
-      const method = follow ? p.method : s.method
-      const model = follow ? p.model : s.model
-      return { ...s, method, model, reasoning: reasoning[s.stage_id] || s.reasoning,
-        overridden: !!p && (method !== p.method || model !== p.model) }
+      const c = current.value[s.stage_id]
+      // On re-grade, rows the operator never changed follow the new proposal; changed rows keep their choice.
+      const follow = regrade && !s.overridden && c
+      return { ...s, method: follow ? c.method : s.method, model: follow ? c.model : s.model,
+        reasoning: reasoning[s.stage_id] || s.reasoning, overridden: !!s.overridden,
+        wanted: (follow || (c && c.model === s.model)) ? wanted[s.stage_id] : undefined }
     })
+    proposed.value = Object.fromEntries(rows.value.map((r) => [r.stage_id,
+      r.overridden && current.value[r.stage_id] ? current.value[r.stage_id] : { method: r.method, model: r.model }]))
     dirty.value = !!regrade
   } catch (e: any) {
     error.value = e?.message || 'Failed to load the routing plan'
@@ -92,7 +96,8 @@ watch(() => props.task.id, () => load(), { immediate: true })
 </script>
 
 <template>
-  <div class="p-4 space-y-4 max-w-4xl">
+  <div class="h-full overflow-y-auto">
+  <div class="max-w-4xl mx-auto px-5 pt-5 space-y-4">
     <div v-if="!confirmed && !loading" class="p-3 rounded-lg bg-amber-950/40 border border-amber-800 flex items-start gap-2 text-xs text-amber-200">
       <AlertTriangle class="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
       <span>This plan was proposed automatically and has not been reviewed. Check the method and model for each stage, then save to confirm it.</span>
@@ -104,9 +109,9 @@ watch(() => props.task.id, () => load(), { immediate: true })
 
     <template v-if="assessment">
       <ComplexityAssessmentCard :assessment="assessment" :busy="loading" @regrade="load" />
-      <RoutingPlanTable :rows="rows" :proposed="proposed" :methods="options.methods" :models="options.models"
+      <RoutingPlanTable :rows="rows" :proposed="proposed" :current="current" :methods="options.methods" :models="options.models"
         :disabled="loading || saving" :current-stage="task.current_stage_id" @update:rows="onRows" />
-      <div class="flex items-center justify-end gap-3">
+      <div class="sticky bottom-0 -mx-5 px-5 py-3 bg-slate-950/95 border-t border-slate-800 backdrop-blur flex items-center justify-end gap-3">
         <span v-if="dirty" class="text-[11px] text-amber-400 mr-auto">Unsaved changes</span>
         <button type="button" :disabled="saving || loading || (!dirty && confirmed)"
           class="h-8 px-4 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-xs font-medium text-white flex items-center gap-1.5"
@@ -117,5 +122,6 @@ watch(() => props.task.id, () => load(), { immediate: true })
         </button>
       </div>
     </template>
+  </div>
   </div>
 </template>

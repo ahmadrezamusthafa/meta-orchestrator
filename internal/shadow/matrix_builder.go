@@ -546,6 +546,24 @@ func CanonicalComplexity(c string) string {
 	return ""
 }
 
+// Applicability reports whether the router uses a measured cell, and why not when it does not.
+func (s *MatrixStore) Applicability(m BestMethodsMatrix, c MatrixCell) (bool, string) {
+	switch {
+	case m.Source != SourceShadowBenchmark || c.Source == SourceDefault:
+		return false, "not measured"
+	case c.OptimalMethod == "":
+		return false, "no winning method"
+	case c.Samples < s.minSamples:
+		return false, fmt.Sprintf("%d samples (needs %d)", c.Samples, s.minSamples)
+	case c.FPVRPercent < s.minFPVR*100:
+		return false, fmt.Sprintf("first-pass %.0f%% (needs %.0f%%)", c.FPVRPercent, s.minFPVR*100)
+	}
+	return true, ""
+}
+
+// Thresholds are the evidence a measured cell needs before routing uses it.
+func (s *MatrixStore) Thresholds() (minSamples int, minFPVR float64) { return s.minSamples, s.minFPVR }
+
 // AdviseMethod implements router.MethodAdvisor using benchmark-sourced cells only. It also
 // returns the winning model, so the router can use the exact model that was measured when the
 // operator's chain has it (and fall back to the tier when it does not).

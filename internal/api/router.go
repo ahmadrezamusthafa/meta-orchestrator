@@ -139,6 +139,7 @@ func NewRouter(cfg RouterConfig) *Router {
 	r.connections = newConnectionChecker(r.quota)
 	stratRouter.SetAvailability(r.connections.Usable)
 	if saved := savedRouterSettings(); saved != nil {
+		saved.PriorityChain = withCatalogMeta(saved.PriorityChain) // heal stale prices saved by older builds
 		stratRouter.SetSettings(*saved)
 	}
 	r.initTelemetry()

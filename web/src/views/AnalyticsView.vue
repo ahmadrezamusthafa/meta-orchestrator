@@ -273,13 +273,7 @@ const isEmpty = computed(() => !!summary.value && (summary.value.totals?.runs ??
         </button>
       </div>
       <div v-else-if="isBenchLoading && !benchmarks" class="h-64 rounded-xl bg-slate-900/80 border border-slate-800 animate-pulse"></div>
-      <MethodBenchmarkMatrix
-        v-if="benchmarks"
-        :cells="benchmarks.matrix ?? []"
-        :source="benchmarks.source"
-        :generated-at="benchmarks.generated_at"
-        :measured-cells="benchmarks.measured_cells"
-      />
+      <MethodBenchmarkMatrix v-if="benchmarks" :data="benchmarks" />
     </main>
   </div>
 </template>

@@ -53,6 +53,8 @@ export interface StageRoute {
   tier?: string
   reasoning?: string
   overridden?: boolean
+  // Display only: recommended model the chain could not run
+  wanted?: string
 }
 
 export interface ComplexityAssessment {
@@ -72,6 +74,7 @@ export interface PlannedStageDTO {
   tier?: string
   reasoning: string
   strategy: string
+  wanted?: string
 }
 
 export interface MethodOptionDTO {
@@ -473,6 +476,16 @@ export interface RoutingDecisionDTO {
   token_budget: number
   reasoning: string
   suggestion?: ModelSuggestion
+  // Where the method / model choice came from
+  method_source?: 'policy' | 'benchmark' | 'rule' | 'user'
+  tier_source?: 'policy' | 'benchmark' | 'calibrated' | 'mode' | 'rule' | 'user'
+}
+
+// What the router decides for one pipeline stage at one complexity
+export interface RouteMatrixCellDTO {
+  stage_id: string
+  complexity: Complexity
+  decision: RoutingDecisionDTO
 }
 
 export interface RoutePreviewDTO {
@@ -493,6 +506,8 @@ export interface RouterModeDTO {
   id: RouterMode
   name: string
   description: string
+  complexity_aware?: boolean
+  recommended?: boolean
 }
 
 export interface AvailableModelDTO {
@@ -512,6 +527,7 @@ export interface RouterSettingsDTO {
   available_modes: RouterModeDTO[]
   all_models: AvailableModelDTO[]
   preview: RoutePreviewDTO[]
+  matrix?: RouteMatrixCellDTO[]
   tiers: TierAssignmentDTO[]
 }
 
@@ -539,13 +555,25 @@ export interface BenchmarkCellDTO {
   runner_up?: string
   // 'shadow_benchmark' = measured; 'default' = best-practice policy, never benchmarked
   source?: 'shadow_benchmark' | 'default' | string
+  // Pipeline placement and whether routing uses this measurement
+  benchmark_stage?: string
+  applied?: boolean
+  not_applied_reason?: string
 }
 
 export interface BenchmarksResponseDTO {
   total_cells: number
   measured_cells?: number
+  applied_cells?: number
+  stages?: string[]
+  complexities?: Complexity[]
+  min_samples?: number
+  min_fpvr?: number
+  shadow_enabled?: boolean
   generated_at?: string
   source?: 'shadow_benchmark' | 'default' | string
+  sweep_id?: string
+  // Measured cells only, placed on pipeline stages
   matrix: BenchmarkCellDTO[]
 }
 

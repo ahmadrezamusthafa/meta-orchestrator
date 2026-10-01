@@ -218,7 +218,7 @@ onMounted(() => {
       </div>
 
       <!-- Tabs -->
-      <nav class="h-10 px-4 bg-slate-900 border-b border-slate-800 flex items-center gap-1 flex-shrink-0 overflow-x-auto" role="tablist">
+      <nav class="min-h-10 px-4 py-1 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center gap-1 flex-shrink-0" role="tablist">
         <button v-for="t in TABS" :key="t.id" type="button" role="tab" :aria-selected="activeTab === t.id" @click="activeTab = t.id"
           class="h-8 px-3 rounded text-xs transition-colors flex items-center gap-2 border whitespace-nowrap"
           :class="activeTab === t.id ? 'bg-slate-800 border-slate-700 text-slate-100 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'">
