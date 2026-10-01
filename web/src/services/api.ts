@@ -10,7 +10,8 @@ import type {
   OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO, RoutePreviewDTO, TierAssignmentDTO,
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
   TaskActivityResponse, TaskChatResponse, TaskDiffDTO, DiffAgainst, TaskArtifactDTO,
-  PullRequestDraftDTO, PullRequestOpenedDTO, UATGuideStatusDTO, UATGuideSettings
+  PullRequestDraftDTO, PullRequestOpenedDTO, UATGuideStatusDTO, UATGuideSettings,
+  TaskAnalysisDTO, TaskRoutingDTO, StageRoute
 } from '../types'
 
 
@@ -131,6 +132,37 @@ export const api = {
   async getTaskWorktree(taskId: string): Promise<TaskWorktreeDTO> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/worktree`)
     if (!res.ok) throw new Error(`Failed to fetch worktree for task ${taskId}`)
+    return res.json()
+  },
+
+  // AI grades the draft task's complexity and the router proposes a method/model per stage.
+  // Passing complexity re-plans with the operator's grade instead of asking the AI.
+  async analyzeTask(payload: {
+    title: string; description?: string; assigned_repos?: string[]; complexity?: string; task_type?: string
+    start_stage?: string; halt_stage?: string
+  }): Promise<TaskAnalysisDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to analyze task')
+    return res.json()
+  },
+
+  async getTaskRouting(taskId: string): Promise<TaskRoutingDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/routing`)
+    if (!res.ok) throw new Error(`Failed to load routing plan for ${taskId}`)
+    return res.json()
+  },
+
+  async updateTaskRouting(taskId: string, body: { complexity?: string; routing_plan: StageRoute[] }): Promise<Task> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/routing`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to update routing plan')
     return res.json()
   },
 

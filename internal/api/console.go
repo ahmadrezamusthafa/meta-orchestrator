@@ -548,7 +548,7 @@ func (r *Router) startChatTurn(task *types.Task, message, model string) (string,
 	if taskType == "" {
 		taskType = router.ClassifyTaskType(task.Title, task.Description)
 	}
-	decision := r.strategyRouter.RouteForTask(task.CurrentStageID, complexity, taskType, task.AssignedRepos)
+	decision := r.routeTask(task, complexity, taskType)
 	if model != "" {
 		decision.Model = model
 		decision.FallbackChain = []string{model}

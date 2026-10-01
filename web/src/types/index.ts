@@ -38,8 +38,67 @@ export interface Task {
   max_token_budget: number
   artifact_dir: string
   metadata?: Record<string, string>
+  // Confirmed method/model per stage (see RoutingPlanTable)
+  routing_plan?: StageRoute[]
   created_at: string
   updated_at: string
+}
+
+export type Complexity = 'LOW' | 'MEDIUM' | 'HIGH' | 'SYSTEM'
+
+export interface StageRoute {
+  stage_id: string
+  method: string
+  model: string
+  tier?: string
+  reasoning?: string
+  overridden?: boolean
+}
+
+export interface ComplexityAssessment {
+  complexity: Complexity
+  task_type: string
+  rationale: string
+  signals?: string[]
+  source: 'ai' | 'heuristic' | 'operator'
+  model?: string
+  fallback?: string
+}
+
+export interface PlannedStageDTO {
+  stage_id: string
+  method: string
+  model: string
+  tier?: string
+  reasoning: string
+  strategy: string
+}
+
+export interface MethodOptionDTO {
+  id: string
+  name: string
+  description: string
+}
+
+export interface ModelOptionDTO {
+  model: string
+  tiers?: string[]
+}
+
+export interface TaskAnalysisDTO {
+  assessment: ComplexityAssessment
+  plan: PlannedStageDTO[]
+  methods: MethodOptionDTO[]
+  models: ModelOptionDTO[]
+}
+
+export interface TaskRoutingDTO {
+  complexity: string
+  complexity_source: string
+  complexity_rationale: string
+  routing_plan: StageRoute[] | null
+  methods: MethodOptionDTO[]
+  models: ModelOptionDTO[]
 }
 
 export interface TaskRepoWorktreeDTO {

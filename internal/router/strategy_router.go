@@ -366,86 +366,113 @@ func (r *Router) applyAdvisor(d *RoutingDecision, stageID, complexity, taskType 
 	return d
 }
 
-func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes []string) *RoutingDecision {
-	normComplexity := strings.ToUpper(complexity)
-	if normComplexity == "" {
-		normComplexity = "MEDIUM"
-	}
+// stageClass groups SDLC stages that share a routing policy.
+type stageClass int
 
-	normStage := strings.ToUpper(stageID)
-	switch normStage {
-	case "PRD_DISCOVERY":
-		normStage = "INTAKE_PRD"
-	case "ATDD_CREATION":
-		normStage = "ATDD_RED_PHASE"
-	case "TASK_IMPLEMENTATION":
-		normStage = "IMPLEMENTATION_GREEN"
-	case "E2E_VALIDATION", "UAT_VERIFICATION":
-		normStage = "E2E_AUTOMATION"
-	case "SIGNOFF_MERGE":
-		normStage = "CONTRACT_VERIFY"
-	}
+const (
+	classPlanning  stageClass = iota // PRD, RFC, ATDD: reasoning-heavy documents
+	classDecompose                   // repo discovery, task breakdown: dependency mapping
+	classImplement                   // code changes
+	classVerify                      // E2E, UAT, sign-off
+	classOther
+)
 
-	var model string
-	var tier string
-	var method string
-	var budget int64
-	var reasoning string
-	requiresDocker := false
-
-	switch normStage {
-	case "INTAKE_PRD", "TECH_DOC_RFC", "CONTRACT_SPEC":
-		model, tier = r.cfg.ModelTiers.Tier1Reasoning, TierReasoning
-		method = "bmad"
-		budget = 120000
-		reasoning = "Best practice: Tier 1 high-reasoning model paired with BMAD product/architecture methodology"
-
-	case "REPO_DISCOVERY", "TASK_BREAKDOWN":
-		model, tier = r.cfg.ModelTiers.Tier1Reasoning, TierReasoning
-		method = "supervisor"
-		budget = 80000
-		reasoning = "Best practice: Tier 1 model with Supervisor role for dependency mapping and atomic task decomposition"
-
-	case "ATDD_RED_PHASE", "MOCK_ATDD":
-		model, tier = r.cfg.ModelTiers.Tier1Reasoning, TierReasoning
-		method = "bmad"
-		budget = 100000
-		requiresDocker = true
-		reasoning = "Best practice: Tier 1 model + BMAD QA role for AST-grounded Red Phase test generation"
-
-	case "IMPLEMENTATION_GREEN", "PATCH_IMPLEMENTATION", "CODEGEN_IMPLEMENT":
-		if normComplexity == "HIGH" || normComplexity == "CRITICAL" {
-			model, tier = r.cfg.ModelTiers.Tier1Reasoning, TierReasoning
-			method = "bmad"
-			budget = 200000
-			reasoning = fmt.Sprintf("Best practice: Complex task (%s) routed to Tier 1 with BMAD developer/QA pairing", normComplexity)
-		} else {
-			model, tier = r.cfg.ModelTiers.Tier2CodeGen, TierCodeGen
-			method = "react"
-			budget = 100000
-			reasoning = fmt.Sprintf("Best practice: Standard task (%s) routed to Tier 2 with fast ReAct iteration", normComplexity)
-		}
-		requiresDocker = true
-
-	case "E2E_AUTOMATION", "UAT_EVIDENCE", "VERIFY_REGRESSION", "CONTRACT_VERIFY":
-		model, tier = r.cfg.ModelTiers.Tier2CodeGen, TierCodeGen
-		method = "superpower"
-		budget = 90000
-		requiresDocker = true
-		reasoning = "Best practice: Browser/terminal verification routed to Superpower automation harness"
-
+// canonicalRouterStage maps every stage id spelling (workflow ids, legacy FSM ids) onto one name.
+func canonicalRouterStage(stageID string) string {
+	switch s := strings.ToUpper(strings.TrimSpace(stageID)); s {
+	case "PRD_DISCOVERY", "INTAKE_PRD":
+		return "INTAKE_PRD"
+	case "TECHDOC_RFC", "TECH_DOC_RFC", "CONTRACT_SPEC":
+		return "TECH_DOC_RFC"
+	case "ATDD_CREATION", "ATDD_RED_PHASE", "MOCK_ATDD", "RED_VERIFICATION":
+		return "ATDD_RED_PHASE"
+	case "TASK_IMPLEMENTATION", "IMPLEMENTATION_GREEN", "PATCH_IMPLEMENTATION", "CODEGEN_IMPLEMENT":
+		return "IMPLEMENTATION_GREEN"
+	case "E2E_VALIDATION", "UAT_VERIFICATION", "E2E_AUTOMATION", "UAT_EVIDENCE", "VERIFY_REGRESSION":
+		return "E2E_AUTOMATION"
+	case "SIGNOFF_MERGE", "CONTRACT_VERIFY":
+		return "CONTRACT_VERIFY"
 	default:
-		// Default fallback
-		model, tier = r.cfg.ModelTiers.Tier2CodeGen, TierCodeGen
-		method = "react"
-		budget = 50000
-		reasoning = "Default best-practice fallback for custom stage"
+		return s
 	}
+}
 
+func classOf(canonical string) stageClass {
+	switch canonical {
+	case "INTAKE_PRD", "TECH_DOC_RFC", "ATDD_RED_PHASE":
+		return classPlanning
+	case "REPO_DISCOVERY", "TASK_BREAKDOWN":
+		return classDecompose
+	case "IMPLEMENTATION_GREEN":
+		return classImplement
+	case "E2E_AUTOMATION", "CONTRACT_VERIFY":
+		return classVerify
+	}
+	return classOther
+}
+
+// NormalizeComplexity maps a complexity label onto LOW, MEDIUM, HIGH or SYSTEM (CRITICAL → HIGH).
+func NormalizeComplexity(c string) string {
+	switch strings.ToUpper(strings.TrimSpace(c)) {
+	case "LOW":
+		return "LOW"
+	case "HIGH", "CRITICAL":
+		return "HIGH"
+	case "SYSTEM":
+		return "SYSTEM"
+	}
+	return "MEDIUM"
+}
+
+// routeBestPractice is the stage × complexity policy. The model tier scales with complexity so
+// simple work runs on the cheaper Tier 2 code model (capable enough to stay reliable; Tier 3 is
+// reserved for log parsing) and only complex or system-level work pays for Tier 1:
+//
+//	              LOW              MEDIUM              HIGH                SYSTEM
+//	planning      T2 ReAct         T1 BMAD             T1 BMAD             T1 Superpower
+//	decompose     T2 ReAct         T1 Supervisor       T1 Supervisor       T1 Superpower
+//	implement     T2 ReAct         T2 ReAct            T1 BMAD             T1 Superpower
+//	verify        T2 Superpower    T2 Superpower       T1 Superpower       T1 Superpower
+func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes []string) *RoutingDecision {
+	cx := NormalizeComplexity(complexity)
+	stage := canonicalRouterStage(stageID)
+	class := classOf(stage)
+
+	tier, method := TierCodeGen, "react"
+	var budget int64 = 50000
+	var why string
+	switch {
+	case class == classOther:
+		why = "Default best-practice fallback for custom stage"
+	case cx == "SYSTEM":
+		tier, method, budget = TierReasoning, "superpower", 150000
+		why = "System-level change (containers, CI, migrations) needs Tier 1 with the Superpower plan-and-execute harness"
+	case cx == "LOW" && class != classVerify:
+		budget = 40000
+		why = "Low complexity: cheaper Tier 2 model with a single fast ReAct agent is reliable enough"
+	case class == classPlanning:
+		tier, method, budget = TierReasoning, "bmad", 120000
+		why = fmt.Sprintf("%s complexity: Tier 1 reasoning model with BMAD product/architecture/QA roles", cx[:1]+strings.ToLower(cx[1:]))
+	case class == classDecompose:
+		tier, method, budget = TierReasoning, "supervisor", 80000
+		why = "Tier 1 model with a Supervisor for dependency mapping and atomic task decomposition"
+	case class == classImplement && cx == "HIGH":
+		tier, method, budget = TierReasoning, "bmad", 200000
+		why = "High complexity implementation: Tier 1 with BMAD developer/QA pairing"
+	case class == classImplement:
+		budget = 100000
+		why = "Medium complexity implementation: Tier 2 code model with fast ReAct iteration"
+	case class == classVerify && cx == "HIGH":
+		tier, method, budget = TierReasoning, "superpower", 120000
+		why = "High complexity verification across services: Tier 1 with the Superpower automation harness"
+	default: // verification, LOW or MEDIUM
+		method, budget = "superpower", 90000
+		why = "Browser/terminal verification on Tier 2 with the Superpower automation harness"
+	}
 	if r.cfg.Router.MaxTokenBudget > 0 && budget > r.cfg.Router.MaxTokenBudget {
 		budget = r.cfg.Router.MaxTokenBudget
 	}
-
+	model := r.modelForTier(tier)
 	return &RoutingDecision{
 		Strategy:       "best_practice",
 		Model:          model,
@@ -453,8 +480,8 @@ func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes 
 		FallbackChain:  []string{model},
 		Method:         method,
 		TokenBudget:    budget,
-		Reasoning:      reasoning,
-		RequiresDocker: requiresDocker,
+		Reasoning:      "Best practice: " + why,
+		RequiresDocker: class == classImplement || class == classVerify || stage == "ATDD_RED_PHASE" || cx == "SYSTEM",
 	}
 }
 

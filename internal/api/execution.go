@@ -211,7 +211,7 @@ func (r *Router) executeStage(run *stageRun) {
 	if taskType == "" {
 		taskType = router.ClassifyTaskType(task.Title, task.Description)
 	}
-	decision := r.strategyRouter.RouteForTask(task.CurrentStageID, complexity, taskType, task.AssignedRepos)
+	decision := r.routeTask(task, complexity, taskType)
 
 	r.mu.Lock()
 	if t, ok := r.tasks[taskID]; ok {

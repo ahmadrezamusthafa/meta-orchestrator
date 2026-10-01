@@ -96,23 +96,7 @@ func ClassifyTaskType(title string, description string) string {
 	return "general"
 }
 
-// AssessComplexity evaluates title, scope, and repo impact to assign a complexity tier.
+// AssessComplexity grades a task from keywords and repository count (see HeuristicComplexity).
 func (p *TaskProfiler) AssessComplexity(title string, description string, impactedRepos []string) string {
-	combined := strings.ToLower(title + " " + description)
-
-	if strings.Contains(combined, "refactor") ||
-		strings.Contains(combined, "migration") ||
-		strings.Contains(combined, "breaking change") ||
-		len(impactedRepos) > 2 {
-		return "HIGH"
-	}
-
-	if strings.Contains(combined, "typo") ||
-		strings.Contains(combined, "readme") ||
-		strings.Contains(combined, "css tweak") ||
-		strings.Contains(combined, "color change") {
-		return "LOW"
-	}
-
-	return "MEDIUM"
+	return HeuristicComplexity(title, description, impactedRepos).Complexity
 }

@@ -34,8 +34,32 @@ type Task struct {
 	MaxTokenBudget    int64             `json:"max_token_budget"`
 	ArtifactDir       string            `json:"artifact_dir"`
 	Metadata          map[string]string `json:"metadata,omitempty"`
-	CreatedAt         time.Time         `json:"created_at"`
-	UpdatedAt         time.Time         `json:"updated_at"`
+	// RoutingPlan is the method and model each stage runs with, as proposed from the task's
+	// complexity and confirmed (or changed) by the operator. Stages without an entry are routed live.
+	RoutingPlan []StageRoute `json:"routing_plan,omitempty"`
+	CreatedAt   time.Time    `json:"created_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
+}
+
+// StageRoute is the confirmed routing of one stage.
+type StageRoute struct {
+	StageID   string `json:"stage_id"`
+	Method    string `json:"method"`
+	Model     string `json:"model"`
+	Tier      string `json:"tier,omitempty"`
+	Reasoning string `json:"reasoning,omitempty"`
+	// Overridden is true when the operator changed the proposed method or model.
+	Overridden bool `json:"overridden,omitempty"`
+}
+
+// RouteFor returns the confirmed routing of a stage, or nil when the plan has none.
+func (t *Task) RouteFor(stageID string) *StageRoute {
+	for i := range t.RoutingPlan {
+		if t.RoutingPlan[i].StageID == stageID {
+			return &t.RoutingPlan[i]
+		}
+	}
+	return nil
 }
 
 // TokenUsage tracks token expenditures across providers and models.
@@ -50,7 +74,7 @@ type TokenUsage struct {
 // TaskProfile summarizes dynamic classification of a request.
 type TaskProfile struct {
 	WorkflowID       string   `json:"workflow_id"`
-	Complexity       string   `json:"complexity"` // "LOW", "MEDIUM", "HIGH", "CRITICAL"
+	Complexity       string   `json:"complexity"`          // "LOW", "MEDIUM", "HIGH", "CRITICAL"
 	TaskType         string   `json:"task_type,omitempty"` // recurring category, e.g. "crud", "migration"
 	IdentifiedRepos  []string `json:"identified_repos"`
 	RecommendedModel string   `json:"recommended_model"`

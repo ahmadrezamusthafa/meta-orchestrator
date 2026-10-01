@@ -176,6 +176,7 @@ func (r *Router) getOrCreateTaskProcessLocked(taskID string) *types.TaskProcessI
 func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/tasks", r.handleTasks)
 	r.mux.HandleFunc("/api/v1/tasks/", r.handleTaskItem)
+	r.mux.HandleFunc("/api/v1/tasks/analyze", r.handleTaskAnalyze)
 	r.mux.HandleFunc("/api/v1/tools", r.handleTools)
 	r.mux.HandleFunc("/api/v1/tools/", r.handleToolAction)
 	r.mux.HandleFunc("/api/v1/providers", r.handleProviders)

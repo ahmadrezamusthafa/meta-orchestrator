@@ -73,7 +73,6 @@ Launch a new autonomous task. Supports full pipeline execution or **Mid-Process 
   "workflow_id": "general_ai_sdlc",
   "assigned_repos": ["frontend-portal", "backend-core"],
   "router_strategy": "BEST_PRACTICE",
-  "selected_method": "Auto",
   "complexity": "HIGH",
   "max_token_budget": 50000,
   "active_slice": {
@@ -86,6 +85,40 @@ Launch a new autonomous task. Supports full pipeline execution or **Mid-Process 
 ```
 
 * **Response (`201 Created`):** Returns the initialized `Task` object.
+* **Routing plan:** send the reviewed analysis from `POST /api/v1/tasks/analyze` as `complexity`, `complexity_source`,
+  `complexity_rationale`, `task_type` and `routing_plan` (`[{stage_id, method, model, tier, overridden}]`); the task is
+  stored with `metadata.routing_confirmed = "true"` and every stage runs with its plan entry. Without `routing_plan` the
+  server grades complexity with the keyword heuristic (no model call), stores the router's proposal and marks it
+  `routing_confirmed = "false"` for the operator to review.
+
+---
+
+#### `POST /api/v1/tasks/analyze`
+Grade a draft task's complexity with AI (the Tier 3 model in your chain; keyword heuristic when it is unavailable) and
+propose a method and model per stage. Passing `complexity` re-plans with the operator's grade and skips the AI.
+
+* **Request Body:** `{"title", "description", "assigned_repos", "complexity"?, "task_type"?, "start_stage"?, "halt_stage"?}`
+* **Response (`200 OK`):**
+```json
+{
+  "assessment": {"complexity": "LOW", "task_type": "docs", "rationale": "README wording only.", "signals": ["readme"],
+                 "source": "ai", "model": "claude/claude-haiku-4-5"},
+  "plan": [{"stage_id": "prd_discovery", "method": "react", "model": "claude/claude-sonnet-5-5", "tier": "tier2",
+            "reasoning": "Best practice: Low complexity: ...", "strategy": "best_practice"}],
+  "methods": [{"id": "react", "name": "ReAct", "description": "..."}],
+  "models": [{"model": "claude/claude-sonnet-5-5", "tiers": ["tier2"]}]
+}
+```
+Best-practice tiers by complexity: LOW runs on Tier 2 (ReAct; Superpower for verification); MEDIUM uses Tier 1 for
+planning (BMAD/Supervisor) and Tier 2 for implementation and verification; HIGH uses Tier 1 throughout; SYSTEM uses
+Tier 1 with Superpower.
+
+---
+
+#### `GET|PUT /api/v1/tasks/{id}/routing`
+Read or replace a task's routing plan. `PUT {"complexity"?, "routing_plan": [...]}` validates stages, methods
+(`react`, `bmad`, `supervisor`, `superpower`) and models (must be enabled in the router chain), marks the plan
+confirmed and applies from the next stage run.
 
 ---
 
