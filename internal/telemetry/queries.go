@@ -3,6 +3,7 @@ package telemetry
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -127,6 +128,17 @@ func windowFilter(window string, repo string, now time.Time) Filter {
 
 var methodOrder = map[string]int{"BMAD": 0, "Supervisor": 1, "ReAct": 2, "Superpower": 3}
 
+// CanonicalMethod spells a method the way reports show it: the router records "bmad", the shadow
+// benchmark "BMAD", and both must land in one row.
+func CanonicalMethod(m string) string {
+	for name := range methodOrder {
+		if strings.EqualFold(name, strings.TrimSpace(m)) {
+			return name
+		}
+	}
+	return m
+}
+
 func pct(n, d int) float64 {
 	if d == 0 {
 		return 0
@@ -201,7 +213,7 @@ func Summarize(ds *Datastore, window string, repo string, now time.Time) Summary
 			return m[k]
 		}
 		get(cats, r.Category).add(r)
-		get(methods, r.Method).add(r)
+		get(methods, CanonicalMethod(r.Method)).add(r)
 		mk := modelKey{r.Model, r.Tier}
 		if models[mk] == nil {
 			models[mk] = &runAgg{}

@@ -38,8 +38,70 @@ export interface Task {
   max_token_budget: number
   artifact_dir: string
   metadata?: Record<string, string>
+  // Confirmed method/model per stage (see RoutingPlanTable)
+  routing_plan?: StageRoute[]
   created_at: string
   updated_at: string
+}
+
+export type Complexity = 'LOW' | 'MEDIUM' | 'HIGH' | 'SYSTEM'
+
+export interface StageRoute {
+  stage_id: string
+  method: string
+  model: string
+  tier?: string
+  reasoning?: string
+  overridden?: boolean
+  // Display only: recommended model the chain could not run
+  wanted?: string
+}
+
+export interface ComplexityAssessment {
+  complexity: Complexity
+  task_type: string
+  rationale: string
+  signals?: string[]
+  source: 'ai' | 'heuristic' | 'operator'
+  model?: string
+  fallback?: string
+}
+
+export interface PlannedStageDTO {
+  stage_id: string
+  method: string
+  model: string
+  tier?: string
+  reasoning: string
+  strategy: string
+  wanted?: string
+}
+
+export interface MethodOptionDTO {
+  id: string
+  name: string
+  description: string
+}
+
+export interface ModelOptionDTO {
+  model: string
+  tiers?: string[]
+}
+
+export interface TaskAnalysisDTO {
+  assessment: ComplexityAssessment
+  plan: PlannedStageDTO[]
+  methods: MethodOptionDTO[]
+  models: ModelOptionDTO[]
+}
+
+export interface TaskRoutingDTO {
+  complexity: string
+  complexity_source: string
+  complexity_rationale: string
+  routing_plan: StageRoute[] | null
+  methods: MethodOptionDTO[]
+  models: ModelOptionDTO[]
 }
 
 export interface TaskRepoWorktreeDTO {
@@ -414,6 +476,16 @@ export interface RoutingDecisionDTO {
   token_budget: number
   reasoning: string
   suggestion?: ModelSuggestion
+  // Where the method / model choice came from
+  method_source?: 'policy' | 'benchmark' | 'rule' | 'user'
+  tier_source?: 'policy' | 'benchmark' | 'calibrated' | 'mode' | 'rule' | 'user'
+}
+
+// What the router decides for one pipeline stage at one complexity
+export interface RouteMatrixCellDTO {
+  stage_id: string
+  complexity: Complexity
+  decision: RoutingDecisionDTO
 }
 
 export interface RoutePreviewDTO {
@@ -434,6 +506,8 @@ export interface RouterModeDTO {
   id: RouterMode
   name: string
   description: string
+  complexity_aware?: boolean
+  recommended?: boolean
 }
 
 export interface AvailableModelDTO {
@@ -453,6 +527,7 @@ export interface RouterSettingsDTO {
   available_modes: RouterModeDTO[]
   all_models: AvailableModelDTO[]
   preview: RoutePreviewDTO[]
+  matrix?: RouteMatrixCellDTO[]
   tiers: TierAssignmentDTO[]
 }
 
@@ -475,15 +550,30 @@ export interface BenchmarkCellDTO {
   avg_cost_usd?: number
   score?: number
   samples?: number
+  // Comparison context: "Method@provider/model" candidates not dominated, and the second place
+  pareto_front?: string[]
+  runner_up?: string
   // 'shadow_benchmark' = measured; 'default' = best-practice policy, never benchmarked
   source?: 'shadow_benchmark' | 'default' | string
+  // Pipeline placement and whether routing uses this measurement
+  benchmark_stage?: string
+  applied?: boolean
+  not_applied_reason?: string
 }
 
 export interface BenchmarksResponseDTO {
   total_cells: number
   measured_cells?: number
+  applied_cells?: number
+  stages?: string[]
+  complexities?: Complexity[]
+  min_samples?: number
+  min_fpvr?: number
+  shadow_enabled?: boolean
   generated_at?: string
   source?: 'shadow_benchmark' | 'default' | string
+  sweep_id?: string
+  // Measured cells only, placed on pipeline stages
   matrix: BenchmarkCellDTO[]
 }
 

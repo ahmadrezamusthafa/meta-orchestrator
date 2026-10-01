@@ -78,7 +78,7 @@ func (d *AnthropicDriver) Complete(ctx context.Context, req *LLMRequest) (*LLMRe
 
 	model := req.Model
 	if model == "" {
-		model = "claude-3-5-sonnet-20241022"
+		model = "claude-sonnet-5-5"
 	}
 
 	// Unit test mock bypass

@@ -1,44 +1,27 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import type { BenchmarkCellDTO } from '../../types'
+import type { BenchmarkCellDTO, BenchmarksResponseDTO, Complexity } from '../../types'
 import BenchmarkCellDetailModal from '../benchmark/BenchmarkCellDetailModal.vue'
-import { TableProperties } from 'lucide-vue-next'
-import { METHODS, methodStyle, fmtUsd, fpvrHealth, HEALTH_TEXT, isMeasured } from './analyticsFormat'
+import { FlaskConical } from 'lucide-vue-next'
+import { STAGES, stageName } from '../../composables/taskLifecycle'
+import { methodStyle, canonicalMethod, fmtUsd, fpvrHealth, HEALTH_TEXT } from './analyticsFormat'
 
-const props = defineProps<{
-  cells: BenchmarkCellDTO[]
-  source?: string
-  generatedAt?: string
-  measuredCells?: number
-}>()
+// Shadow-benchmark results: only measured cells are shown, each marked with whether routing uses
+// it. The routing policy for unmeasured cells is under Settings → Model Routing → What will run.
+const props = defineProps<{ data: BenchmarksResponseDTO }>()
 
 const selectedCell = ref<BenchmarkCellDTO | null>(null)
+const COMPLEXITIES: Complexity[] = ['LOW', 'MEDIUM', 'HIGH', 'SYSTEM']
+const stages = computed(() => (props.data.stages?.length ? props.data.stages : [...STAGES]))
+const byKey = computed(() => new Map((props.data.matrix ?? []).map((c) => [`${c.stage_id}|${c.complexity}`, c])))
+const measured = computed(() => props.data.measured_cells ?? props.data.matrix?.length ?? 0)
+const applied = computed(() => props.data.applied_cells ?? 0)
+const total = computed(() => props.data.total_cells || stages.value.length * COMPLEXITIES.length)
+const minSamples = computed(() => props.data.min_samples ?? 3)
+const minFpvr = computed(() => Math.round((props.data.min_fpvr ?? 0.5) * 100))
 
-const stages = [
-  { id: 'prd_discovery', name: '1. PRD Discovery' },
-  { id: 'repo_discovery', name: '2. Dynamic Repo Discovery' },
-  { id: 'atdd_creation', name: '3. ATDD Creation (Red Phase)' },
-  { id: 'techdoc_rfc', name: '4. Tech Doc / RFC Review' },
-  { id: 'task_breakdown', name: '5. Task Breakdown & Plan' },
-  { id: 'red_verification', name: '6. Red Verification' },
-  { id: 'task_implementation', name: '7. Task Implementation' },
-  { id: 'e2e_validation', name: '8. Automation & E2E' },
-  { id: 'signoff_merge', name: '9. Sign-Off & Evidence' },
-]
-
-const complexities: Array<BenchmarkCellDTO['complexity']> = ['LOW', 'MEDIUM', 'HIGH', 'SYSTEM']
-
-const cellIndex = computed(() => {
-  const m = new Map<string, BenchmarkCellDTO>()
-  for (const c of props.cells ?? []) m.set(`${c.stage_id}|${c.complexity}`, c)
-  return m
-})
-
-const measuredCount = computed(() => props.measuredCells ?? (props.cells ?? []).filter(isMeasured).length)
-const totalCells = stages.length * complexities.length
-
-function getCell(stageId: string, comp: string): BenchmarkCellDTO | undefined {
-  return cellIndex.value.get(`${stageId}|${comp}`)
+function cell(stage: string, cx: string) {
+  return byKey.value.get(`${stage}|${cx}`)
 }
 
 function fmtTimestamp(ts?: string): string {
@@ -50,94 +33,78 @@ function fmtTimestamp(ts?: string): string {
 
 <template>
   <section class="p-4 bg-slate-900/80 border border-slate-800 rounded-xl space-y-3">
-    <div class="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
-      <div>
-        <h3 class="text-xs font-bold text-slate-100 uppercase tracking-wide">
-          Method Benchmark Matrix
-          <span class="ml-1 text-sky-400 font-mono text-xs" title="Cells backed by shadow benchmark samples">
-            {{ measuredCount }}/{{ totalCells }} measured
-          </span>
+    <div class="flex flex-wrap items-start justify-between gap-2 pb-2 border-b border-slate-800">
+      <div class="space-y-0.5">
+        <h3 class="text-xs font-bold text-slate-100 uppercase tracking-wide flex items-center gap-1.5">
+          <FlaskConical class="w-4 h-4 text-emerald-400" />
+          Benchmark results
         </h3>
-        <span class="text-[11px] text-slate-400">
-          Winning method per SDLC stage &times; complexity
-          <template v-if="measuredCount === 0"> &middot; <span class="text-amber-400">default policy only &mdash; no shadow benchmark has run yet</span></template>
-          <template v-else-if="measuredCount < totalCells"> &middot; dashed cells are default policy</template>
-          <template v-if="source"> &middot; source <span class="font-mono text-slate-300">{{ source }}</span></template>
-          <template v-if="generatedAt"> &middot; {{ fmtTimestamp(generatedAt) }}</template>
-        </span>
+        <p class="text-[11px] text-slate-400 max-w-3xl leading-relaxed">
+          The shadow benchmark replays completed tasks on other methods and models and records which one passes first time most
+          cheaply. Routing uses a result once it has at least {{ minSamples }} runs and a first-pass rate of {{ minFpvr }}% or more;
+          everywhere else the routing policy applies.
+        </p>
       </div>
-      <div class="flex items-center gap-3">
-        <div class="flex items-center gap-2 text-[10px] font-mono">
-          <span v-for="m in METHODS" :key="m" class="flex items-center gap-1">
-            <span class="w-2 h-2 rounded-sm" :style="{ backgroundColor: methodStyle(m).fill }"></span>
-            <span class="text-slate-400">{{ m }}</span>
-          </span>
-        </div>
-        <TableProperties class="w-4 h-4 text-emerald-400" />
+      <div class="text-[11px] font-mono text-right space-y-0.5">
+        <div><span class="text-slate-100">{{ measured }}</span><span class="text-slate-500"> of {{ total }} measured</span></div>
+        <div><span class="text-emerald-400">{{ applied }}</span><span class="text-slate-500"> used by routing</span></div>
+        <div v-if="data.generated_at" class="text-slate-500">{{ fmtTimestamp(data.generated_at) }}</div>
       </div>
     </div>
 
-    <div class="border border-slate-800 rounded-lg overflow-x-auto">
+    <div v-if="measured === 0" class="py-6 px-4 text-center space-y-1.5">
+      <p class="text-xs text-slate-300">No benchmark results yet, so routing uses its policy for every stage.</p>
+      <p class="text-[11px] text-slate-500">
+        <template v-if="data.shadow_enabled">The benchmark daemon is running; results appear after it replays a completed task.</template>
+        <template v-else>
+          Start the daemon with <span class="font-mono text-slate-300">MO_SHADOW_ENABLED=true</span> to benchmark completed tasks.
+          Each replay makes paid model calls.
+        </template>
+      </p>
+    </div>
+
+    <div v-else class="border border-slate-800 rounded-lg overflow-x-auto">
       <table class="w-full text-left text-xs">
-        <thead class="bg-slate-950 text-slate-400 border-b border-slate-800 text-[11px] font-mono">
+        <thead class="bg-slate-950 text-slate-400 border-b border-slate-800 text-[11px]">
           <tr>
-            <th class="p-2.5 min-w-[180px]">SDLC Stage</th>
-            <th v-for="c in complexities" :key="c" class="p-2.5 min-w-[140px] text-center">{{ c }}</th>
+            <th scope="col" class="p-2.5 font-medium min-w-[150px]">Stage</th>
+            <th v-for="c in COMPLEXITIES" :key="c" scope="col" class="p-2.5 font-mono font-medium min-w-[150px]">{{ c }}</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-800/80 text-slate-300">
-          <tr v-for="s in stages" :key="s.id">
-            <td class="p-2.5 font-medium text-slate-200 whitespace-nowrap">{{ s.name }}</td>
-            <td v-for="c in complexities" :key="c" class="p-1.5">
+          <tr v-for="s in stages" :key="s">
+            <th scope="row" class="p-2.5 font-normal text-slate-200 whitespace-nowrap align-top">{{ stageName(s) }}</th>
+            <td v-for="c in COMPLEXITIES" :key="c" class="p-1.5 align-top">
               <button
-                v-if="getCell(s.id, c) && isMeasured(getCell(s.id, c))"
+                v-if="cell(s, c)"
                 type="button"
-                class="w-full p-1.5 rounded border space-y-1 text-left transition-colors hover:border-slate-500"
-                :class="[methodStyle(getCell(s.id, c)?.optimal_method).bg, methodStyle(getCell(s.id, c)?.optimal_method).border]"
-                :title="`${getCell(s.id, c)?.optimal_method} · ${getCell(s.id, c)?.winning_model}`"
-                @click="selectedCell = getCell(s.id, c) || null"
+                class="w-full p-1.5 rounded border text-left space-y-0.5 transition-colors hover:border-slate-500"
+                :class="cell(s, c)!.applied
+                  ? [methodStyle(cell(s, c)!.optimal_method).bg, methodStyle(cell(s, c)!.optimal_method).border]
+                  : 'border-dashed border-amber-700/70 bg-slate-950/40'"
+                :aria-label="`${stageName(s)} ${c}: ${canonicalMethod(cell(s, c)!.optimal_method)}, ${cell(s, c)!.applied ? 'used by routing' : 'not used yet'}`"
+                @click="selectedCell = cell(s, c) || null"
               >
-                <div class="flex items-center justify-between text-[10px] font-mono">
-                  <span class="font-semibold" :class="methodStyle(getCell(s.id, c)?.optimal_method).text">
-                    {{ getCell(s.id, c)?.optimal_method }}
-                  </span>
-                  <span class="font-bold" :class="HEALTH_TEXT[fpvrHealth(getCell(s.id, c)?.fpvr_percent ?? 0)]">
-                    {{ getCell(s.id, c)?.fpvr_percent }}%
-                  </span>
+                <div class="flex items-center justify-between gap-1 text-[11px]">
+                  <span class="font-semibold" :class="methodStyle(cell(s, c)!.optimal_method).text">{{ canonicalMethod(cell(s, c)!.optimal_method) }}</span>
+                  <span class="font-mono font-bold" :class="HEALTH_TEXT[fpvrHealth(cell(s, c)!.fpvr_percent)]">{{ cell(s, c)!.fpvr_percent }}%</span>
                 </div>
-                <div class="flex items-center justify-between text-[9px] font-mono text-slate-500">
-                  <span class="uppercase">{{ getCell(s.id, c)?.model_tier || '—' }}</span>
-                  <span class="text-sky-400">
-                    {{ getCell(s.id, c)?.avg_cost_usd !== undefined ? fmtUsd(getCell(s.id, c)?.avg_cost_usd) : '—' }}
-                  </span>
+                <div class="text-[10px] font-mono text-slate-300 break-all leading-snug">{{ cell(s, c)!.winning_model.split('/').pop() }}</div>
+                <div class="flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-500">
+                  <span>{{ cell(s, c)!.samples }} runs · {{ fmtUsd(cell(s, c)!.avg_cost_usd ?? 0) }}</span>
+                  <span v-if="!cell(s, c)!.applied" class="text-amber-400">{{ cell(s, c)!.not_applied_reason }}</span>
                 </div>
               </button>
-              <button
-                v-else-if="getCell(s.id, c)"
-                type="button"
-                class="w-full p-1.5 rounded border border-dashed border-slate-700 bg-slate-950/40 space-y-1 text-left transition-colors hover:border-slate-500"
-                :title="`${getCell(s.id, c)?.optimal_method} · default policy, not yet benchmarked`"
-                @click="selectedCell = getCell(s.id, c) || null"
-              >
-                <div class="flex items-center justify-between text-[10px] font-mono">
-                  <span class="font-semibold opacity-70" :class="methodStyle(getCell(s.id, c)?.optimal_method).text">
-                    {{ getCell(s.id, c)?.optimal_method }}
-                  </span>
-                  <span class="text-slate-500">policy</span>
-                </div>
-                <div class="text-[9px] font-mono text-slate-600 uppercase">{{ getCell(s.id, c)?.model_tier || '—' }}</div>
-              </button>
-              <div
-                v-else
-                class="w-full p-1.5 rounded border border-dashed border-slate-800 bg-slate-950/40 text-center text-[10px] font-mono text-slate-600"
-              >
-                no data
-              </div>
+              <div v-else class="p-1.5 text-[10px] text-slate-600" aria-label="Not measured">—</div>
             </td>
           </tr>
         </tbody>
       </table>
     </div>
+
+    <p v-if="measured > 0" class="text-[10px] text-slate-500">
+      Solid cells are used by routing; dashed cells need more evidence. UAT verification shares the E2E validation results.
+    </p>
 
     <BenchmarkCellDetailModal v-if="selectedCell" :cell="selectedCell" @close="selectedCell = null" />
   </section>

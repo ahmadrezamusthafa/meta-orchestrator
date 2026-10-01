@@ -213,7 +213,7 @@ func TestProvidersAndBenchmarksAPI(t *testing.T) {
 		t.Fatalf("Expected 200 OK for ping test, got %d", wTest.Code)
 	}
 
-	// Benchmarks 36-cell matrix
+	// Benchmarks: 8 pipeline stages × 4 complexities
 	reqBench := httptest.NewRequest(http.MethodGet, "/api/v1/benchmarks", nil)
 	wBench := httptest.NewRecorder()
 	router.ServeHTTP(wBench, reqBench)
@@ -226,8 +226,8 @@ func TestProvidersAndBenchmarksAPI(t *testing.T) {
 		Matrix     []shadow.MatrixCell `json:"matrix"`
 	}
 	_ = json.NewDecoder(wBench.Body).Decode(&benchResp)
-	if benchResp.TotalCells != 36 {
-		t.Errorf("Expected 36 benchmark matrix cells, got %d", benchResp.TotalCells)
+	if benchResp.TotalCells != 32 || len(benchResp.Matrix) != 0 {
+		t.Errorf("Expected 32 possible cells and no measured ones, got %d / %d", benchResp.TotalCells, len(benchResp.Matrix))
 	}
 }
 

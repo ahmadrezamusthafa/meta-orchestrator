@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
@@ -28,8 +29,15 @@ type CreateTaskRequest struct {
 	ExternalPRD      string            `json:"external_prd,omitempty"`
 	MaxTokenBudget   int64             `json:"max_token_budget,omitempty"`
 	Complexity       string            `json:"complexity,omitempty"`
-	UseWorktree      bool              `json:"use_worktree,omitempty"`
-	DisableWorktree  bool              `json:"disable_worktree,omitempty"` // work directly in the source checkout
+	// ComplexitySource/Rationale/TaskType carry the analysis the operator reviewed (POST /tasks/analyze).
+	ComplexitySource    string `json:"complexity_source,omitempty"`
+	ComplexityRationale string `json:"complexity_rationale,omitempty"`
+	TaskType            string `json:"task_type,omitempty"`
+	// RoutingPlan is the confirmed method/model per stage. Without it the server analyses the task
+	// and stores the router's proposal unconfirmed.
+	RoutingPlan     []types.StageRoute `json:"routing_plan,omitempty"`
+	UseWorktree     bool               `json:"use_worktree,omitempty"`
+	DisableWorktree bool               `json:"disable_worktree,omitempty"` // work directly in the source checkout
 }
 
 type InjectContextRequest struct {
@@ -57,6 +65,9 @@ func cloneTask(t *types.Task) *types.Task {
 	}
 	if t.AssignedRepos != nil {
 		cp.AssignedRepos = append([]string(nil), t.AssignedRepos...)
+	}
+	if t.RoutingPlan != nil {
+		cp.RoutingPlan = append([]types.StageRoute(nil), t.RoutingPlan...)
 	}
 	return &cp
 }
@@ -111,6 +122,33 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
+		// Settle complexity and the routing plan. The operator's reviewed analysis (from
+		// POST /tasks/analyze) is used as is; otherwise creation grades the task with the instant
+		// keyword heuristic so API and import callers are never held up by a model call.
+		confirmed := len(body.RoutingPlan) > 0
+		plan := body.RoutingPlan
+		if confirmed {
+			var err error
+			if plan, err = r.validatePlan(plan); err != nil {
+				r.writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		assessment := router.HeuristicComplexity(body.Title, body.Description, body.AssignedRepos)
+		if body.Complexity != "" {
+			assessment = r.assess(req.Context(), body.Title, body.Description, body.Complexity, body.TaskType, body.AssignedRepos)
+			if body.ComplexitySource != "" {
+				assessment.Source, assessment.Rationale = body.ComplexitySource, body.ComplexityRationale
+			}
+		}
+		if !confirmed {
+			start, halt := "", ""
+			if body.ActiveSlice != nil {
+				start, halt = body.ActiveSlice.StartStageID, body.ActiveSlice.HaltStageID
+			}
+			plan = proposedPlan(r.strategyRouter.Plan(planStages(start, halt), assessment.Complexity, assessment.TaskType, body.AssignedRepos))
+		}
+
 		r.mu.Lock()
 		taskID := r.nextTaskIDLocked()
 
@@ -143,6 +181,11 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 		selectedMethod := body.SelectedMethod
 		if selectedMethod == "" || selectedMethod == "Auto" {
 			selectedMethod = "BMAD"
+			for _, s := range plan {
+				if s.StageID == startStage && s.Method != "" {
+					selectedMethod = s.Method
+				}
+			}
 		}
 
 		workflowID := body.WorkflowID
@@ -184,13 +227,18 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 			SelectedMethod:    selectedMethod,
 			MaxTokenBudget:    maxBudget,
 			ArtifactDir:       fmt.Sprintf(".sdlc/artifacts/%s", taskID),
+			RoutingPlan:       plan,
 			Metadata: map[string]string{
-				"complexity":       body.Complexity,
-				"router_strategy":  body.RouterStrategy,
-				"source_branch":    body.SourceBranch,
-				"router_source":    "BP",
-				"router_rationale": fmt.Sprintf("Routed via %s to %s method", body.RouterStrategy, selectedMethod),
-				"worktree_enabled": fmt.Sprint(body.UseWorktree || !body.DisableWorktree),
+				"complexity":           assessment.Complexity,
+				"complexity_source":    assessment.Source,
+				"complexity_rationale": assessment.Rationale,
+				"task_type":            assessment.TaskType,
+				"routing_confirmed":    fmt.Sprint(confirmed),
+				"router_strategy":      body.RouterStrategy,
+				"source_branch":        body.SourceBranch,
+				"router_source":        "BP",
+				"router_rationale":     fmt.Sprintf("Routed via %s to %s method", body.RouterStrategy, selectedMethod),
+				"worktree_enabled":     fmt.Sprint(body.UseWorktree || !body.DisableWorktree),
 			},
 			CreatedAt: now,
 			UpdatedAt: now,
@@ -236,6 +284,13 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
 				"Task created at %s. Run the stage to start the agent, or ask it a question below.", startStage)})
 		}
+		confirmNote := "confirmed by you"
+		if !confirmed {
+			confirmNote = "proposed, not yet reviewed — change it under Routing plan before running a stage"
+		}
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
+			"Complexity %s (%s: %s). Routing plan %s: %s.", assessment.Complexity, assessment.Source, assessment.Rationale,
+			confirmNote, planSummary(plan))})
 
 		// Broadcast new task event over WebSocket
 		if r.cfg.WSHub != nil {
@@ -431,6 +486,10 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 
 		case "approvals":
 			r.handleTaskApprovals(w, req, taskID, parts)
+			return
+
+		case "routing":
+			r.handleTaskRouting(w, req, taskID)
 			return
 
 		case "dependencies":

@@ -146,3 +146,16 @@ func TestNormalizeTier(t *testing.T) {
 		}
 	}
 }
+
+// A small-sample FPVR gap is noise, not a verdict: 4/5 vs 3/5 clears the 5-point margin but
+// not the significance test, and the costlier side must not win on quality alone.
+func TestEvaluatorRuleComparisonIgnoresNoisyLead(t *testing.T) {
+	runs := build(
+		runSpec{category: "crud", method: "BMAD", tier: "tier1", strategy: "custom", rule: "r", n: 5, firstPasses: 4, cost: 0.30},
+		runSpec{category: "crud", method: "ReAct", tier: "tier1", strategy: "best_practice", n: 5, firstPasses: 3, cost: 0.10},
+	)
+	rep := NewEvaluator(DefaultConfig()).Evaluate(runs)
+	if len(rep.RuleComparisons) != 1 || rep.RuleComparisons[0].Winner != WinnerInconclusive {
+		t.Fatalf("rule comparison = %+v, want inconclusive", rep.RuleComparisons)
+	}
+}

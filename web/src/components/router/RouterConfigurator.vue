@@ -4,8 +4,9 @@ import { api } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import type {
   RouterMode, PriorityModelItem, RouterModeDTO, AvailableModelDTO,
-  ModelTier, ModelSuggestion, RoutePreviewDTO
+  ModelTier, ModelSuggestion, RouteMatrixCellDTO, BenchmarkCellDTO
 } from '../../types'
+import RoutingMatrix from './RoutingMatrix.vue'
 import {
   ArrowUp, ArrowDown, Plus, Trash2, Save, RotateCcw,
   Zap, DollarSign, Layers, Check, Search, Sparkles,
@@ -23,8 +24,10 @@ const availableModes = ref<RouterModeDTO[]>([])
 const allModels = ref<AvailableModelDTO[]>([])
 const defaultChain = ref<PriorityModelItem[]>([])
 
-// Live routing preview for the (possibly unsaved) mode + chain
-const preview = ref<RoutePreviewDTO[]>([])
+// Live routing preview for the (possibly unsaved) mode + chain: every stage × complexity
+const matrix = ref<RouteMatrixCellDTO[]>([])
+const benchmarkCells = ref<BenchmarkCellDTO[]>([])
+const activeMode = computed(() => availableModes.value.find((m) => m.id === selectedMode.value))
 const isPreviewLoading = ref(false)
 const savedSnapshot = ref('')
 let previewTimer: ReturnType<typeof setTimeout> | undefined
@@ -74,15 +77,15 @@ const isRegisteringCustom = ref(false)
 const customModelForm = ref({
   provider_id: 'claude',
   model_id: 'claude-opus-5-5',
-  model_name: 'Claude Opus 5.5 (Next-Gen Frontier)',
-  cost_per_1k: 0.015,
+  model_name: 'Claude Opus 5.5',
+  cost_per_1k: 0.004,
   latency_ms: 250,
 })
 
 const quickPresets = [
-  { provider_id: 'claude', model_id: 'claude-opus-5-5', model_name: 'Claude Opus 5.5 (Next-Gen)', cost_per_1k: 0.015, latency_ms: 250 },
-  { provider_id: 'claude', model_id: 'claude-3-7-sonnet-20250219', model_name: 'Claude 3.7 Sonnet (Hybrid Reasoning)', cost_per_1k: 0.003, latency_ms: 140 },
-  { provider_id: 'claude', model_id: 'claude-3-5-opus', model_name: 'Claude 3.5 Opus', cost_per_1k: 0.015, latency_ms: 260 },
+  { provider_id: 'claude', model_id: 'claude-opus-5-5', model_name: 'Claude Opus 5.5', cost_per_1k: 0.004, latency_ms: 250 },
+  { provider_id: 'claude', model_id: 'claude-sonnet-5-5', model_name: 'Claude Sonnet 5.5', cost_per_1k: 0.002, latency_ms: 140 },
+  { provider_id: 'claude', model_id: 'claude-haiku-4-5', model_name: 'Claude Haiku 4.5', cost_per_1k: 0.001, latency_ms: 75 },
   { provider_id: 'antigravity', model_id: 'gemini-2.5-pro', model_name: 'Gemini 2.5 Pro (Ultra Reasoning)', cost_per_1k: 0.00125, latency_ms: 120 },
   { provider_id: 'chatgpt', model_id: 'gpt-4.5-preview', model_name: 'OpenAI GPT-4.5 Preview (Orion)', cost_per_1k: 0.075, latency_ms: 320 },
 ]
@@ -115,7 +118,7 @@ async function refreshPreview() {
   try {
     const res = await api.previewRouter({ mode: selectedMode.value, priority_chain: priorityChain.value })
     if (seq !== previewSeq) return
-    preview.value = res.preview || []
+    matrix.value = res.matrix || []
   } catch (err) {
     console.error('Routing preview failed:', err)
   } finally {
@@ -206,8 +209,9 @@ async function loadRouterSettings() {
     allModels.value = res.all_models || []
     priorityChain.value = withTiers(res.priority_chain || [])
     defaultChain.value = res.default_chain || []
-    preview.value = res.preview || []
+    matrix.value = res.matrix || []
     savedSnapshot.value = snapshot()
+    api.getBenchmarks().then((b) => { benchmarkCells.value = b.matrix || [] }).catch(() => { benchmarkCells.value = [] })
 
     selectFirstCandidateModel()
   } catch (err: any) {
@@ -320,9 +324,11 @@ async function saveSettings() {
       mode: selectedMode.value,
       priority_chain: priorityChain.value,
     })
-    if (res.preview) preview.value = res.preview
+    if (res.matrix) matrix.value = res.matrix
+    // The server fills catalog names and prices for built-in models; show what was stored.
+    if (res.settings?.priority_chain) priorityChain.value = withTiers(res.settings.priority_chain)
     savedSnapshot.value = snapshot()
-    toastStore.success('Routing Configuration Saved', `Mode: ${selectedMode.value} · ${priorityChain.value.filter(i => i.enabled).length} active models in waterfall`)
+    toastStore.success('Routing saved', `${activeMode.value?.name ?? selectedMode.value} · ${priorityChain.value.filter(i => i.enabled).length} enabled models`)
   } catch (err: any) {
     toastStore.error('Save Failed', err.message || 'Could not persist router configuration')
   } finally {
@@ -384,11 +390,11 @@ function getModeIcon(mode: RouterMode) {
             <Layers class="w-4 h-4" />
           </div>
           <h3 class="text-sm font-bold text-slate-100 uppercase tracking-wide">
-            9Router Multi-Provider Routing & Priority Sorter
+            Model Routing
           </h3>
         </div>
         <p class="text-xs text-slate-400 mt-1">
-          Customize automated model selection, reorder fallback priority sequence, and manage all flagship & custom AI models.
+          Choose how each SDLC stage picks its model and method, which models are allowed, and see exactly what will run.
         </p>
       </div>
 
@@ -411,7 +417,7 @@ function getModeIcon(mode: RouterMode) {
         >
           <span v-if="isSaving" class="animate-spin text-white">⟳</span>
           <Save v-else class="w-3.5 h-3.5" />
-          <span>Save Routing Configuration</span>
+          <span>Save Routing</span>
           <span v-if="isDirty" class="w-1.5 h-1.5 rounded-full bg-amber-300" title="Unsaved changes"></span>
         </button>
       </div>
@@ -419,51 +425,45 @@ function getModeIcon(mode: RouterMode) {
 
     <!-- 1. Router Mode Selector -->
     <div class="space-y-3">
-      <div class="flex items-center justify-between">
-        <label class="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center gap-1.5">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h4 class="text-xs font-bold text-slate-200 uppercase tracking-wide flex items-center gap-1.5">
           <Activity class="w-3.5 h-3.5 text-sky-400" />
-          <span>Select Operational Routing Mode</span>
-        </label>
-        <span class="text-[11px] font-mono text-slate-500">Active Mode: <span class="text-sky-400 font-semibold uppercase">{{ selectedMode.replace('_', ' ') }}</span></span>
+          <span>1. Routing mode</span>
+        </h4>
+        <span class="text-[11px] text-slate-500">Decides which model each stage uses</span>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3">
-        <div
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5 gap-3" role="radiogroup" aria-label="Routing mode">
+        <button
           v-for="m in availableModes"
           :key="m.id"
+          type="button"
+          role="radio"
+          :aria-checked="selectedMode === m.id"
           @click="selectedMode = m.id"
-          class="p-3.5 rounded-xl border cursor-pointer select-none transition-all flex flex-col justify-between gap-2.5 relative group"
+          class="p-3.5 rounded-xl border text-left transition-all flex flex-col gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
           :class="selectedMode === m.id
             ? 'bg-sky-950/50 border-sky-500/80 shadow-lg shadow-sky-950/40 ring-1 ring-sky-500/40'
-            : 'bg-slate-950/70 border-slate-800/90 text-slate-400 hover:border-slate-700 hover:bg-slate-900/60'"
+            : 'bg-slate-950/70 border-slate-800/90 hover:border-slate-700 hover:bg-slate-900/60'"
         >
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between gap-2">
             <div
-              class="w-7 h-7 rounded-lg flex items-center justify-center border text-xs"
-              :class="selectedMode === m.id
-                ? 'bg-sky-500/20 border-sky-500/40 text-sky-300'
-                : 'bg-slate-900 border-slate-800 text-slate-500 group-hover:text-slate-300'"
+              class="w-7 h-7 rounded-lg flex items-center justify-center border text-xs shrink-0"
+              :class="selectedMode === m.id ? 'bg-sky-500/20 border-sky-500/40 text-sky-300' : 'bg-slate-900 border-slate-800 text-slate-500'"
             >
               <component :is="getModeIcon(m.id)" class="w-3.5 h-3.5" />
             </div>
-
-            <span
-              v-if="selectedMode === m.id"
-              class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-sky-500 text-slate-950 uppercase"
-            >
-              Active
-            </span>
-          </div>
-
-          <div>
-            <div class="font-semibold text-xs text-slate-200 line-clamp-1">
-              {{ m.name }}
-            </div>
-            <div class="text-[10px] text-slate-400 leading-relaxed mt-1 line-clamp-2">
-              {{ m.description }}
+            <div class="flex flex-wrap justify-end gap-1">
+              <span v-if="m.recommended" class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 uppercase">Recommended</span>
+              <span v-if="selectedMode === m.id" class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-sky-500 text-slate-950 uppercase">Active</span>
             </div>
           </div>
-        </div>
+          <div class="font-semibold text-xs text-slate-100">{{ m.name }}</div>
+          <div class="text-[11px] text-slate-400 leading-relaxed">{{ m.description }}</div>
+          <div class="mt-auto pt-1 text-[10px]" :class="m.complexity_aware ? 'text-emerald-400' : 'text-slate-500'">
+            {{ m.complexity_aware ? 'Model changes with task complexity' : 'Same model order for every stage' }}
+          </div>
+        </button>
       </div>
     </div>
 
@@ -473,11 +473,18 @@ function getModeIcon(mode: RouterMode) {
         <div>
           <h4 class="text-xs font-bold text-slate-200 uppercase tracking-wide flex items-center gap-1.5">
             <Sparkles class="w-3.5 h-3.5 text-amber-400" />
-            <span>AI Model Priority Chain & Sort Order</span>
+            <span>2. Allowed models &amp; fallback order</span>
           </h4>
-          <p class="text-[11px] text-slate-400 mt-0.5">
-            Your allow-list for every mode: only enabled models here ever run, and fallbacks follow this order.
-            Best Practice picks the highest-ranked model tagged for each stage's tier and only <em>suggests</em> stronger models you haven't added.
+          <p class="text-[11px] text-slate-400 mt-0.5 max-w-3xl leading-relaxed">
+            Only enabled models here ever run, and if one fails the next is tried in this order.
+            <template v-if="activeMode?.complexity_aware">
+              Tiered Best Practice uses the highest-ranked model tagged with each stage's tier (Tier 1 reasoning, Tier 2 code, Tier 3 logs),
+              and suggests a stronger model when none is allowed.
+            </template>
+            <template v-else-if="selectedMode === 'priority_sequence'">Priority Sequence always starts at the top of this list.</template>
+            <template v-else-if="selectedMode === 'cost_optimized'">Cost-Optimized sorts this list by input price, cheapest first.</template>
+            <template v-else-if="selectedMode === 'latency_optimized'">Latency-Optimized sorts this list by estimated latency, fastest first.</template>
+            <template v-else>Round-Robin rotates through this list.</template>
           </p>
         </div>
 
@@ -492,32 +499,6 @@ function getModeIcon(mode: RouterMode) {
             <span>Custom Model</span>
           </button>
 
-          <!-- Add Model Selector Dropdown -->
-          <div class="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1">
-            <select
-              v-model="selectedNewModelId"
-              class="bg-transparent text-xs text-slate-200 font-mono focus:outline-none max-w-[210px] truncate"
-            >
-              <option
-                v-for="m in allModels"
-                :key="m.model_id"
-                :value="m.model_id"
-                class="bg-slate-900 text-slate-200"
-              >
-                [{{ m.provider_name.split(' ')[0] }}] {{ m.model_name }}
-              </option>
-            </select>
-
-            <button
-              @click="addModelToChain()"
-              type="button"
-              class="h-6 px-2 rounded bg-sky-950 hover:bg-sky-900 border border-sky-700/80 text-[11px] font-medium text-sky-300 flex items-center gap-1 transition-colors"
-            >
-              <Plus class="w-3 h-3" />
-              <span>Add to Chain</span>
-            </button>
-          </div>
-
           <!-- All Models dropdown, anchored to its button -->
           <div ref="catalogRoot" class="relative">
             <button
@@ -530,7 +511,8 @@ function getModeIcon(mode: RouterMode) {
                 ? 'border-sky-600 text-white'
                 : 'border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white'"
             >
-              <span>All Models ({{ allModels.length }})</span>
+              <Plus class="w-3 h-3 text-sky-400" />
+              <span>Add model ({{ allModels.length }})</span>
               <ChevronUp v-if="showFullCatalog" class="w-3 h-3 text-sky-400" />
               <ChevronDown v-else class="w-3 h-3 text-sky-400" />
             </button>
@@ -644,12 +626,12 @@ function getModeIcon(mode: RouterMode) {
 
               <!-- Rank Badge -->
               <div
-                class="w-16 text-center py-1 rounded text-[10px] font-mono font-bold border"
+                class="min-w-[5.5rem] px-2 text-center py-1 rounded text-[10px] font-mono font-bold border whitespace-nowrap shrink-0"
                 :class="idx === 0
                   ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
                   : 'bg-slate-900 border-slate-800 text-slate-400'"
               >
-                {{ selectedMode === 'priority_sequence' ? (idx === 0 ? 'PRIMARY #1' : `FAILOVER #${idx + 1}`) : `RANK #${idx + 1}` }}
+                {{ idx === 0 ? 'PRIMARY' : `FALLBACK #${idx}` }}
               </div>
 
               <!-- Provider Badge & Model Name -->
@@ -674,7 +656,8 @@ function getModeIcon(mode: RouterMode) {
             <!-- Right Info: Tiers, Latency, Cost, Enabled Toggle, Delete -->
             <div class="flex flex-wrap items-center gap-3 shrink-0 self-end sm:self-auto">
               <!-- Tier Tags -->
-              <div class="flex items-center gap-1" role="group" aria-label="Tier tags">
+              <div class="flex items-center gap-1" role="group" aria-label="Tiers this model may serve">
+                <span class="text-[10px] text-slate-500 mr-0.5">Serves</span>
                 <button
                   v-for="t in TIER_OPTIONS"
                   :key="t.id"
@@ -731,56 +714,27 @@ function getModeIcon(mode: RouterMode) {
       </div>
     </div>
 
-    <!-- 2b. Live Routing Preview -->
+    <!-- 3. What will run: every stage × complexity -->
     <div class="space-y-2 pt-2 border-t border-slate-800/80">
-      <div class="flex items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center justify-between gap-2">
         <h4 class="text-xs font-bold text-slate-200 uppercase tracking-wide flex items-center gap-1.5">
           <Route class="w-3.5 h-3.5 text-emerald-400" />
-          <span>What Will Run</span>
+          <span>3. What will run</span>
           <span v-if="isDirty" class="px-1.5 py-0.5 rounded text-[9px] font-mono bg-amber-500/15 border border-amber-500/40 text-amber-300 normal-case">
-            unsaved preview
+            preview of unsaved changes
           </span>
         </h4>
-        <span v-if="isPreviewLoading" class="text-[10px] font-mono text-slate-500">updating…</span>
+        <span class="text-[11px] text-slate-500">{{ isPreviewLoading ? 'Updating…' : 'Method and model per stage and task complexity' }}</span>
       </div>
-
-      <div class="border border-slate-800 rounded-xl overflow-hidden bg-slate-950/60 divide-y divide-slate-800/80">
-        <div v-if="preview.length === 0" class="p-4 text-center text-slate-500 text-xs">No preview available.</div>
-        <div v-for="row in preview" :key="row.label" class="p-3 flex flex-col gap-1.5">
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
-            <div class="text-xs text-slate-300 font-medium">
-              {{ row.label }}
-              <span v-if="row.decision.tier" class="ml-1 text-[10px] font-mono text-slate-500">{{ row.decision.tier }}</span>
-            </div>
-            <div class="flex items-center gap-2 min-w-0">
-              <span class="text-xs font-mono text-emerald-300 truncate">{{ row.decision.model }}</span>
-              <span
-                v-if="row.decision.fallback_chain.length > 1"
-                class="text-[10px] font-mono text-slate-500 shrink-0"
-                :title="row.decision.fallback_chain.slice(1).join(' → ')"
-              >
-                +{{ row.decision.fallback_chain.length - 1 }} fallback{{ row.decision.fallback_chain.length > 2 ? 's' : '' }}
-              </span>
-            </div>
-          </div>
-          <div
-            v-if="row.decision.suggestion"
-            class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-amber-950/30 border border-amber-800/50"
-          >
-            <div class="flex items-start gap-1.5 text-[11px] text-amber-200">
-              <Lightbulb class="w-3.5 h-3.5 shrink-0 mt-0.5" />
-              <span>{{ row.decision.suggestion.reason }}</span>
-            </div>
-            <button
-              @click="applySuggestion(row.decision.suggestion)"
-              type="button"
-              class="h-6 px-2 rounded bg-amber-900/60 hover:bg-amber-800/70 border border-amber-700/70 text-[10px] font-mono text-amber-100 shrink-0 transition-colors"
-            >
-              {{ suggestionLabel(row.decision.suggestion.action) }}
-            </button>
-          </div>
-        </div>
-      </div>
+      <div v-if="matrix.length === 0" class="p-4 text-center text-slate-500 text-xs border border-slate-800 rounded-xl">No preview available.</div>
+      <RoutingMatrix
+        v-else
+        :cells="matrix"
+        :benchmarks="benchmarkCells"
+        :complexity-aware="!!activeMode?.complexity_aware"
+        :loading="isPreviewLoading"
+        @apply-suggestion="applySuggestion"
+      />
     </div>
 
     <!-- 4. Add Custom Model Modal -->
@@ -843,7 +797,7 @@ function getModeIcon(mode: RouterMode) {
             <input
               v-model="customModelForm.model_id"
               type="text"
-              placeholder="e.g. claude-opus-5-5, claude-3-7-sonnet"
+              placeholder="e.g. claude-opus-5-5, claude-sonnet-5-5"
               class="w-full h-8 px-2.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono placeholder:text-slate-600 focus:outline-none focus:border-purple-500"
             />
             <span class="text-[10px] text-slate-500 mt-1 block">

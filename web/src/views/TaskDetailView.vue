@@ -9,19 +9,21 @@ import TaskDiffViewer from '../components/task/TaskDiffViewer.vue'
 import TaskWorkspacePanel from '../components/task/TaskWorkspacePanel.vue'
 import TaskPullRequestPanel from '../components/task/TaskPullRequestPanel.vue'
 import TaskUATGuidePanel from '../components/task/TaskUATGuidePanel.vue'
+import TaskRoutingPanel from '../components/task/TaskRoutingPanel.vue'
 import { taskLifecycle, stagePosition, stageName, STAGES, TONE_BADGE, ACTION_BUTTON } from '../composables/taskLifecycle'
 import type { TaskWorktreeDTO, TaskDependencyInfoDTO } from '../types'
 import { api } from '../services/api'
 import {
   ChevronLeft, Terminal, BrainCircuit, ClipboardList, FileDiff, FolderGit2, Copy, Check, GitBranch,
-  ExternalLink, MoreHorizontal, Play, Pause, RotateCw, RefreshCcw, Eye, Loader2, Link2, ShieldAlert, GitPullRequest, ClipboardCheck,
+  ExternalLink, MoreHorizontal, Play, Pause, RotateCw, RefreshCcw, Eye, Loader2, Link2, ShieldAlert, GitPullRequest, ClipboardCheck, Route,
 } from 'lucide-vue-next'
 
-type Tab = 'console' | 'reasoning' | 'scope' | 'changes' | 'pr' | 'uat' | 'workspace'
+type Tab = 'console' | 'reasoning' | 'scope' | 'routing' | 'changes' | 'pr' | 'uat' | 'workspace'
 const TABS: { id: Tab; label: string; icon: any }[] = [
   { id: 'console', label: 'Console', icon: Terminal },
   { id: 'reasoning', label: 'AI Reasoning', icon: BrainCircuit },
   { id: 'scope', label: 'Scope & Requirements', icon: ClipboardList },
+  { id: 'routing', label: 'Method & Model', icon: Route },
   { id: 'changes', label: 'Changes', icon: FileDiff },
   { id: 'pr', label: 'Pull Request', icon: GitPullRequest },
   { id: 'uat', label: 'UAT Guide', icon: ClipboardCheck },
@@ -216,7 +218,7 @@ onMounted(() => {
       </div>
 
       <!-- Tabs -->
-      <nav class="h-10 px-4 bg-slate-900 border-b border-slate-800 flex items-center gap-1 flex-shrink-0 overflow-x-auto" role="tablist">
+      <nav class="min-h-10 px-4 py-1 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center gap-1 flex-shrink-0" role="tablist">
         <button v-for="t in TABS" :key="t.id" type="button" role="tab" :aria-selected="activeTab === t.id" @click="activeTab = t.id"
           class="h-8 px-3 rounded text-xs transition-colors flex items-center gap-2 border whitespace-nowrap"
           :class="activeTab === t.id ? 'bg-slate-800 border-slate-700 text-slate-100 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'">
@@ -229,6 +231,7 @@ onMounted(() => {
         <AgentConsole v-if="activeTab === 'console'" :task-id="taskId" :show-header="true" @task-updated="loadContext" />
         <TaskReasoningPanel v-else-if="activeTab === 'reasoning'" :task-id="taskId" @open-console="activeTab = 'console'" />
         <TaskScopePanel v-else-if="activeTab === 'scope'" :task="task" :dependencies="dependencies" @updated="load" />
+        <TaskRoutingPanel v-else-if="activeTab === 'routing'" :task="task" @updated="load" />
         <TaskDiffViewer v-else-if="activeTab === 'changes'" :task-id="taskId" :worktree="worktree" />
         <TaskPullRequestPanel v-else-if="activeTab === 'pr'" :task="task" @refresh="loadContext" />
         <TaskUATGuidePanel v-else-if="activeTab === 'uat'" :task="task" />

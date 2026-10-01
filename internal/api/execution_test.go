@@ -57,8 +57,8 @@ func TestCreatedTaskStartsPendingUntilRun(t *testing.T) {
 	}
 }
 
-func TestPauseInterruptsLiveTurnAndResumeReruns(t *testing.T) {
-	stub := &streamingStub{block: make(chan struct{})}
+func TestPauseInterruptsLiveTurnAndResumeContinuesSession(t *testing.T) {
+	stub := &streamingStub{block: make(chan struct{}), session: "sess-live"}
 	r := consoleRouter(t, stub)
 	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-C1/execute", ""); w.Code != http.StatusOK {
 		t.Fatalf("execute → %d %s", w.Code, w.Body.String())
@@ -77,7 +77,7 @@ func TestPauseInterruptsLiveTurnAndResumeReruns(t *testing.T) {
 	for !strings.Contains(lastEntry(r, "TASK-C1").Content, "Paused during task_implementation") && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if e := lastEntry(r, "TASK-C1"); !strings.Contains(e.Content, "Resume to run this stage again") {
+	if e := lastEntry(r, "TASK-C1"); !strings.Contains(e.Content, "Resume to continue") {
 		t.Fatalf("pause note = %q", e.Content)
 	}
 
@@ -88,6 +88,32 @@ func TestPauseInterruptsLiveTurnAndResumeReruns(t *testing.T) {
 		t.Fatalf("resume → %d", w.Code)
 	}
 	waitState(t, r, "TASK-C1", types.TaskStateWaitingGateApproval)
+	stub.mu.Lock()
+	last := stub.reqs[len(stub.reqs)-1]
+	stub.mu.Unlock()
+	prompt := last.Messages[len(last.Messages)-1].Content
+	if last.SessionID != "sess-live" || !strings.Contains(prompt, "from where you left off") || strings.Contains(prompt, "Implement the change") {
+		t.Fatalf("resume should continue the interrupted session, got session %q prompt %q", last.SessionID, prompt)
+	}
+}
+
+func TestResumeRestartsStageWhenSessionNeverReachedIt(t *testing.T) {
+	stub := &streamingStub{}
+	r := consoleRouter(t, stub)
+	r.console.mu.Lock()
+	c := r.console.get("TASK-C1")
+	c.sessionID, c.sessionStage = "sess-old", "task_breakdown" // left over from the previous stage
+	r.console.mu.Unlock()
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-C1/resume", ""); w.Code != http.StatusOK {
+		t.Fatalf("resume → %d", w.Code)
+	}
+	waitState(t, r, "TASK-C1", types.TaskStateWaitingGateApproval)
+	stub.mu.Lock()
+	last := stub.reqs[len(stub.reqs)-1]
+	stub.mu.Unlock()
+	if prompt := last.Messages[len(last.Messages)-1].Content; !strings.Contains(prompt, "Implement the change") {
+		t.Fatalf("a stage the session never saw must start from its brief: %q", prompt)
+	}
 }
 
 func TestFailedStageIsReportedAndRetryable(t *testing.T) {
@@ -104,7 +130,7 @@ func TestFailedStageIsReportedAndRetryable(t *testing.T) {
 		t.Fatalf("failed stage = %s %v", s.State, s.Metadata)
 	}
 	e := lastEntry(r, "TASK-F")
-	if e.Kind != types.ConsoleKindError || !strings.Contains(e.Content, "Run the stage again to retry") {
+	if e.Kind != types.ConsoleKindError || !strings.Contains(e.Content, "Continue to pick up the agent's session") {
 		t.Fatalf("failure note = %+v", e)
 	}
 	if proc := r.taskProcesses["TASK-F"]; proc.Status != "FAILED" {

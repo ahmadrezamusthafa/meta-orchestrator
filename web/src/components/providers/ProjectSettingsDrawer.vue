@@ -21,10 +21,10 @@ router:
 providers:
   tier_1_reasoning:
     provider: "claude"
-    model: "claude-3-5-sonnet-20241022"
+    model: "claude-opus-5-5"
   tier_2_codegen:
     provider: "claude"
-    model: "claude-3-5-sonnet-20241022"
+    model: "claude-sonnet-5-5"
   tier_3_log_parsing:
     provider: "antigravity"
     model: "gemini-2.0-flash"

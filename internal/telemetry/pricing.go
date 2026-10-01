@@ -20,6 +20,10 @@ type ModelPrice struct {
 // defaultPrices are public list prices at the time of writing. They are defaults only:
 // override them via LoadFromFile (configs/pricing.json) to match the account's actual billing.
 var defaultPrices = map[string]ModelPrice{
+	"claude-fable-5-1":  {InputPer1M: 10.00, OutputPer1M: 50.00, CachedInputPer1M: 0.25},
+	"claude-opus-5-5":   {InputPer1M: 4.00, OutputPer1M: 20.00, CachedInputPer1M: 0.20},
+	"claude-sonnet-5-5": {InputPer1M: 2.00, OutputPer1M: 10.00, CachedInputPer1M: 0.20},
+	"claude-haiku-4-5":  {InputPer1M: 1.00, OutputPer1M: 5.00, CachedInputPer1M: 0.10}, // cached rate assumed at 10% of input
 	"claude-3-5-sonnet": {InputPer1M: 3.00, OutputPer1M: 15.00, CachedInputPer1M: 0.30},
 	"claude-3-7-sonnet": {InputPer1M: 3.00, OutputPer1M: 15.00, CachedInputPer1M: 0.30},
 	"claude-3-5-haiku":  {InputPer1M: 0.80, OutputPer1M: 4.00, CachedInputPer1M: 0.08},

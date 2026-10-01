@@ -7,7 +7,11 @@ import { useToastStore } from '../../stores/toast'
 import BtnPrimary from '../common/BtnPrimary.vue'
 import StageRangeSelector from './StageRangeSelector.vue'
 import ArtifactUploadDropzone from './ArtifactUploadDropzone.vue'
-import { X, Sparkles, Layers, GitFork, Zap, FolderGit2, Link2, GitBranch } from 'lucide-vue-next'
+import ComplexityAssessmentCard from '../routing/ComplexityAssessmentCard.vue'
+import RoutingPlanTable from '../routing/RoutingPlanTable.vue'
+import { api } from '../../services/api'
+import type { TaskAnalysisDTO, StageRoute, Complexity } from '../../types'
+import { X, Sparkles, Layers, GitFork, Zap, FolderGit2, Link2, GitBranch, ChevronLeft, AlertOctagon } from 'lucide-vue-next'
 
 const props = defineProps<{
   initialStageId?: string
@@ -36,8 +40,55 @@ const haltStage = ref('e2e_validation')
 const produceVideo = ref(true)
 const sourceBranch = ref('')
 const routerStrategy = ref('BEST_PRACTICE')
-const selectedMethod = ref('Auto')
 const isSubmitting = ref(false)
+
+// Step 2: the AI grades complexity, the router proposes a method/model per stage, and the
+// operator confirms or changes them before the task is created.
+const step = ref<'details' | 'review'>('details')
+const analysis = ref<TaskAnalysisDTO | null>(null)
+const planRows = ref<StageRoute[]>([])
+const analyzing = ref(false)
+const analyzeError = ref('')
+const proposed = computed(() => {
+  const m: Record<string, { method: string; model: string }> = {}
+  for (const s of analysis.value?.plan ?? []) m[s.stage_id] = { method: s.method, model: s.model }
+  return m
+})
+
+async function analyze(complexity?: Complexity) {
+  analyzing.value = true
+  analyzeError.value = ''
+  try {
+    const slice = executionScope.value === 'slice'
+    const res = await api.analyzeTask({
+      title: title.value,
+      description: description.value,
+      assigned_repos: selectedRepos.value,
+      complexity,
+      task_type: complexity ? analysis.value?.assessment.task_type : undefined,
+      start_stage: slice ? startStage.value : undefined,
+      halt_stage: slice ? haltStage.value : undefined,
+    })
+    // Re-grading keeps the rows the operator already changed and refreshes the rest.
+    const kept = new Map(planRows.value.filter((r) => r.overridden).map((r) => [r.stage_id, r]))
+    if (complexity && analysis.value) res.assessment = { ...res.assessment, signals: analysis.value.assessment.signals }
+    analysis.value = res
+    planRows.value = res.plan.map((p) => {
+      const k = kept.get(p.stage_id)
+      if (k) return { ...k, overridden: k.method !== p.method || k.model !== p.model, reasoning: p.reasoning, wanted: p.wanted }
+      return { stage_id: p.stage_id, method: p.method, model: p.model, tier: p.tier, reasoning: p.reasoning, wanted: p.wanted, overridden: false }
+    })
+    step.value = 'review'
+  } catch (err: any) {
+    analyzeError.value = err?.message || 'Analysis failed'
+  } finally {
+    analyzing.value = false
+  }
+}
+
+function backToDetails() {
+  step.value = 'details'
+}
 const externalPlanContent = ref('')
 const externalPlanName = ref('')
 
@@ -120,7 +171,6 @@ function applyPreset(p: typeof presets[0]) {
   if (p.startStage) startStage.value = p.startStage
   if (p.haltStage) haltStage.value = p.haltStage
   routerStrategy.value = p.strategy
-  selectedMethod.value = p.method
   toastStore.info(`Loaded preset: ${p.name}`)
 }
 
@@ -170,7 +220,7 @@ function toggleDependency(taskId: string) {
 }
 
 async function handleSubmit() {
-  if (!title.value.trim()) return
+  if (!title.value.trim() || !analysis.value) return
 
   isSubmitting.value = true
   try {
@@ -180,8 +230,11 @@ async function handleSubmit() {
       workflow_id: selectedWorkflowId.value,
       assigned_repos: selectedRepos.value,
       router_strategy: routerStrategy.value,
-      selected_method: selectedMethod.value === 'Auto' ? 'BMAD' : selectedMethod.value,
-      complexity: 'HIGH',
+      complexity: analysis.value.assessment.complexity,
+      complexity_source: analysis.value.assessment.source,
+      complexity_rationale: analysis.value.assessment.rationale,
+      task_type: analysis.value.assessment.task_type,
+      routing_plan: planRows.value,
       max_token_budget: 50000,
       dependencies: selectedDependencies.value,
       use_worktree: useWorktree.value,
@@ -235,7 +288,18 @@ async function handleSubmit() {
         </button>
       </div>
 
-      <div class="p-6 overflow-y-auto space-y-4">
+      <div v-if="step === 'review' && analysis" class="p-6 overflow-y-auto space-y-4">
+        <div>
+          <p class="text-xs text-slate-400">Review how <span class="text-slate-200 font-medium">{{ title }}</span> will run.
+            Change the complexity, or the method and model of any stage, before launching.</p>
+        </div>
+        <ComplexityAssessmentCard :assessment="analysis.assessment" :busy="analyzing" @regrade="analyze" />
+        <RoutingPlanTable v-model:rows="planRows" :proposed="proposed" :methods="analysis.methods" :models="analysis.models" :disabled="analyzing" />
+        <p v-if="analyzeError" class="flex items-center gap-1.5 text-xs text-rose-400"><AlertOctagon class="w-3.5 h-3.5" />{{ analyzeError }}</p>
+        <p class="text-[11px] text-slate-500">You can change the plan later from the task's Method &amp; Model tab; changes apply from the next stage run.</p>
+      </div>
+
+      <div v-else class="p-6 overflow-y-auto space-y-4">
         <!-- Quick Presets -->
         <div>
           <div class="flex items-center gap-1.5 text-xs font-medium text-slate-400 mb-2">
@@ -376,7 +440,7 @@ async function handleSubmit() {
         </template>
 
         <div class="p-3.5 rounded-lg bg-slate-950 border border-slate-800 grid grid-cols-2 gap-3">
-          <div>
+          <div class="col-span-2 sm:col-span-1">
             <label class="block text-[11px] text-slate-400 mb-1">Router Strategy</label>
             <select
               v-model="routerStrategy"
@@ -387,19 +451,9 @@ async function handleSubmit() {
             </select>
           </div>
 
-          <div>
-            <label class="block text-[11px] text-slate-400 mb-1">Method Assignment</label>
-            <select
-              v-model="selectedMethod"
-              class="w-full h-8 px-2.5 bg-slate-900 border border-slate-700 rounded text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
-            >
-              <option value="Auto">Auto (Matched by Router)</option>
-              <option value="BMAD">BMAD Multi-Agent</option>
-              <option value="Supervisor">Supervisor</option>
-              <option value="ReAct">ReAct</option>
-              <option value="Superpower">Superpower</option>
-            </select>
-          </div>
+          <p class="col-span-2 sm:col-span-1 text-[11px] text-slate-500 leading-relaxed self-center">
+            The method and model for each stage are proposed from the task's complexity on the next step, where you can change them.
+          </p>
         </div>
 
         <!-- Git Worktree & Dependency DAG Execution Options -->
@@ -471,13 +525,25 @@ async function handleSubmit() {
         >
           Cancel
         </button>
-        <BtnPrimary
-          :loading="isSubmitting"
-          :disabled="!title.trim()"
-          @click="handleSubmit"
-        >
-          Launch Task
-        </BtnPrimary>
+        <template v-if="step === 'review'">
+          <button
+            type="button"
+            class="h-9 px-3 rounded text-xs text-slate-300 hover:text-slate-100 hover:bg-slate-800 transition-colors flex items-center gap-1 mr-auto"
+            :disabled="isSubmitting"
+            @click="backToDetails"
+          >
+            <ChevronLeft class="w-4 h-4" /> Back to details
+          </button>
+          <BtnPrimary :loading="isSubmitting" :disabled="analyzing || planRows.length === 0" @click="handleSubmit">
+            Confirm &amp; Launch
+          </BtnPrimary>
+        </template>
+        <template v-else>
+          <span v-if="analyzeError" class="text-xs text-rose-400 mr-auto">{{ analyzeError }}</span>
+          <BtnPrimary :loading="analyzing" :disabled="!title.trim()" @click="analyze()">
+            Analyze &amp; Review Plan
+          </BtnPrimary>
+        </template>
       </div>
     </div>
   </div>

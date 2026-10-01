@@ -51,6 +51,12 @@ type RoutingDecision struct {
 	Reasoning      string           `json:"reasoning"`
 	RequiresDocker bool             `json:"requires_docker"`
 	Suggestion     *ModelSuggestion `json:"suggestion,omitempty"` // recommended model the chain did not allow
+	// MethodSource says where Method came from: "policy" (stage × complexity best practice),
+	// "benchmark" (a measured shadow-benchmark winner), "rule" (a custom rule) or "user" (the task's plan).
+	MethodSource string `json:"method_source,omitempty"`
+	// TierSource says where the model choice came from: "policy", "benchmark", "calibrated"
+	// (learned from run history), "mode" (chain order of a non-tiered mode), "rule" or "user".
+	TierSource string `json:"tier_source,omitempty"`
 }
 
 // TierAdvisor supplies calibrated tier overrides for best-practice routing (see router/feedback).
@@ -62,7 +68,8 @@ type TierAdvisor interface {
 // MethodAdvisor supplies the empirically optimal method (and tier) per stage and complexity,
 // e.g. the shadow benchmark's best_methods_matrix. ok=false keeps best practice.
 type MethodAdvisor interface {
-	AdviseMethod(stageID, complexity string) (method string, tier string, reason string, ok bool)
+	// model is the measured winner ("provider/model"), or "" to use the tier's configured model.
+	AdviseMethod(stageID, complexity string) (method, tier, model, reason string, ok bool)
 }
 
 // Router dispatches requests according to configured strategy.
@@ -80,8 +87,13 @@ type Router struct {
 // DefaultPriorityChain is the chain a fresh install starts with (and "Reset Defaults" restores).
 func DefaultPriorityChain() []PriorityModelItem {
 	return []PriorityModelItem{
-		{ID: "item-1", Provider: "claude", Model: "claude-3-5-sonnet-20241022", Name: "Claude 3.5 Sonnet",
-			Enabled: true, CostPer1k: 0.003, LatencyMs: 142, Tiers: []string{TierReasoning, TierCodeGen}},
+		// One Claude model per tier, so each tier routes to its own model by default.
+		{ID: "item-1", Provider: "claude", Model: "claude-opus-5-5", Name: "Claude Opus 5.5",
+			Enabled: true, CostPer1k: 0.004, LatencyMs: 250, Tiers: []string{TierReasoning}},
+		{ID: "item-5", Provider: "claude", Model: "claude-sonnet-5-5", Name: "Claude Sonnet 5.5",
+			Enabled: true, CostPer1k: 0.002, LatencyMs: 140, Tiers: []string{TierCodeGen}},
+		{ID: "item-6", Provider: "claude", Model: "claude-haiku-4-5", Name: "Claude Haiku 4.5",
+			Enabled: true, CostPer1k: 0.001, LatencyMs: 75, Tiers: []string{TierLogParse}},
 		{ID: "item-2", Provider: "antigravity", Model: "gemini-2.0-flash", Name: "Gemini 2.0 Flash",
 			Enabled: true, CostPer1k: 0.0001, LatencyMs: 98, Tiers: []string{TierCodeGen, TierLogParse}},
 		{ID: "item-3", Provider: "chatgpt", Model: "gpt-4o", Name: "OpenAI GPT-4o",
@@ -234,6 +246,7 @@ func (r *Router) route(mode RouterMode, chain []PriorityModelItem, stageID, comp
 		if decision := r.routeCustom(stageID, complexity, repoTypes); decision != nil {
 			candidates, _ := r.usableItems(enabledItems(chain))
 			decision.FallbackChain = withPrimary(decision.Model, candidates)
+			decision.MethodSource, decision.TierSource = "rule", "rule"
 			return decision
 		}
 		return r.routeRecommended(chain, stageID, complexity, taskType, repoTypes)
@@ -275,6 +288,10 @@ func (r *Router) route(mode RouterMode, chain []PriorityModelItem, stageID, comp
 	default:
 		return r.routeRecommended(chain, stageID, complexity, taskType, repoTypes)
 	}
+	// The mode only orders the models; the method and budget still follow the stage and complexity.
+	policy := r.applyMethodAdvisor(r.routeBestPractice(stageID, complexity, repoTypes), stageID, complexity)
+	d.Method, d.MethodSource, d.TokenBudget, d.RequiresDocker = policy.Method, policy.MethodSource, policy.TokenBudget, policy.RequiresDocker
+	d.TierSource = "mode"
 	if degraded {
 		d.Reasoning += " | Warning: no provider in your chain is verified as connected; trying them anyway"
 	}
@@ -305,6 +322,8 @@ func (r *Router) routeOrdered(mode RouterMode, items []PriorityModelItem, budget
 		TokenBudget:    budget,
 		Reasoning:      reasoning(items[0], len(items)),
 		RequiresDocker: true,
+		MethodSource:   "policy",
+		TierSource:     "mode",
 	}
 }
 
@@ -328,16 +347,7 @@ func (r *Router) applyAdvisor(d *RoutingDecision, stageID, complexity, taskType 
 	if d == nil {
 		return d
 	}
-	if r.methodAdvisor != nil {
-		if method, tier, reason, ok := r.methodAdvisor.AdviseMethod(stageID, complexity); ok {
-			d.Method = method
-			if model := r.modelForTier(tier); model != "" {
-				d.Tier = tier
-				d.Model = model
-			}
-			d.Reasoning = fmt.Sprintf("%s | %s", d.Reasoning, reason)
-		}
-	}
+	d = r.applyMethodAdvisor(d, stageID, complexity)
 	if r.advisor == nil || taskType == "" {
 		return d
 	}
@@ -351,90 +361,141 @@ func (r *Router) applyAdvisor(d *RoutingDecision, stageID, complexity, taskType 
 	}
 	d.Tier = tier
 	d.Model = model
+	d.TierSource = "calibrated"
 	d.Reasoning = fmt.Sprintf("%s | Calibrated: %s", d.Reasoning, reason)
 	return d
 }
 
-func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes []string) *RoutingDecision {
-	normComplexity := strings.ToUpper(complexity)
-	if normComplexity == "" {
-		normComplexity = "MEDIUM"
-	}
-
-	normStage := strings.ToUpper(stageID)
-	switch normStage {
-	case "PRD_DISCOVERY":
-		normStage = "INTAKE_PRD"
-	case "ATDD_CREATION":
-		normStage = "ATDD_RED_PHASE"
-	case "TASK_IMPLEMENTATION":
-		normStage = "IMPLEMENTATION_GREEN"
-	case "E2E_VALIDATION", "UAT_VERIFICATION":
-		normStage = "E2E_AUTOMATION"
-	case "SIGNOFF_MERGE":
-		normStage = "CONTRACT_VERIFY"
-	}
-
-	var model string
-	var tier string
-	var method string
-	var budget int64
-	var reasoning string
-	requiresDocker := false
-
-	switch normStage {
-	case "INTAKE_PRD", "TECH_DOC_RFC", "CONTRACT_SPEC":
-		model, tier = r.cfg.ModelTiers.Tier1Reasoning, TierReasoning
-		method = "bmad"
-		budget = 120000
-		reasoning = "Best practice: Tier 1 high-reasoning model paired with BMAD product/architecture methodology"
-
-	case "REPO_DISCOVERY", "TASK_BREAKDOWN":
-		model, tier = r.cfg.ModelTiers.Tier1Reasoning, TierReasoning
-		method = "supervisor"
-		budget = 80000
-		reasoning = "Best practice: Tier 1 model with Supervisor role for dependency mapping and atomic task decomposition"
-
-	case "ATDD_RED_PHASE", "MOCK_ATDD":
-		model, tier = r.cfg.ModelTiers.Tier1Reasoning, TierReasoning
-		method = "bmad"
-		budget = 100000
-		requiresDocker = true
-		reasoning = "Best practice: Tier 1 model + BMAD QA role for AST-grounded Red Phase test generation"
-
-	case "IMPLEMENTATION_GREEN", "PATCH_IMPLEMENTATION", "CODEGEN_IMPLEMENT":
-		if normComplexity == "HIGH" || normComplexity == "CRITICAL" {
-			model, tier = r.cfg.ModelTiers.Tier1Reasoning, TierReasoning
-			method = "bmad"
-			budget = 200000
-			reasoning = fmt.Sprintf("Best practice: Complex task (%s) routed to Tier 1 with BMAD developer/QA pairing", normComplexity)
-		} else {
-			model, tier = r.cfg.ModelTiers.Tier2CodeGen, TierCodeGen
-			method = "react"
-			budget = 100000
-			reasoning = fmt.Sprintf("Best practice: Standard task (%s) routed to Tier 2 with fast ReAct iteration", normComplexity)
+// applyMethodAdvisor replaces the policy method (and model) with the benchmark winner when the
+// benchmark matrix has an applicable measurement for this stage and complexity.
+func (r *Router) applyMethodAdvisor(d *RoutingDecision, stageID, complexity string) *RoutingDecision {
+	if r.methodAdvisor != nil {
+		if method, tier, model, reason, ok := r.methodAdvisor.AdviseMethod(stageID, complexity); ok {
+			d.Method = method
+			// Prefer the benchmarked model itself; bindToPool falls back to the tier when the
+			// operator's chain does not include it.
+			if model == "" {
+				model = r.modelForTier(tier)
+			}
+			d.MethodSource = "benchmark"
+			if model != "" {
+				d.Tier = tier
+				d.Model = model
+				d.TierSource = "benchmark"
+			}
+			d.Reasoning = fmt.Sprintf("%s | %s", d.Reasoning, reason)
 		}
-		requiresDocker = true
-
-	case "E2E_AUTOMATION", "UAT_EVIDENCE", "VERIFY_REGRESSION", "CONTRACT_VERIFY":
-		model, tier = r.cfg.ModelTiers.Tier2CodeGen, TierCodeGen
-		method = "superpower"
-		budget = 90000
-		requiresDocker = true
-		reasoning = "Best practice: Browser/terminal verification routed to Superpower automation harness"
-
-	default:
-		// Default fallback
-		model, tier = r.cfg.ModelTiers.Tier2CodeGen, TierCodeGen
-		method = "react"
-		budget = 50000
-		reasoning = "Default best-practice fallback for custom stage"
 	}
+	return d
+}
 
+// stageClass groups SDLC stages that share a routing policy.
+type stageClass int
+
+const (
+	classPlanning  stageClass = iota // PRD, RFC, ATDD: reasoning-heavy documents
+	classDecompose                   // repo discovery, task breakdown: dependency mapping
+	classImplement                   // code changes
+	classVerify                      // E2E, UAT, sign-off
+	classOther
+)
+
+// canonicalRouterStage maps every stage id spelling (workflow ids, legacy FSM ids) onto one name.
+func canonicalRouterStage(stageID string) string {
+	switch s := strings.ToUpper(strings.TrimSpace(stageID)); s {
+	case "PRD_DISCOVERY", "INTAKE_PRD":
+		return "INTAKE_PRD"
+	case "TECHDOC_RFC", "TECH_DOC_RFC", "CONTRACT_SPEC":
+		return "TECH_DOC_RFC"
+	case "ATDD_CREATION", "ATDD_RED_PHASE", "MOCK_ATDD", "RED_VERIFICATION":
+		return "ATDD_RED_PHASE"
+	case "TASK_IMPLEMENTATION", "IMPLEMENTATION_GREEN", "PATCH_IMPLEMENTATION", "CODEGEN_IMPLEMENT":
+		return "IMPLEMENTATION_GREEN"
+	case "E2E_VALIDATION", "UAT_VERIFICATION", "E2E_AUTOMATION", "UAT_EVIDENCE", "VERIFY_REGRESSION":
+		return "E2E_AUTOMATION"
+	case "SIGNOFF_MERGE", "CONTRACT_VERIFY":
+		return "CONTRACT_VERIFY"
+	default:
+		return s
+	}
+}
+
+func classOf(canonical string) stageClass {
+	switch canonical {
+	case "INTAKE_PRD", "TECH_DOC_RFC", "ATDD_RED_PHASE":
+		return classPlanning
+	case "REPO_DISCOVERY", "TASK_BREAKDOWN":
+		return classDecompose
+	case "IMPLEMENTATION_GREEN":
+		return classImplement
+	case "E2E_AUTOMATION", "CONTRACT_VERIFY":
+		return classVerify
+	}
+	return classOther
+}
+
+// NormalizeComplexity maps a complexity label onto LOW, MEDIUM, HIGH or SYSTEM (CRITICAL → HIGH).
+func NormalizeComplexity(c string) string {
+	switch strings.ToUpper(strings.TrimSpace(c)) {
+	case "LOW":
+		return "LOW"
+	case "HIGH", "CRITICAL":
+		return "HIGH"
+	case "SYSTEM":
+		return "SYSTEM"
+	}
+	return "MEDIUM"
+}
+
+// routeBestPractice is the stage × complexity policy. The model tier scales with complexity so
+// simple work runs on the cheaper Tier 2 code model (capable enough to stay reliable; Tier 3 is
+// reserved for log parsing) and only complex or system-level work pays for Tier 1:
+//
+//	              LOW              MEDIUM              HIGH                SYSTEM
+//	planning      T2 ReAct         T1 BMAD             T1 BMAD             T1 Superpower
+//	decompose     T2 ReAct         T1 Supervisor       T1 Supervisor       T1 Superpower
+//	implement     T2 ReAct         T2 ReAct            T1 BMAD             T1 Superpower
+//	verify        T2 Superpower    T2 Superpower       T1 Superpower       T1 Superpower
+func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes []string) *RoutingDecision {
+	cx := NormalizeComplexity(complexity)
+	stage := canonicalRouterStage(stageID)
+	class := classOf(stage)
+
+	tier, method := TierCodeGen, "react"
+	var budget int64 = 50000
+	var why string
+	switch {
+	case class == classOther:
+		why = "Default best-practice fallback for custom stage"
+	case cx == "SYSTEM":
+		tier, method, budget = TierReasoning, "superpower", 150000
+		why = "System-level change (containers, CI, migrations) needs Tier 1 with the Superpower plan-and-execute harness"
+	case cx == "LOW" && class != classVerify:
+		budget = 40000
+		why = "Low complexity: cheaper Tier 2 model with a single fast ReAct agent is reliable enough"
+	case class == classPlanning:
+		tier, method, budget = TierReasoning, "bmad", 120000
+		why = fmt.Sprintf("%s complexity: Tier 1 reasoning model with BMAD product/architecture/QA roles", cx[:1]+strings.ToLower(cx[1:]))
+	case class == classDecompose:
+		tier, method, budget = TierReasoning, "supervisor", 80000
+		why = "Tier 1 model with a Supervisor for dependency mapping and atomic task decomposition"
+	case class == classImplement && cx == "HIGH":
+		tier, method, budget = TierReasoning, "bmad", 200000
+		why = "High complexity implementation: Tier 1 with BMAD developer/QA pairing"
+	case class == classImplement:
+		budget = 100000
+		why = "Medium complexity implementation: Tier 2 code model with fast ReAct iteration"
+	case class == classVerify && cx == "HIGH":
+		tier, method, budget = TierReasoning, "superpower", 120000
+		why = "High complexity verification across services: Tier 1 with the Superpower automation harness"
+	default: // verification, LOW or MEDIUM
+		method, budget = "superpower", 90000
+		why = "Browser/terminal verification on Tier 2 with the Superpower automation harness"
+	}
 	if r.cfg.Router.MaxTokenBudget > 0 && budget > r.cfg.Router.MaxTokenBudget {
 		budget = r.cfg.Router.MaxTokenBudget
 	}
-
+	model := r.modelForTier(tier)
 	return &RoutingDecision{
 		Strategy:       "best_practice",
 		Model:          model,
@@ -442,8 +503,10 @@ func (r *Router) routeBestPractice(stageID string, complexity string, repoTypes 
 		FallbackChain:  []string{model},
 		Method:         method,
 		TokenBudget:    budget,
-		Reasoning:      reasoning,
-		RequiresDocker: requiresDocker,
+		Reasoning:      "Best practice: " + why,
+		RequiresDocker: class == classImplement || class == classVerify || stage == "ATDD_RED_PHASE" || cx == "SYSTEM",
+		MethodSource:   "policy",
+		TierSource:     "policy",
 	}
 }
 

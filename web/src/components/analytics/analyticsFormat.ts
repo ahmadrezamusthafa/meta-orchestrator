@@ -26,15 +26,15 @@ const FALLBACK_STYLE: MethodStyle = {
   fill: '#94a3b8',
 }
 
-export function methodStyle(method: string | undefined): MethodStyle {
-  if (!method) return FALLBACK_STYLE
-  return METHOD_STYLES[method] ?? FALLBACK_STYLE
+/** Display spelling of a method: the router reports "bmad", the benchmark "BMAD". */
+export function canonicalMethod(method: string | undefined): string {
+  if (!method) return ''
+  return METHODS.find((m) => m.toLowerCase() === method.toLowerCase()) ?? method
 }
 
-/** A cell is measured when shadow benchmark samples back it (older payloads lack `source`). */
-export function isMeasured(cell: { source?: string; samples?: number } | undefined): boolean {
-  if (!cell) return false
-  return cell.source ? cell.source === 'shadow_benchmark' : (cell.samples ?? 0) > 0
+export function methodStyle(method: string | undefined): MethodStyle {
+  if (!method) return FALLBACK_STYLE
+  return METHOD_STYLES[canonicalMethod(method)] ?? FALLBACK_STYLE
 }
 
 export const HEALTH_TEXT: Record<Health, string> = {

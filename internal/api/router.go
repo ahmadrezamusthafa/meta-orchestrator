@@ -139,6 +139,7 @@ func NewRouter(cfg RouterConfig) *Router {
 	r.connections = newConnectionChecker(r.quota)
 	stratRouter.SetAvailability(r.connections.Usable)
 	if saved := savedRouterSettings(); saved != nil {
+		saved.PriorityChain = withCatalogMeta(saved.PriorityChain) // heal stale prices saved by older builds
 		stratRouter.SetSettings(*saved)
 	}
 	r.initTelemetry()
@@ -176,6 +177,7 @@ func (r *Router) getOrCreateTaskProcessLocked(taskID string) *types.TaskProcessI
 func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/tasks", r.handleTasks)
 	r.mux.HandleFunc("/api/v1/tasks/", r.handleTaskItem)
+	r.mux.HandleFunc("/api/v1/tasks/analyze", r.handleTaskAnalyze)
 	r.mux.HandleFunc("/api/v1/tools", r.handleTools)
 	r.mux.HandleFunc("/api/v1/tools/", r.handleToolAction)
 	r.mux.HandleFunc("/api/v1/providers", r.handleProviders)

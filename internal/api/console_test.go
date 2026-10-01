@@ -19,16 +19,20 @@ import (
 // until cancelled, and records the requests it received.
 type streamingStub struct {
 	stubProvider
-	mu    sync.Mutex
-	block chan struct{}
-	reqs  []llm.LLMRequest
+	mu      sync.Mutex
+	block   chan struct{}
+	reqs    []llm.LLMRequest
+	session string // reported as a live session before the turn answers, when set
 }
 
 func (s *streamingStub) StreamActivity(ctx context.Context, req *llm.LLMRequest, emit func(llm.StreamEvent)) (*llm.LLMResponse, error) {
 	s.mu.Lock()
 	s.reqs = append(s.reqs, *req)
-	block := s.block
+	block, session := s.block, s.session
 	s.mu.Unlock()
+	if session != "" {
+		emit(llm.StreamEvent{Type: llm.StreamSession, SessionID: session})
+	}
 	emit(llm.StreamEvent{Type: llm.StreamThinkingDelta, Text: "looking at the handler"})
 	emit(llm.StreamEvent{Type: llm.StreamTextDelta, Text: "Let me "})
 	if block != nil {

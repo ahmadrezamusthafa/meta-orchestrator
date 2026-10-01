@@ -33,7 +33,9 @@ type taskConsole struct {
 	turnID    string
 	cancel    context.CancelFunc
 	sessionID string // provider session (Claude Code CLI) reused across chat turns
-	model     string // last model that answered
+	// sessionStage is the stage whose run last reached the session; only that stage can be continued.
+	sessionStage string
+	model        string // last model that answered
 }
 
 // consoleHub holds all task consoles behind its own lock (independent of Router.mu).
@@ -202,6 +204,23 @@ func (r *Router) endTurn(taskID, turnID string, resp *llm.LLMResponse, model str
 	}
 }
 
+// rememberSession records the provider session as soon as it starts, so a turn that later fails
+// or is interrupted can still be continued in the same conversation.
+func (r *Router) rememberSession(taskID, turnID, sessionID, stage string) {
+	h := r.console
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	c := h.get(taskID)
+	if c.turnID != turnID || (c.sessionID == sessionID && c.sessionStage == stage) {
+		return
+	}
+	c.sessionID = sessionID
+	if stage != "" {
+		c.sessionStage = stage
+	}
+	h.markDirty(taskID)
+}
+
 // runAgentTurn streams one turn into the console transcript: request entry, live assistant /
 // thinking / tool entries, failovers, and a response (usage) or error entry.
 func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMResponse, string, error) {
@@ -255,6 +274,13 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindToolResult, TurnID: t.TurnID, Content: ev.Text,
 				Tool: &types.ConsoleTool{ID: ev.ToolID, IsError: ev.IsError}})
 		case llm.StreamSession:
+			if ev.SessionID != "" {
+				stage := ""
+				if t.Source == "execute" {
+					stage = t.Task.CurrentStageID
+				}
+				r.rememberSession(taskID, t.TurnID, ev.SessionID, stage)
+			}
 			if ev.Model != "" || ev.SessionID != "" {
 				content := strings.TrimSpace(fmt.Sprintf("Session %s · model %s", shortID(ev.SessionID), ev.Model))
 				if ev.Model != "" && !sameModel(chain[0], ev.Model) {
@@ -452,7 +478,7 @@ func (r *Router) handleTaskConsole(w http.ResponseWriter, req *http.Request, tas
 			h.mu.Lock()
 			c := h.get(taskID)
 			c.entries = nil
-			c.sessionID = "" // /clear starts a fresh conversation, like the CLI
+			c.sessionID, c.sessionStage = "", "" // /clear starts a fresh conversation, like the CLI
 			h.markDirty(taskID)
 			h.mu.Unlock()
 			r.broadcast(taskID, types.EventAgentActivityClear, map[string]string{"task_id": taskID})
@@ -522,7 +548,7 @@ func (r *Router) startChatTurn(task *types.Task, message, model string) (string,
 	if taskType == "" {
 		taskType = router.ClassifyTaskType(task.Title, task.Description)
 	}
-	decision := r.strategyRouter.RouteForTask(task.CurrentStageID, complexity, taskType, task.AssignedRepos)
+	decision := r.routeTask(task, complexity, taskType)
 	if model != "" {
 		decision.Model = model
 		decision.FallbackChain = []string{model}

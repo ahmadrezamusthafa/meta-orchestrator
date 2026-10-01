@@ -95,6 +95,7 @@ type stageRun struct {
 	cancel   context.CancelFunc
 	trigger  string
 	feedback string
+	lastErr  string // why the previous run of this stage ended, if it failed
 }
 
 // claimStage validates and marks a task RUNNING for its current stage. Only one claim can hold a
@@ -141,12 +142,13 @@ func (r *Router) claimStage(taskID, trigger, feedback string) (*stageRun, error)
 	}
 
 	turnID := r.console.nextID("turn")
-	ctx, cancel := context.WithTimeout(context.Background(), stageTurnTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), stageTurnTimeout(task.CurrentStageID))
 	if err := r.beginTurn(taskID, turnID, cancel); err != nil {
 		r.mu.Unlock()
 		cancel()
 		return nil, errTaskBusy
 	}
+	lastErr := task.Metadata["last_error"]
 	delete(task.Metadata, "unmet_dependencies")
 	delete(task.Metadata, "last_error")
 	r.setTaskState(task, types.TaskStateRunning)
@@ -159,10 +161,17 @@ func (r *Router) claimStage(taskID, trigger, feedback string) (*stageRun, error)
 	r.mu.Unlock()
 
 	r.broadcastTask(snap)
-	return &stageRun{task: snap, turnID: turnID, ctx: ctx, cancel: cancel, trigger: trigger, feedback: feedback}, nil
+	return &stageRun{task: snap, turnID: turnID, ctx: ctx, cancel: cancel, trigger: trigger, feedback: feedback, lastErr: lastErr}, nil
 }
 
-const stageTurnTimeout = 15 * time.Minute
+// stageTurnTimeout bounds one stage turn. Code stages edit files and wait on operator approvals
+// (each up to approvalTimeout), so they get the same hour the CLI driver allows interactive turns.
+func stageTurnTimeout(stage string) time.Duration {
+	if codeStages[stage] {
+		return time.Hour
+	}
+	return 15 * time.Minute
+}
 
 // startStage claims the task's current stage and executes it in the background.
 func (r *Router) startStage(taskID, trigger, feedback string) error {
@@ -202,7 +211,7 @@ func (r *Router) executeStage(run *stageRun) {
 	if taskType == "" {
 		taskType = router.ClassifyTaskType(task.Title, task.Description)
 	}
-	decision := r.strategyRouter.RouteForTask(task.CurrentStageID, complexity, taskType, task.AssignedRepos)
+	decision := r.routeTask(task, complexity, taskType)
 
 	r.mu.Lock()
 	if t, ok := r.tasks[taskID]; ok {
@@ -234,11 +243,17 @@ func (r *Router) executeStage(run *stageRun) {
 	c := r.console.get(taskID)
 	history := chatHistory(c.entries)
 	sessionID := c.sessionID
+	canContinue := sessionID != "" && c.sessionStage == task.CurrentStageID
 	r.console.mu.Unlock()
 
 	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method)}}, history...)
 	prompt := stagePrompt(task, run.feedback)
-	if task.CurrentStageID == "uat_verification" {
+	if run.trigger == "resume" && canContinue {
+		// Continue the interrupted conversation instead of restarting the stage from its brief.
+		prompt = continuePrompt(task, run.lastErr)
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+			"Continuing session %s where the last run stopped.", shortID(sessionID))})
+	} else if task.CurrentStageID == "uat_verification" {
 		prompt += "\n\n" + r.uatStageContext(task)
 	}
 	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: prompt})
@@ -306,6 +321,24 @@ func stagePrompt(t *types.Task, feedback string) string {
 	return b.String()
 }
 
+// continuePrompt resumes a stage whose previous turn was paused or failed part-way. The agent
+// keeps its session, so it only needs to be told to carry on — not handed the stage brief again.
+func continuePrompt(t *types.Task, lastErr string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Continue %s from where you left off.", stageLabel(t.CurrentStageID))
+	if lastErr != "" {
+		fmt.Fprintf(&b, " Your previous run stopped with this error: %s.", lastErr)
+	} else {
+		b.WriteString(" Your previous run was interrupted.")
+	}
+	b.WriteString(" Check what you already did (including files changed in the working directory) and do not redo finished work.")
+	if g := t.Metadata["operator_guidance"]; g != "" {
+		fmt.Fprintf(&b, "\n\nOperator guidance:\n%s\n", g)
+	}
+	b.WriteString("\n\nEnd with a short \"Summary\" section covering the whole stage, which the operator can review before approving it.")
+	return b.String()
+}
+
 // settleStage moves the task to its post-turn state and tells the operator what happens next.
 func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model string, execErr error) {
 	var runRec telemetry.RunRecord
@@ -355,13 +388,13 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 		}
 		proc.Status = "PAUSED"
 		proc.CurrentStep = "Paused during " + stage
-		note = fmt.Sprintf("⏸ Paused during %s. Resume to run this stage again.", stage)
+		note = fmt.Sprintf("⏸ Paused during %s. Resume to continue the agent's session where it stopped.", stage)
 	case execErr != nil:
 		r.setTaskState(task, types.TaskStateFailed)
 		task.Metadata["last_error"] = execErr.Error()
 		proc.Status = "FAILED"
 		proc.CurrentStep = "Failed: " + stage
-		note = fmt.Sprintf("✗ %s failed: %v\nRun the stage again to retry, or ask the agent about the failure below.", stage, execErr)
+		note = fmt.Sprintf("✗ %s failed: %v\nContinue to pick up the agent's session where it stopped, or ask the agent about the failure below.", stage, execErr)
 	default:
 		r.setTaskState(task, types.TaskStateWaitingGateApproval)
 		task.Metadata["active_model"] = servedModel(model, resp)

@@ -12,7 +12,7 @@ const stage = ref('task_implementation')
 const complexity = ref('HIGH')
 const method = ref('Supervisor')
 const provider = ref('Anthropic Claude')
-const model = ref('claude-3-5-sonnet')
+const model = ref('claude-sonnet-5-5')
 
 function handleSave() {
   emit('save', {

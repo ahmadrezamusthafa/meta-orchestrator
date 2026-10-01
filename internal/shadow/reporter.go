@@ -37,7 +37,7 @@ type winnerRow struct {
 type reportData struct {
 	GeneratedAt, SweepID, SweepStarted, SweepFinished, SweepDuration string
 	TupleCount, WinnerCount, CandidateCount, MinSamples              int
-	WeightFPVR, WeightCost, WeightTTR                                string
+	WeightFPVR, WeightCost, WeightTTR, MinFPVR                       string
 	WinnerRows                                                       []winnerRow
 	Changes                                                          []string
 	Tuples                                                           []reportTuple
@@ -72,6 +72,7 @@ func (r *Reporter) Render(sweep SweepResult, m BestMethodsMatrix, prev *BestMeth
 		WeightFPVR:    fmt.Sprintf("%.2f", cfg.Weights.FPVR),
 		WeightCost:    fmt.Sprintf("%.2f", cfg.Weights.Cost),
 		WeightTTR:     fmt.Sprintf("%.2f", cfg.Weights.TTR),
+		MinFPVR:       fmt.Sprintf("%.0f%%", cfg.MinFPVR*100),
 		WinnerCount:   len(m.Cells),
 	}
 
@@ -128,7 +129,7 @@ func (r *Reporter) Render(sweep SweepResult, m BestMethodsMatrix, prev *BestMeth
 			if c.Eligible {
 				row.Score = fmt.Sprintf("%.3f", c.Score)
 			} else {
-				row.Result = fmt.Sprintf("insufficient samples (< %d)", cfg.MinSamples)
+				row.Result = c.Ineligible
 			}
 			if c.Pareto {
 				row.Pareto = "✓"

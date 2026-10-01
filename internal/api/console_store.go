@@ -16,11 +16,12 @@ const consoleStoreVersion = 1
 // consoleFile is one task's durable transcript: the entries plus the provider session, so a
 // restarted daemon shows the same Console / AI Reasoning history and resumes the conversation.
 type consoleFile struct {
-	Version   int                  `json:"version"`
-	TaskID    string               `json:"task_id"`
-	SessionID string               `json:"session_id,omitempty"`
-	Model     string               `json:"model,omitempty"`
-	Entries   []types.ConsoleEntry `json:"entries"`
+	Version      int                  `json:"version"`
+	TaskID       string               `json:"task_id"`
+	SessionID    string               `json:"session_id,omitempty"`
+	SessionStage string               `json:"session_stage,omitempty"`
+	Model        string               `json:"model,omitempty"`
+	Entries      []types.ConsoleEntry `json:"entries"`
 }
 
 // consoleDir holds one <taskID>.json per task next to the board file. Empty keeps transcripts in
@@ -87,7 +88,7 @@ func (r *Router) loadConsoles() {
 		}
 		r.console.mu.Lock()
 		c := r.console.get(taskID)
-		c.entries, c.sessionID, c.model = cf.Entries, cf.SessionID, cf.Model
+		c.entries, c.sessionID, c.sessionStage, c.model = cf.Entries, cf.SessionID, cf.SessionStage, cf.Model
 		r.console.mu.Unlock()
 		restored++
 	}
@@ -127,7 +128,7 @@ func (r *Router) persistConsoles() error {
 			continue // task deleted; deleteTask removed the file
 		}
 		pending = append(pending, consoleFile{Version: consoleStoreVersion, TaskID: taskID, SessionID: c.sessionID,
-			Model: c.model, Entries: append([]types.ConsoleEntry(nil), c.entries...)})
+			SessionStage: c.sessionStage, Model: c.model, Entries: append([]types.ConsoleEntry(nil), c.entries...)})
 	}
 	h.dirty = nil
 	h.mu.Unlock()

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router/feedback"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/telemetry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
@@ -22,27 +23,38 @@ const (
 	SourceDefault         = "default"
 )
 
-// ScoreWeights are w1..w3 of Score = w1·FPVR − w2·NormalizedCost − w3·NormalizedTTR.
+// ScoreWeights are w1..w3 of Score = w1·Quality − w2·NormalizedCost − w3·NormalizedTTR, where
+// Quality is the 95% Wilson lower bound of FPVR.
 type ScoreWeights struct {
 	FPVR float64 `json:"fpvr"`
 	Cost float64 `json:"cost"`
 	TTR  float64 `json:"ttr"`
 }
 
-// Score evaluates the heuristic. fpvr is 0..1; normalized cost/TTR are 0..1 within a tuple.
-func (w ScoreWeights) Score(fpvr, normCost, normTTR float64) float64 {
-	return w.FPVR*fpvr - w.Cost*normCost - w.TTR*normTTR
+// Score evaluates the heuristic. quality is 0..1; normalized cost/TTR are 0..1 within a tuple.
+func (w ScoreWeights) Score(quality, normCost, normTTR float64) float64 {
+	return w.FPVR*quality - w.Cost*normCost - w.TTR*normTTR
 }
 
 // BuilderConfig tunes matrix compilation.
 type BuilderConfig struct {
 	Weights    ScoreWeights `json:"weights"`
 	MinSamples int          `json:"min_samples"` // candidates with fewer samples cannot win
+	// MinFPVR is the first-pass rate (0..1) a candidate needs to win. Without it, a tuple where
+	// every candidate fails would crown the cheapest failure and route production to it.
+	MinFPVR float64 `json:"min_fpvr"`
 }
 
 // DefaultBuilderConfig weights first-pass quality over cost and latency.
 func DefaultBuilderConfig() BuilderConfig {
-	return BuilderConfig{Weights: ScoreWeights{FPVR: 1.0, Cost: 0.3, TTR: 0.1}, MinSamples: 3}
+	return BuilderConfig{Weights: ScoreWeights{FPVR: 1.0, Cost: 0.3, TTR: 0.1}, MinSamples: 3, MinFPVR: 0.5}
+}
+
+// Quality is the 95% Wilson lower bound of a result's FPVR. Unlike the raw rate it rewards
+// evidence: 3/3 first passes (lower bound 0.44) does not outrank 29/30 (0.83).
+func Quality(r CellResult) float64 {
+	lo, _ := feedback.WilsonInterval(r.FirstPasses, r.Samples)
+	return lo
 }
 
 // MatrixCell is one (stage, complexity) entry of configs/best_methods_matrix.json.
@@ -99,11 +111,14 @@ func NewMatrixBuilder(cfg BuilderConfig) *MatrixBuilder {
 // Candidate is one scored (method, model) option of a tuple.
 type Candidate struct {
 	Result   CellResult `json:"result"`
+	Quality  float64    `json:"quality"` // Wilson lower bound of FPVR
 	NormCost float64    `json:"norm_cost"`
 	NormTTR  float64    `json:"norm_ttr"`
 	Score    float64    `json:"score"`
 	Pareto   bool       `json:"pareto"`
 	Eligible bool       `json:"eligible"`
+	// Ineligible says why a candidate cannot win (too few samples, FPVR below the floor).
+	Ineligible string `json:"ineligible,omitempty"`
 }
 
 // Label is "Method@model".
@@ -116,8 +131,11 @@ type Tuple struct {
 	Candidates []Candidate `json:"candidates"` // sorted by score descending; winner first if eligible
 }
 
-// Score groups results by tuple, normalizes cost and TTR within each tuple (min-max),
-// computes the heuristic score and marks the Pareto-efficient set.
+// Score groups results by tuple, normalizes cost and TTR within each tuple as a fraction of
+// the tuple's maximum, computes the heuristic score and marks the Pareto-efficient set.
+//
+// Ratio normalization keeps the penalty proportional: with min–max, the cheaper of two nearly
+// identical candidates gets the full cost weight as a bonus, which outweighs a large FPVR gap.
 func (b *MatrixBuilder) Score(results []CellResult) []Tuple {
 	groups := map[[2]string][]CellResult{}
 	for _, r := range results {
@@ -127,31 +145,35 @@ func (b *MatrixBuilder) Score(results []CellResult) []Tuple {
 	var tuples []Tuple
 	for k, rs := range groups {
 		t := Tuple{Stage: k[0], Complexity: k[1]}
-		var eligible []CellResult
 		for _, r := range rs {
-			if r.Samples >= b.cfg.MinSamples {
-				eligible = append(eligible, r)
-			}
-		}
-		minC, maxC, minT, maxT := math.Inf(1), math.Inf(-1), math.Inf(1), math.Inf(-1)
-		for _, r := range eligible {
-			minC, maxC = math.Min(minC, r.AvgCostUSD), math.Max(maxC, r.AvgCostUSD)
-			minT, maxT = math.Min(minT, r.AvgTTRSeconds), math.Max(maxT, r.AvgTTRSeconds)
-		}
-		norm := func(v, lo, hi float64) float64 {
-			if hi-lo <= 0 {
-				return 0
-			}
-			return (v - lo) / (hi - lo)
-		}
-		for _, r := range rs {
-			c := Candidate{Result: r, Eligible: r.Samples >= b.cfg.MinSamples}
-			if c.Eligible {
-				c.NormCost = norm(r.AvgCostUSD, minC, maxC)
-				c.NormTTR = norm(r.AvgTTRSeconds, minT, maxT)
-				c.Score = b.cfg.Weights.Score(r.FPVR, c.NormCost, c.NormTTR)
+			c := Candidate{Result: r, Quality: Quality(r), Eligible: true}
+			switch {
+			case r.Samples < b.cfg.MinSamples:
+				c.Eligible, c.Ineligible = false, fmt.Sprintf("insufficient samples (< %d)", b.cfg.MinSamples)
+			case r.FPVR < b.cfg.MinFPVR:
+				c.Eligible, c.Ineligible = false, fmt.Sprintf("FPVR below %.0f%% floor", b.cfg.MinFPVR*100)
 			}
 			t.Candidates = append(t.Candidates, c)
+		}
+		var maxC, maxT float64
+		for _, c := range t.Candidates {
+			if c.Eligible {
+				maxC, maxT = math.Max(maxC, c.Result.AvgCostUSD), math.Max(maxT, c.Result.AvgTTRSeconds)
+			}
+		}
+		ratio := func(v, hi float64) float64 {
+			if hi <= 0 {
+				return 0
+			}
+			return v / hi
+		}
+		for i := range t.Candidates {
+			c := &t.Candidates[i]
+			if c.Eligible {
+				c.NormCost = ratio(c.Result.AvgCostUSD, maxC)
+				c.NormTTR = ratio(c.Result.AvgTTRSeconds, maxT)
+				c.Score = b.cfg.Weights.Score(c.Quality, c.NormCost, c.NormTTR)
+			}
 		}
 		for i := range t.Candidates {
 			a := &t.Candidates[i]
@@ -160,7 +182,7 @@ func (b *MatrixBuilder) Score(results []CellResult) []Tuple {
 			}
 			a.Pareto = true
 			for _, o := range t.Candidates {
-				if o.Eligible && dominates(o.Result, a.Result) {
+				if o.Eligible && dominates(o, *a) {
 					a.Pareto = false
 					break
 				}
@@ -193,16 +215,18 @@ func (b *MatrixBuilder) Score(results []CellResult) []Tuple {
 	return tuples
 }
 
-// dominates reports whether a is at least as good as b on FPVR, cost and TTR, and better on one.
-func dominates(a, b CellResult) bool {
-	if a.FPVR < b.FPVR || a.AvgCostUSD > b.AvgCostUSD || a.AvgTTRSeconds > b.AvgTTRSeconds {
+// dominates reports whether a is at least as good as b on quality, cost and TTR, and better on one.
+func dominates(a, b Candidate) bool {
+	ar, br := a.Result, b.Result
+	if a.Quality < b.Quality || ar.AvgCostUSD > br.AvgCostUSD || ar.AvgTTRSeconds > br.AvgTTRSeconds {
 		return false
 	}
-	return a.FPVR > b.FPVR || a.AvgCostUSD < b.AvgCostUSD || a.AvgTTRSeconds < b.AvgTTRSeconds
+	return a.Quality > b.Quality || ar.AvgCostUSD < br.AvgCostUSD || ar.AvgTTRSeconds < br.AvgTTRSeconds
 }
 
 // Build selects the winning (method, model) per tuple: the highest-scoring Pareto-efficient
-// candidate with enough samples. Tuples without an eligible candidate are omitted.
+// candidate with enough samples and an FPVR at or above the floor. Tuples without an eligible
+// candidate are omitted, so the router keeps its built-in heuristics there.
 func (b *MatrixBuilder) Build(sweepID string, results []CellResult, now time.Time) BestMethodsMatrix {
 	m := BestMethodsMatrix{Version: 1, GeneratedAt: now.UTC(), Source: SourceShadowBenchmark, SweepID: sweepID,
 		Weights: b.cfg.Weights, Cells: []MatrixCell{}}
@@ -396,11 +420,13 @@ type MatrixStore struct {
 	current    BestMethodsMatrix
 	modTime    time.Time
 	minSamples int
+	minFPVR    float64
 }
 
 // NewMatrixStore loads path if it exists (a missing file yields an empty default).
 func NewMatrixStore(path string, publish telemetry.Publisher) *MatrixStore {
-	s := &MatrixStore{path: path, publish: publish, minSamples: DefaultBuilderConfig().MinSamples}
+	def := DefaultBuilderConfig()
+	s := &MatrixStore{path: path, publish: publish, minSamples: def.MinSamples, minFPVR: def.MinFPVR}
 	if m, err := LoadMatrixFile(path); err == nil {
 		s.current = m
 		if st, err := os.Stat(path); err == nil {
@@ -520,23 +546,44 @@ func CanonicalComplexity(c string) string {
 	return ""
 }
 
-// AdviseMethod implements router.MethodAdvisor using benchmark-sourced cells only.
-func (s *MatrixStore) AdviseMethod(stageID, complexity string) (method, tier, reason string, ok bool) {
+// Applicability reports whether the router uses a measured cell, and why not when it does not.
+func (s *MatrixStore) Applicability(m BestMethodsMatrix, c MatrixCell) (bool, string) {
+	switch {
+	case m.Source != SourceShadowBenchmark || c.Source == SourceDefault:
+		return false, "not measured"
+	case c.OptimalMethod == "":
+		return false, "no winning method"
+	case c.Samples < s.minSamples:
+		return false, fmt.Sprintf("%d samples (needs %d)", c.Samples, s.minSamples)
+	case c.FPVRPercent < s.minFPVR*100:
+		return false, fmt.Sprintf("first-pass %.0f%% (needs %.0f%%)", c.FPVRPercent, s.minFPVR*100)
+	}
+	return true, ""
+}
+
+// Thresholds are the evidence a measured cell needs before routing uses it.
+func (s *MatrixStore) Thresholds() (minSamples int, minFPVR float64) { return s.minSamples, s.minFPVR }
+
+// AdviseMethod implements router.MethodAdvisor using benchmark-sourced cells only. It also
+// returns the winning model, so the router can use the exact model that was measured when the
+// operator's chain has it (and fall back to the tier when it does not).
+func (s *MatrixStore) AdviseMethod(stageID, complexity string) (method, tier, model, reason string, ok bool) {
 	stage, cx := CanonicalStage(stageID), CanonicalComplexity(complexity)
 	if stage == "" || cx == "" {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 	s.mu.RLock()
 	m := s.current
 	s.mu.RUnlock()
 	if m.Source != SourceShadowBenchmark {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 	c, found := m.Cell(stage, cx)
-	if !found || c.Samples < s.minSamples || c.OptimalMethod == "" {
-		return "", "", "", false
+	// The FPVR floor also guards matrix files written before the builder enforced it.
+	if !found || c.Samples < s.minSamples || c.OptimalMethod == "" || c.FPVRPercent < s.minFPVR*100 {
+		return "", "", "", "", false
 	}
 	reason = fmt.Sprintf("Shadow benchmark %s: %s on %s wins %s/%s (FPVR %.0f%%, $%.4f, %d samples)",
 		m.GeneratedAt.Format(time.RFC3339), c.OptimalMethod, c.WinningModel, stage, cx, c.FPVRPercent, c.AvgCostUSD, c.Samples)
-	return strings.ToLower(c.OptimalMethod), c.ModelTier, reason, true
+	return strings.ToLower(c.OptimalMethod), c.ModelTier, c.WinningModel, reason, true
 }

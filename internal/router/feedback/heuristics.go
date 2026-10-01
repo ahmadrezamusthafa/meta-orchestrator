@@ -1,6 +1,7 @@
 package feedback
 
 import (
+	"math"
 	"sort"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/telemetry"
@@ -183,7 +184,7 @@ func (e *Evaluator) compareRules(runs []telemetry.RunRecord) []RuleComparison {
 			CustomFPVR: c.fpvr(), BestPracticeFPVR: b.fpvr(), CustomAvgCostUSD: c.avgCost(), BestPracticeAvgCostUSD: b.avgCost(),
 			Winner: WinnerInconclusive}
 		if c.runs >= e.cfg.MinComparisonSamples && b.runs >= e.cfg.MinComparisonSamples {
-			cmp.Winner = decide(cmp.CustomFPVR, cmp.BestPracticeFPVR, cmp.CustomAvgCostUSD, cmp.BestPracticeAvgCostUSD, e.cfg.FPVRMargin)
+			cmp.Winner = decide(c, b, e.cfg.FPVRMargin)
 		}
 		out = append(out, cmp)
 	}
@@ -196,19 +197,42 @@ func (e *Evaluator) compareRules(runs []telemetry.RunRecord) []RuleComparison {
 	return out
 }
 
-// decide picks a winner: a clear FPVR lead wins outright; otherwise equal-or-better quality at lower cost wins.
-func decide(customFPVR, bpFPVR, customCost, bpCost, margin float64) Winner {
+// decide picks a winner. An FPVR lead wins outright only when it is at least margin and
+// statistically significant (one-sided two-proportion z-test, 95%); a lead that could be noise (4/5 vs
+// 3/5) decides nothing. A side whose quality is not worse wins on lower cost. A significant
+// quality loss is never offset by cost.
+func decide(custom, bp *accumulator, margin float64) Winner {
 	const eps = 1e-9
+	cf, bf := custom.fpvr(), bp.fpvr()
+	significant := significantDiff(custom.firstPasses, custom.runs, bp.firstPasses, bp.runs)
+	cc, bc := custom.avgCost(), bp.avgCost()
 	switch {
-	case customFPVR-bpFPVR >= margin-eps:
+	case cf-bf >= margin-eps && significant:
 		return WinnerCustom
-	case bpFPVR-customFPVR >= margin-eps:
+	case bf-cf >= margin-eps && significant:
 		return WinnerBestPractice
-	case customFPVR >= bpFPVR && customCost < bpCost:
+	case significant:
+		return WinnerInconclusive
+	case cf >= bf && cc < bc:
 		return WinnerCustom
-	case bpFPVR >= customFPVR && bpCost < customCost:
+	case bf >= cf && bc < cc:
 		return WinnerBestPractice
 	default:
 		return WinnerInconclusive
 	}
+}
+
+// significantDiff runs a pooled two-proportion z-test, one-sided at the 95% level: the
+// question is whether the side that leads is genuinely better.
+func significantDiff(s1, n1, s2, n2 int) bool {
+	if n1 == 0 || n2 == 0 {
+		return false
+	}
+	p1, p2 := float64(s1)/float64(n1), float64(s2)/float64(n2)
+	p := float64(s1+s2) / float64(n1+n2)
+	se := math.Sqrt(p * (1 - p) * (1/float64(n1) + 1/float64(n2)))
+	if se == 0 {
+		return false // both sides all-pass or all-fail: no difference
+	}
+	return math.Abs(p1-p2)/se >= 1.645
 }

@@ -63,9 +63,13 @@ var defaultProviders = []ProviderDTO{
 		Name:         "Anthropic Claude",
 		Enabled:      true,
 		LatencyMs:    142,
-		DefaultModel: "claude-3-7-sonnet-20250219",
+		DefaultModel: "claude-sonnet-5-5",
 		Models: []string{
 			"claude-opus-5-5",
+			"claude-sonnet-5-5",
+			"claude-haiku-4-5",
+			"claude-fable-5-1",
+			// Earlier generations, kept so saved settings that name them still resolve.
 			"claude-3-7-sonnet-20250219",
 			"claude-3-7-sonnet",
 			"claude-3-7-sonnet-latest",
@@ -294,33 +298,39 @@ type RouterModeDTO struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// ComplexityAware modes change the model with task complexity; the others use one model order for every stage.
+	ComplexityAware bool `json:"complexity_aware"`
+	Recommended     bool `json:"recommended,omitempty"`
 }
 
 var availableRouterModes = []RouterModeDTO{
 	{
-		ID:          "priority_sequence",
-		Name:        "Priority Sequence (Custom Waterfall)",
-		Description: "Always starts at rank #1 of your chain and fails over down the list.",
+		ID:   "best_practice",
+		Name: "Tiered Best Practice",
+		Description: "Picks the model tier and method from each stage and the task's complexity: low-complexity work runs on " +
+			"the cheaper Tier 2 model, complex planning and code on Tier 1. Uses shadow-benchmark winners once they are measured.",
+		ComplexityAware: true,
+		Recommended:     true,
 	},
 	{
-		ID:          "best_practice",
-		Name:        "Tiered Best Practice",
-		Description: "Picks the best chain model per SDLC stage and complexity; suggests stronger models you have not allowed.",
+		ID:          "priority_sequence",
+		Name:        "Priority Sequence",
+		Description: "Every stage uses the top enabled model in your list and falls back down it in order. The method still follows the stage.",
 	},
 	{
 		ID:          "cost_optimized",
 		Name:        "Cost-Optimized",
-		Description: "Routes to the most cost-effective model first (local Ollama/vLLM & high-efficiency flash models).",
+		Description: "Every stage uses the cheapest enabled model by input price. Can be too weak for complex tasks.",
 	},
 	{
 		ID:          "latency_optimized",
 		Name:        "Latency-Optimized",
-		Description: "Prioritizes lowest Time-To-First-Token and fastest response speed.",
+		Description: "Every stage uses the enabled model with the lowest estimated latency.",
 	},
 	{
 		ID:          "round_robin",
-		Name:        "Round-Robin Load Balancing",
-		Description: "Rotates tasks evenly across active providers to mitigate rate limits and quotas.",
+		Name:        "Round-Robin",
+		Description: "Rotates through enabled models request by request to spread rate limits and quota.",
 	},
 }
 
@@ -332,7 +342,11 @@ var modelMetaMap = map[string]struct {
 	LatencyMs int
 }{
 	// Claude
-	"claude-opus-5-5":            {Name: "Claude Opus 5.5 (Next-Gen Frontier)", CostPer1k: 0.015, LatencyMs: 250},
+	// CostPer1k is the input list price per 1k tokens.
+	"claude-opus-5-5":            {Name: "Claude Opus 5.5", CostPer1k: 0.004, LatencyMs: 250},
+	"claude-sonnet-5-5":          {Name: "Claude Sonnet 5.5", CostPer1k: 0.002, LatencyMs: 140},
+	"claude-haiku-4-5":           {Name: "Claude Haiku 4.5", CostPer1k: 0.001, LatencyMs: 75},
+	"claude-fable-5-1":           {Name: "Claude Fable 5.1", CostPer1k: 0.010, LatencyMs: 320},
 	"claude-3-7-sonnet-latest":   {Name: "Claude 3.7 Sonnet (Latest)", CostPer1k: 0.003, LatencyMs: 140},
 	"claude-3-7-sonnet-20250219": {Name: "Claude 3.7 Sonnet (Hybrid Reasoning)", CostPer1k: 0.003, LatencyMs: 140},
 	"claude-3-7-sonnet":          {Name: "Claude 3.7 Sonnet", CostPer1k: 0.003, LatencyMs: 140},
@@ -379,6 +393,40 @@ var modelMetaMap = map[string]struct {
 	"starcoder2-15b":     {Name: "StarCoder2 15B (Local)", CostPer1k: 0.0, LatencyMs: 10},
 }
 
+// builtinModelMeta is the shipped catalog. It is the source of truth for the name, price and
+// latency of the models it lists: a chain item or custom registration never overrides it, so a
+// stale or mistyped entry cannot change what Cost- or Latency-Optimized routing sorts on.
+var builtinModelMeta = func() map[string]struct {
+	Name      string
+	CostPer1k float64
+	LatencyMs int
+} {
+	out := make(map[string]struct {
+		Name      string
+		CostPer1k float64
+		LatencyMs int
+	}, len(modelMetaMap))
+	for k, v := range modelMetaMap {
+		out[k] = v
+	}
+	return out
+}()
+
+// withCatalogMeta returns chain with the catalog's name, price and latency on every built-in model.
+func withCatalogMeta(chain []router.PriorityModelItem) []router.PriorityModelItem {
+	if chain == nil {
+		return nil
+	}
+	out := make([]router.PriorityModelItem, len(chain))
+	for i, item := range chain {
+		if meta, ok := builtinModelMeta[item.Model]; ok {
+			item.Name, item.CostPer1k, item.LatencyMs = meta.Name, meta.CostPer1k, meta.LatencyMs
+		}
+		out[i] = item
+	}
+	return out
+}
+
 func registerCustomModel(providerID, modelID, modelName string, costPer1k float64, latencyMs int) {
 	modelMetaMu.Lock()
 	defer modelMetaMu.Unlock()
@@ -386,6 +434,9 @@ func registerCustomModel(providerID, modelID, modelName string, costPer1k float6
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
 		return
+	}
+	if _, builtin := builtinModelMeta[modelID]; builtin {
+		return // already in the catalog with its real metadata
 	}
 	if modelName == "" {
 		modelName = modelID
@@ -478,10 +529,11 @@ func (r *Router) handleRouterSettings(w http.ResponseWriter, req *http.Request) 
 		r.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"mode":            settings.Mode,
 			"priority_chain":  settings.PriorityChain,
-			"default_chain":   router.DefaultPriorityChain(),
+			"default_chain":   withCatalogMeta(router.DefaultPriorityChain()),
 			"available_modes": availableRouterModes,
 			"all_models":      getAllAvailableModels(),
 			"preview":         preview,
+			"matrix":          r.strategyRouter.PreviewMatrix(nil, stagePipeline),
 			"tiers":           tiers,
 		})
 
@@ -498,7 +550,7 @@ func (r *Router) handleRouterSettings(w http.ResponseWriter, req *http.Request) 
 		if body.Mode != "" {
 			r.strategyRouter.SetSettings(router.RouterSettings{
 				Mode:          body.Mode,
-				PriorityChain: body.PriorityChain,
+				PriorityChain: withCatalogMeta(body.PriorityChain),
 			})
 			registerChainModels(body.PriorityChain)
 			if err := saveRouterSettings(r.strategyRouter.GetSettings()); err != nil {
@@ -512,6 +564,7 @@ func (r *Router) handleRouterSettings(w http.ResponseWriter, req *http.Request) 
 			"status":   "updated",
 			"settings": r.strategyRouter.GetSettings(),
 			"preview":  preview,
+			"matrix":   r.strategyRouter.PreviewMatrix(nil, stagePipeline),
 			"tiers":    tiers,
 		})
 
@@ -531,8 +584,10 @@ func (r *Router) handleRouterPreview(w http.ResponseWriter, req *http.Request) {
 		r.writeError(w, http.StatusBadRequest, "Invalid JSON payload")
 		return
 	}
+	body.PriorityChain = withCatalogMeta(body.PriorityChain)
 	preview, tiers := r.strategyRouter.Preview(&body)
-	r.writeJSON(w, http.StatusOK, map[string]interface{}{"preview": preview, "tiers": tiers})
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{"preview": preview, "tiers": tiers,
+		"matrix": r.strategyRouter.PreviewMatrix(&body, stagePipeline)})
 }
 
 func (r *Router) handleRegisterModel(w http.ResponseWriter, req *http.Request) {

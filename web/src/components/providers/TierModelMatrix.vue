@@ -37,9 +37,9 @@ function costPer1M(full: string): string {
     <div class="flex items-center justify-between pb-2 border-b border-slate-800">
       <div>
         <h3 class="text-xs font-bold text-slate-100 uppercase tracking-wide">
-          Three-Tier Model Stratification Matrix
+          Model tiers
         </h3>
-        <span class="text-[11px] text-slate-400">What each tier resolves to from your saved priority chain</span>
+        <span class="text-[11px] text-slate-400">The model each tier runs on under your saved allowed-models list. Tiered Best Practice picks a tier per stage and complexity.</span>
       </div>
       <ShieldCheck class="w-4 h-4 text-emerald-400" />
     </div>

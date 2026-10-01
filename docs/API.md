@@ -73,7 +73,6 @@ Launch a new autonomous task. Supports full pipeline execution or **Mid-Process 
   "workflow_id": "general_ai_sdlc",
   "assigned_repos": ["frontend-portal", "backend-core"],
   "router_strategy": "BEST_PRACTICE",
-  "selected_method": "Auto",
   "complexity": "HIGH",
   "max_token_budget": 50000,
   "active_slice": {
@@ -86,6 +85,40 @@ Launch a new autonomous task. Supports full pipeline execution or **Mid-Process 
 ```
 
 * **Response (`201 Created`):** Returns the initialized `Task` object.
+* **Routing plan:** send the reviewed analysis from `POST /api/v1/tasks/analyze` as `complexity`, `complexity_source`,
+  `complexity_rationale`, `task_type` and `routing_plan` (`[{stage_id, method, model, tier, overridden}]`); the task is
+  stored with `metadata.routing_confirmed = "true"` and every stage runs with its plan entry. Without `routing_plan` the
+  server grades complexity with the keyword heuristic (no model call), stores the router's proposal and marks it
+  `routing_confirmed = "false"` for the operator to review.
+
+---
+
+#### `POST /api/v1/tasks/analyze`
+Grade a draft task's complexity with AI (the Tier 3 model in your chain; keyword heuristic when it is unavailable) and
+propose a method and model per stage. Passing `complexity` re-plans with the operator's grade and skips the AI.
+
+* **Request Body:** `{"title", "description", "assigned_repos", "complexity"?, "task_type"?, "start_stage"?, "halt_stage"?}`
+* **Response (`200 OK`):**
+```json
+{
+  "assessment": {"complexity": "LOW", "task_type": "docs", "rationale": "README wording only.", "signals": ["readme"],
+                 "source": "ai", "model": "claude/claude-haiku-4-5"},
+  "plan": [{"stage_id": "prd_discovery", "method": "react", "model": "claude/claude-sonnet-5-5", "tier": "tier2",
+            "reasoning": "Best practice: Low complexity: ...", "strategy": "best_practice"}],
+  "methods": [{"id": "react", "name": "ReAct", "description": "..."}],
+  "models": [{"model": "claude/claude-sonnet-5-5", "tiers": ["tier2"]}]
+}
+```
+Best-practice tiers by complexity: LOW runs on Tier 2 (ReAct; Superpower for verification); MEDIUM uses Tier 1 for
+planning (BMAD/Supervisor) and Tier 2 for implementation and verification; HIGH uses Tier 1 throughout; SYSTEM uses
+Tier 1 with Superpower.
+
+---
+
+#### `GET|PUT /api/v1/tasks/{id}/routing`
+Read or replace a task's routing plan. `PUT {"complexity"?, "routing_plan": [...]}` validates stages, methods
+(`react`, `bmad`, `supervisor`, `superpower`) and models (must be enabled in the router chain), marks the plan
+confirmed and applies from the next stage run.
 
 ---
 
@@ -169,7 +202,8 @@ Submit human operator approval or rejection at a gated SDLC boundary (e.g. `tech
 
 * `GET /api/v1/providers`: Lists active providers (`Claude`, `Antigravity`, `ChatGPT`, `OpenCode`), masked API keys, base URLs, and active project override status.
 * `POST /api/v1/providers/test`: Ping connection and measure latency in milliseconds (`{"provider_id": "claude"}`).
-* `GET /api/v1/benchmarks`: Returns the 36-cell benchmark matrix (9 SDLC Stages $\times$ 4 Complexities) with winning methods, models, and First-Pass Verification Rates (FPVR %). Each cell carries `source`: `shadow_benchmark` (measured) or `default` (best-practice policy filling cells no sweep has measured). `measured_cells` counts the measured ones.
+* `GET /api/v1/benchmarks`: Shadow-benchmark measurements per pipeline stage (8) and complexity (4). `matrix` lists **measured cells only** — winning method and model, FPVR %, samples, cost — each with `applied` (routing uses it) or `not_applied_reason` (e.g. `"2 samples (needs 3)"`, `"first-pass 40% (needs 50%)"`). `benchmark_stage` is the stage that was measured (UAT verification shares E2E validation). Also returns `total_cells`, `measured_cells`, `applied_cells`, `min_samples`, `min_fpvr` and `shadow_enabled`. The routing policy for unmeasured cells is the router preview `matrix`, not this endpoint.
+* `GET|POST /api/v1/router/settings`, `POST /api/v1/router/preview`: Routing mode and allowed-model chain. Responses include `matrix`: the decision for every pipeline stage × complexity (`stage_id`, `complexity`, `decision`), where `decision.method_source` (`policy`, `benchmark`, `rule`, `user`) and `decision.tier_source` (`policy`, `benchmark`, `calibrated`, `mode`, `rule`, `user`) say where the choice came from, and `decision.suggestion` names a recommended model the chain could not run. Built-in models always carry the catalog's name, price and latency; saved chain values never override them. Modes report `complexity_aware`; chain modes (priority, cost, latency, round-robin) order the models while the method still follows stage and complexity.
 
 ---
 

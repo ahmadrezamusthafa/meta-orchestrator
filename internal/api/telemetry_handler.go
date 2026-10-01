@@ -283,23 +283,64 @@ func (r *Router) onTaskCompleted(task *types.Task) {
 	r.telemetry.daemon.OnTaskCompleted(task, baseline)
 }
 
-// handleBenchmarks serves the active best-methods matrix (falls back to the default policy).
+// benchmarkCellView is one measured benchmark cell placed on a pipeline stage.
+type benchmarkCellView struct {
+	shadow.MatrixCell
+	StageID          string `json:"stage_id"`        // pipeline stage the measurement routes
+	BenchmarkStage   string `json:"benchmark_stage"` // stage the benchmark measured (shared, e.g. UAT uses E2E)
+	Applied          bool   `json:"applied"`         // the router uses this winner
+	NotAppliedReason string `json:"not_applied_reason,omitempty"`
+}
+
+// handleBenchmarks serves shadow-benchmark measurements per pipeline stage and complexity. Only
+// measured cells are listed — the routing policy for the rest is the router preview — and each says
+// whether routing applies it, so the matrix never shows policy as if it were evidence.
 func (r *Router) handleBenchmarks(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
-	// Unmeasured cells fall back to the default policy, tagged source=default per cell.
-	m := shadow.FillDefaults(r.telemetry.matrix.Current(), time.Now())
-	r.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"total_cells":    len(m.Cells),
-		"measured_cells": m.MeasuredCells(),
-		"generated_at": m.GeneratedAt,
-		"source":       m.Source,
-		"sweep_id":     m.SweepID,
-		"weights":      m.Weights,
-		"matrix":       m.Cells,
-	})
+	store := r.telemetry.matrix
+	m := store.Current()
+	cells := []benchmarkCellView{}
+	applied := 0
+	for _, st := range stagePipeline {
+		bst := shadow.CanonicalStage(st)
+		for _, cx := range router.Complexities {
+			c, ok := m.Cell(bst, cx)
+			if !ok || m.Source != shadow.SourceShadowBenchmark || c.Source == shadow.SourceDefault {
+				continue
+			}
+			v := benchmarkCellView{MatrixCell: c, StageID: st, BenchmarkStage: bst}
+			v.Applied, v.NotAppliedReason = store.Applicability(m, c)
+			if v.Applied {
+				applied++
+			}
+			cells = append(cells, v)
+		}
+	}
+	minSamples, minFPVR := store.Thresholds()
+	source := m.Source
+	if source == "" {
+		source = shadow.SourceDefault // no matrix file yet: nothing measured
+	}
+	resp := map[string]interface{}{
+		"total_cells":    len(stagePipeline) * len(router.Complexities),
+		"measured_cells": len(cells),
+		"applied_cells":  applied,
+		"stages":         stagePipeline,
+		"complexities":   router.Complexities,
+		"min_samples":    minSamples,
+		"min_fpvr":       minFPVR,
+		"shadow_enabled": r.telemetry.daemon != nil,
+		"source":         source,
+		"weights":        m.Weights,
+		"matrix":         cells,
+	}
+	if m.Source == shadow.SourceShadowBenchmark {
+		resp["generated_at"], resp["sweep_id"] = m.GeneratedAt, m.SweepID
+	}
+	r.writeJSON(w, http.StatusOK, resp)
 }
 
 type weightLockRequest struct {

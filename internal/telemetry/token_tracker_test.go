@@ -5,6 +5,7 @@ import (
 	"math"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -162,5 +163,28 @@ func TestTokenTrackerOverridesDriverCostWithPricingTable(t *testing.T) {
 	ev = tracker.Record(CallMeta{TaskID: "T", Model: "nope"}, types.TokenUsage{PromptTokens: 10, EstimatedCostUSD: 0.5})
 	if ev.CostUSD != 0.5 {
 		t.Fatalf("unknown-model cost = %v, want driver estimate 0.5", ev.CostUSD)
+	}
+}
+
+func TestCurrentClaudeModelsArePriced(t *testing.T) {
+	p := NewPricingTable()
+	for model, in := range map[string]float64{
+		"claude/claude-opus-5-5": 4, "claude-sonnet-5-5": 2, "claude/claude-haiku-4-5-20251001": 1, "claude-fable-5-1": 10,
+	} {
+		if got, ok := p.Lookup(model); !ok || got.InputPer1M != in {
+			t.Fatalf("%s = %+v (found %v), want input $%v/1M", model, got, ok, in)
+		}
+	}
+}
+
+func TestSummaryMergesMethodSpellings(t *testing.T) {
+	d := NewMemoryDatastore()
+	now := time.Now()
+	for _, m := range []string{"bmad", "BMAD", "react"} {
+		_ = d.RecordRun(RunRecord{RunMeta: RunMeta{TaskID: m, Method: m}, Success: true, FirstPass: true, StartedAt: now, FinishedAt: now})
+	}
+	s := Summarize(d, "all", "", now)
+	if len(s.Methods) != 2 || s.Methods[0].Method != "BMAD" || s.Methods[0].Runs != 2 || s.Methods[1].Method != "ReAct" {
+		t.Fatalf("methods = %+v", s.Methods)
 	}
 }

@@ -194,7 +194,7 @@ type CellTrace struct {
 // CellResult aggregates the isolated metrics of one cell.
 type CellResult struct {
 	Cell          Cell        `json:"cell"`
-	Samples       int         `json:"samples"`
+	Samples       int         `json:"samples"` // executions, errored ones included (an error is a failed run)
 	FirstPasses   int         `json:"first_passes"`
 	FPVR          float64     `json:"fpvr"`      // first-pass verification rate, 0..1
 	PassRate      float64     `json:"pass_rate"` // eventual pass rate within MaxIterations, 0..1
@@ -335,29 +335,27 @@ func (r *MatrixRunner) runCell(ctx context.Context, sw Sweep, cell Cell, reps in
 		return res
 	}
 
-	cellCtx := ctx
-	if t := r.cfg.Execution.CellTimeoutS; t > 0 {
-		var cancel context.CancelFunc
-		cellCtx, cancel = context.WithTimeout(ctx, time.Duration(t)*time.Second)
-		defer cancel()
-	}
-
 	var passes int
 	var tokens, durUS int64
 	var cost float64
 	var tools, iters int
 	for rep := 0; rep < reps; rep++ {
 		for _, fx := range fixtures {
+			if ctx.Err() != nil {
+				return res // the sweep is being cancelled; Run discards the result
+			}
 			runID := fmt.Sprintf("%s:%s:%s:%d", sw.ID, strings.ReplaceAll(cell.Key(), "|", ":"), fx.ID, rep)
-			obs, err := r.executor.Execute(cellCtx, cell, fx, runID)
+			obs, err := r.execute(ctx, cell, fx, runID)
 			trace := CellTrace{RunID: runID, FixtureID: fx.ID, Repetition: rep, FirstPass: obs.FirstPass, Passed: obs.Passed,
 				Tokens: obs.PromptTokens + obs.CompletionTokens, CostUSD: obs.CostUSD, DurationUS: obs.DurationUS, Steps: obs.Steps}
+			// An errored run (provider failure, timeout) is a failed sample, not a skipped one:
+			// dropping it would let an unreliable model look perfect on the runs that survived.
+			// Whatever it spent before failing still counts toward its cost.
 			if err != nil {
 				res.Errors++
 				res.LastError = err.Error()
 				trace.Error = err.Error()
-				res.Traces = append(res.Traces, trace)
-				continue
+				obs.FirstPass, obs.Passed = false, false
 			}
 			res.Traces = append(res.Traces, trace)
 			res.Samples++
@@ -399,6 +397,17 @@ func (r *MatrixRunner) runCell(ctx context.Context, sw Sweep, cell Cell, reps in
 		res.AvgIterations = float64(iters) / n
 	}
 	return res
+}
+
+// execute runs one fixture, bounded by the per-run timeout (execution.cell_timeout_s) so a slow
+// repetition cannot starve the remaining ones of their time.
+func (r *MatrixRunner) execute(ctx context.Context, cell Cell, fx Fixture, runID string) (Observation, error) {
+	if t := r.cfg.Execution.CellTimeoutS; t > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(t)*time.Second)
+		defer cancel()
+	}
+	return r.executor.Execute(ctx, cell, fx, runID)
 }
 
 func boolInt(b bool) int {
