@@ -81,9 +81,11 @@ func TestMatrixBuilderSelectsWinningMethodPerCell(t *testing.T) {
 	if low.AvgTokens != 4500 || low.AvgDurationS != 8 || low.AvgCostUSD != 0.01 {
 		t.Fatalf("LOW metrics = %+v", low)
 	}
-	// Score = w1·FPVR − w2·NormCost − w3·NormTTR; ReAct is cheapest and fastest → norm 0 → score = w1.
-	if math.Abs(low.Score-DefaultBuilderConfig().Weights.FPVR) > 1e-9 {
-		t.Fatalf("LOW score = %v", low.Score)
+	// Score = w1·Quality − w2·cost/maxCost − w3·ttr/maxTTR with Quality = Wilson lower bound of 10/10.
+	w := DefaultBuilderConfig().Weights
+	q := Quality(result("", "", "", "", "", 10, 10, 0, 0, 0))
+	if want := w.Score(q, 0.01/0.25, 8.0/60); math.Abs(low.Score-math.Round(want*1e4)/1e4) > 1e-9 {
+		t.Fatalf("LOW score = %v, want %v", low.Score, want)
 	}
 	if !containsFold(low.ParetoFront, "ReAct@openai/gpt-4o-mini") || containsFold(low.ParetoFront, "BMAD@claude/claude-3-5-sonnet-20241022") {
 		t.Fatalf("pareto front = %v (BMAD is dominated by ReAct)", low.ParetoFront)
@@ -94,6 +96,42 @@ func TestMatrixBuilderSelectsWinningMethodPerCell(t *testing.T) {
 	}
 	if m.Source != SourceShadowBenchmark || m.SweepID != "sweep-x" || len(m.Cells) != 4 {
 		t.Fatalf("matrix = source %s sweep %s cells %d", m.Source, m.SweepID, len(m.Cells))
+	}
+}
+
+// A marginally cheaper candidate must not beat a much more reliable one. Under min–max
+// normalization the 1% cheaper run gained the full cost weight (0.3) and won despite a
+// 25-point FPVR deficit.
+func TestMatrixBuilderTinyCostGapDoesNotBeatQuality(t *testing.T) {
+	m := NewMatrixBuilder(DefaultBuilderConfig()).Build("s", []CellResult{
+		result("task_implementation", "MEDIUM", "BMAD", "a", "tier1", 20, 19, 0.0101, 30, 1000),
+		result("task_implementation", "MEDIUM", "ReAct", "b", "tier2", 20, 14, 0.0100, 30, 1000),
+	}, buildTime)
+	c, ok := cellFor(m, "task_implementation", "MEDIUM")
+	if !ok || c.OptimalMethod != "BMAD" {
+		t.Fatalf("winner = %+v, want BMAD (95%% vs 70%% FPVR for a 1%% cost difference)", c)
+	}
+}
+
+// 3/3 first passes is weaker evidence than 29/30; at equal cost the larger sample wins.
+func TestMatrixBuilderPrefersEvidenceOverLuckySmallSample(t *testing.T) {
+	m := NewMatrixBuilder(DefaultBuilderConfig()).Build("s", []CellResult{
+		result("task_implementation", "LOW", "ReAct", "lucky", "tier2", 3, 3, 0.01, 10, 1000),
+		result("task_implementation", "LOW", "BMAD", "proven", "tier2", 30, 29, 0.01, 10, 1000),
+	}, buildTime)
+	if c, _ := cellFor(m, "task_implementation", "LOW"); c.WinningModel != "proven" {
+		t.Fatalf("winner = %+v, want the 29/30 candidate", c)
+	}
+}
+
+// When every candidate fails, no winner is published and the router keeps its heuristics.
+func TestMatrixBuilderOmitsTupleWithoutPassingCandidate(t *testing.T) {
+	m := NewMatrixBuilder(DefaultBuilderConfig()).Build("s", []CellResult{
+		result("e2e_validation", "HIGH", "ReAct", "cheap", "tier3", 10, 0, 0.001, 5, 100),
+		result("e2e_validation", "HIGH", "BMAD", "dear", "tier1", 10, 2, 0.5, 90, 9000),
+	}, buildTime)
+	if c, ok := cellFor(m, "e2e_validation", "HIGH"); ok {
+		t.Fatalf("published failing winner %+v", c)
 	}
 }
 
@@ -168,7 +206,8 @@ func TestBenchmarkReportMarkdown(t *testing.T) {
 		"95% CI",
 		"| ReAct | openai/gpt-4o-mini | tier2 | 10 | 100.0% [72.2–100.0] |",
 		"+2400.0%", // BMAD cost differential vs ReAct winner in LOW (0.25 vs 0.01)
-		"Score = 1.00·FPVR − 0.30·NormalizedCost − 0.10·NormalizedTTR",
+		"Score = 1.00·Quality − 0.30·NormalizedCost − 0.10·NormalizedTTR",
+		"FPVR below 50% floor", // ReAct in prd_discovery/MEDIUM passes 40% first time
 	} {
 		if !strings.Contains(md, want) {
 			t.Fatalf("report missing %q:\n%s", want, md)
@@ -296,5 +335,34 @@ func TestFillDefaultsCompletesPartialSweep(t *testing.T) {
 	}
 	if e := FillDefaults(BestMethodsMatrix{}, buildTime); len(e.Cells) != 36 || e.Source != SourceDefault || e.MeasuredCells() != 0 {
 		t.Fatalf("empty matrix = %d cells, source %q", len(e.Cells), e.Source)
+	}
+}
+
+// The router uses the exact model the benchmark measured when the chain has it, and the
+// tier's configured model when it does not.
+func TestRouterPrefersBenchmarkedWinningModel(t *testing.T) {
+	store := NewMatrixStore("", nil)
+	m := NewMatrixBuilder(DefaultBuilderConfig()).Build("s", []CellResult{
+		result("task_implementation", "MEDIUM", "ReAct", "openai/gpt-4o", "tier1", 10, 10, 0.05, 20, 5000),
+	}, buildTime)
+	if err := store.Update(m, ""); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.GetDefaultConfig()
+	cfg.ModelTiers.Tier1Reasoning = "claude/claude-3-5-sonnet-20241022"
+	route := func(chain ...router.PriorityModelItem) *router.RoutingDecision {
+		r := router.NewRouter(cfg)
+		r.SetSettings(router.RouterSettings{PriorityChain: chain})
+		r.SetMethodAdvisor(store)
+		return r.Route("task_implementation", "MEDIUM", nil)
+	}
+	sonnet := router.PriorityModelItem{Provider: "claude", Model: "claude-3-5-sonnet-20241022", Enabled: true, Tiers: []string{"tier1"}}
+	gpt := router.PriorityModelItem{Provider: "openai", Model: "gpt-4o", Enabled: true, Tiers: []string{"tier1"}}
+
+	if d := route(sonnet, gpt); d.Model != "openai/gpt-4o" || d.Method != "react" {
+		t.Fatalf("with winner in chain: %+v", d)
+	}
+	if d := route(sonnet); d.Model != "claude/claude-3-5-sonnet-20241022" || d.Tier != "tier1" {
+		t.Fatalf("without winner in chain: %+v", d)
 	}
 }

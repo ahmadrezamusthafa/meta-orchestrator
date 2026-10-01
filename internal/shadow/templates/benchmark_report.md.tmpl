@@ -5,9 +5,10 @@
 - **Generated:** {{.GeneratedAt}}
 - **Sweep:** `{{.SweepID}}` ({{.SweepStarted}} → {{.SweepFinished}}, {{.SweepDuration}})
 - **Tuples scored:** {{.TupleCount}} · **Winners selected:** {{.WinnerCount}} · **Candidates evaluated:** {{.CandidateCount}}
-- **Scoring heuristic:** Score = {{.WeightFPVR}}·FPVR − {{.WeightCost}}·NormalizedCost − {{.WeightTTR}}·NormalizedTTR
-  (cost and TTR are min–max normalized within each stage/complexity tuple; the winner is the highest-scoring
-  Pareto-efficient candidate with at least {{.MinSamples}} samples)
+- **Scoring heuristic:** Score = {{.WeightFPVR}}·Quality − {{.WeightCost}}·NormalizedCost − {{.WeightTTR}}·NormalizedTTR
+  (Quality is the lower bound of the FPVR 95% CI; cost and TTR are divided by the tuple's highest value; the winner
+  is the highest-scoring Pareto-efficient candidate with at least {{.MinSamples}} samples and FPVR ≥ {{.MinFPVR}}.
+  Errored runs count as failed samples)
 
 ## Winning Method Matrix
 

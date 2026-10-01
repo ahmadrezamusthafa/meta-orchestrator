@@ -475,6 +475,9 @@ export interface BenchmarkCellDTO {
   avg_cost_usd?: number
   score?: number
   samples?: number
+  // Comparison context: "Method@provider/model" candidates not dominated, and the second place
+  pareto_front?: string[]
+  runner_up?: string
   // 'shadow_benchmark' = measured; 'default' = best-practice policy, never benchmarked
   source?: 'shadow_benchmark' | 'default' | string
 }

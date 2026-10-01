@@ -196,8 +196,9 @@ func TestMatrixSweepUsesReplayFixturesAndSkipsUnknownModel(t *testing.T) {
 	}
 	for _, c := range res.Cells {
 		if c.Cell.Model == "stub/missing" {
-			if c.Errors == 0 || c.Samples != 0 || c.LastError == "" {
-				t.Fatalf("missing model should record errors, got %+v", c)
+			// Errored runs are failed samples, so an unreachable model scores 0% and cannot win.
+			if c.Errors != 2 || c.Samples != 2 || c.FPVR != 0 || c.LastError == "" {
+				t.Fatalf("missing model should record errors as failed samples, got %+v", c)
 			}
 			continue
 		}

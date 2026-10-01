@@ -3,7 +3,9 @@ package shadow
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
@@ -17,12 +19,13 @@ type ClientResolver func(model string) (llm.ProviderClient, string, error)
 // back to the model on the next iteration when it fails.
 type Verifier func(ctx context.Context, cell Cell, fx Fixture, output string) (passed bool, feedback string)
 
-// ExpectVerifier passes when every fixture expectation appears in the output (case-insensitive).
+// ExpectVerifier passes when every fixture expectation appears in the output as a whole word
+// (case-insensitive, plural and -ed/-ing forms accepted). Substring matching would let short
+// keywords pass by accident: "ci" inside "decision", "nil" inside "vanilla".
 func ExpectVerifier(ctx context.Context, cell Cell, fx Fixture, output string) (bool, string) {
-	lower := strings.ToLower(output)
 	var missing []string
 	for _, e := range fx.Expect {
-		if !strings.Contains(lower, strings.ToLower(e)) {
+		if !expectRe(e).MatchString(output) {
 			missing = append(missing, e)
 		}
 	}
@@ -32,12 +35,25 @@ func ExpectVerifier(ctx context.Context, cell Cell, fx Fixture, output string) (
 	return false, "Verification failed: output is missing required acceptance criteria: " + strings.Join(missing, ", ")
 }
 
-// methodRoles is the call pattern of each methodology; the last role produces the verified output.
-var methodRoles = map[string][]string{
-	"BMAD":       {"product_manager", "atdd_qa_engineer", "system_architect", "lead_developer"},
-	"Supervisor": {"supervisor_plan", "frontend_agent", "backend_agent", "supervisor_merge"},
-	"ReAct":      {"react_agent"},
-	"Superpower": {"infrastructure_planner", "autonomous_executor"},
+var expectCache sync.Map // keyword → *regexp.Regexp
+
+func expectRe(keyword string) *regexp.Regexp {
+	if re, ok := expectCache.Load(keyword); ok {
+		return re.(*regexp.Regexp)
+	}
+	re := regexp.MustCompile(`(?i)(^|[^\pL\pN])` + regexp.QuoteMeta(strings.TrimSpace(keyword)) + `(s|es|ed|ing)?($|[^\pL\pN])`)
+	expectCache.Store(keyword, re)
+	return re
+}
+
+// methodRoles is the call pattern of each methodology: phases run in order, roles within a
+// phase run concurrently (Supervisor's sub-agents), and the single role of the last phase
+// produces the verified output.
+var methodRoles = map[string][][]string{
+	"BMAD":       {{"product_manager"}, {"atdd_qa_engineer"}, {"system_architect"}, {"lead_developer"}},
+	"Supervisor": {{"supervisor_plan"}, {"frontend_agent", "backend_agent"}, {"supervisor_merge"}},
+	"ReAct":      {{"react_agent"}},
+	"Superpower": {{"infrastructure_planner"}, {"autonomous_executor"}},
 }
 
 var roleBriefs = map[string]string{
@@ -78,9 +94,13 @@ func (b *StageBenchmarker) SetMaxIterations(n int) {
 	}
 }
 
-// Execute runs the method's roles in sequence (each seeing prior output), verifies the final
+// Execute runs the method's phases in order (each seeing prior output), verifies the final
 // output, and retries the final role with verifier feedback up to maxIterations.
-func (b *StageBenchmarker) Execute(ctx context.Context, cell Cell, fx Fixture, runID string) (Observation, error) {
+//
+// The acceptance keywords are a hidden rubric: they are not put in the prompt, otherwise any
+// model that echoes its instructions passes first time and FPVR measures nothing. A failed
+// attempt gets the missing criteria back as feedback, like a failing test report.
+func (b *StageBenchmarker) Execute(ctx context.Context, cell Cell, fx Fixture, runID string) (obs Observation, err error) {
 	roles, ok := methodRoles[cell.Method]
 	if !ok {
 		return Observation{}, fmt.Errorf("unknown method %q", cell.Method)
@@ -94,51 +114,79 @@ func (b *StageBenchmarker) Execute(ctx context.Context, cell Cell, fx Fixture, r
 			Tier: cell.Tier, Method: cell.Method, Repo: fx.Repo, Category: fx.Category, Shadow: true})
 	}
 
-	var obs Observation
 	started := b.now()
-	task := fmt.Sprintf("SDLC stage: %s\nComplexity: %s\nTask: %s\n%s\nAcceptance criteria keywords: %s",
-		cell.Stage, cell.Complexity, fx.Title, fx.Description, strings.Join(fx.Expect, ", "))
+	// Duration and usage are recorded on every return, so an errored run still reports what it spent.
+	defer func() { obs.DurationUS = b.now().Sub(started).Microseconds() }()
+	task := fmt.Sprintf("SDLC stage: %s\nComplexity: %s\nTask: %s\n%s", cell.Stage, cell.Complexity, fx.Title, fx.Description)
 
-	call := func(role string, attempt int, messages []llm.Message) (string, error) {
+	type result struct {
+		out  string
+		step TraceStep
+		resp *llm.LLMResponse
+	}
+	call := func(role string, attempt int, messages []llm.Message) (result, error) {
 		t0 := b.now()
 		resp, err := client.Complete(ctx, &llm.LLMRequest{Model: modelID, Messages: messages, Temperature: 0.2})
 		if err != nil {
-			return "", err
+			return result{}, err
 		}
 		step := TraceStep{Role: role, Attempt: attempt, PromptTokens: resp.TokenUsage.PromptTokens,
 			CompletionTokens: resp.TokenUsage.CompletionTokens, ToolCalls: len(resp.ToolCalls),
 			DurationUS: b.now().Sub(t0).Microseconds()}
-		obs.Steps = append(obs.Steps, step)
-		obs.PromptTokens += resp.TokenUsage.PromptTokens
-		obs.CompletionTokens += resp.TokenUsage.CompletionTokens
-		obs.CachedTokens += resp.TokenUsage.CachedTokens
-		obs.CostUSD += resp.TokenUsage.EstimatedCostUSD
-		obs.ToolCalls += len(resp.ToolCalls)
-		return resp.Content, nil
+		return result{out: resp.Content, step: step, resp: resp}, nil
+	}
+	record := func(r result) {
+		obs.Steps = append(obs.Steps, r.step)
+		obs.PromptTokens += r.resp.TokenUsage.PromptTokens
+		obs.CompletionTokens += r.resp.TokenUsage.CompletionTokens
+		obs.CachedTokens += r.resp.TokenUsage.CachedTokens
+		obs.CostUSD += r.resp.TokenUsage.EstimatedCostUSD
+		obs.ToolCalls += len(r.resp.ToolCalls)
 	}
 	system := func(role string) llm.Message {
 		return llm.Message{Role: llm.RoleSystem, Content: fmt.Sprintf("You are the %s in a %s execution pipeline. %s", role, cell.Method, roleBriefs[role])}
 	}
 
 	history := ""
-	for _, role := range roles[:len(roles)-1] {
-		out, err := call(role, 1, []llm.Message{system(role), {Role: llm.RoleUser, Content: task + history}})
-		if err != nil {
-			return obs, err
+	for _, phase := range roles[:len(roles)-1] {
+		// Every role of a phase sees the same history; parallel roles do not see each other.
+		results := make([]result, len(phase))
+		errs := make([]error, len(phase))
+		var wg sync.WaitGroup
+		for i, role := range phase {
+			wg.Add(1)
+			go func(i int, role string) {
+				defer wg.Done()
+				results[i], errs[i] = call(role, 1, []llm.Message{system(role), {Role: llm.RoleUser, Content: task + history}})
+			}(i, role)
 		}
-		history += fmt.Sprintf("\n\n[%s output]\n%s", role, out)
+		wg.Wait()
+		for i, role := range phase {
+			if errs[i] != nil {
+				continue
+			}
+			record(results[i])
+			history += fmt.Sprintf("\n\n[%s output]\n%s", role, results[i].out)
+		}
+		for _, e := range errs {
+			if e != nil {
+				return obs, e
+			}
+		}
 	}
 
-	final := roles[len(roles)-1]
+	final := roles[len(roles)-1][0]
 	messages := []llm.Message{system(final), {Role: llm.RoleUser, Content: task + history}}
 	for attempt := 1; attempt <= b.maxIterations; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return obs, err
 		}
-		out, err := call(final, attempt, messages)
+		r, err := call(final, attempt, messages)
 		if err != nil {
 			return obs, err
 		}
+		record(r)
+		out := r.out
 		obs.Iterations = attempt
 		passed, feedback := b.verify(ctx, cell, fx, out)
 		obs.Steps[len(obs.Steps)-1].Verified = &passed
@@ -150,6 +198,5 @@ func (b *StageBenchmarker) Execute(ctx context.Context, cell Cell, fx Fixture, r
 		obs.Steps[len(obs.Steps)-1].Note = feedback
 		messages = append(messages, llm.Message{Role: llm.RoleAssistant, Content: out}, llm.Message{Role: llm.RoleUser, Content: feedback})
 	}
-	obs.DurationUS = b.now().Sub(started).Microseconds()
 	return obs, nil
 }

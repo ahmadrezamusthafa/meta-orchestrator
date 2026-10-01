@@ -164,3 +164,14 @@ func TestTokenTrackerOverridesDriverCostWithPricingTable(t *testing.T) {
 		t.Fatalf("unknown-model cost = %v, want driver estimate 0.5", ev.CostUSD)
 	}
 }
+
+func TestCurrentClaudeModelsArePriced(t *testing.T) {
+	p := NewPricingTable()
+	for model, in := range map[string]float64{
+		"claude/claude-opus-5-5": 4, "claude-sonnet-5-5": 2, "claude/claude-haiku-4-5-20251001": 1, "claude-fable-5-1": 10,
+	} {
+		if got, ok := p.Lookup(model); !ok || got.InputPer1M != in {
+			t.Fatalf("%s = %+v (found %v), want input $%v/1M", model, got, ok, in)
+		}
+	}
+}

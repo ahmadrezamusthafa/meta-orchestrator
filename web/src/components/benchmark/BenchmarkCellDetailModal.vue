@@ -44,14 +44,21 @@ const measured = computed(() => isMeasured(props.cell))
             <div class="text-slate-400">Average Token Burn: <span class="text-sky-400">{{ cell.avg_tokens.toLocaleString() }} tokens</span></div>
             <div class="text-slate-400">Mean Duration: <span class="text-slate-200">{{ cell.avg_duration_s }}s</span></div>
             <div v-if="cell.avg_cost_usd !== undefined" class="text-slate-400">Avg Cost / Run: <span class="text-sky-400">${{ cell.avg_cost_usd.toFixed(4) }}</span></div>
-            <div v-if="cell.score !== undefined" class="text-slate-400">Composite Score: <span class="text-sky-400">{{ cell.score.toFixed(2) }}</span></div>
+            <div v-if="cell.score !== undefined" class="text-slate-400">Composite Score: <span class="text-sky-400">{{ cell.score.toFixed(3) }}</span></div>
             <div v-if="cell.samples !== undefined" class="text-slate-400">Samples: <span class="text-sky-400">{{ cell.samples }}</span></div>
+            <div v-if="cell.runner_up" class="text-slate-400">Runner-up: <span class="text-slate-200">{{ cell.runner_up }}</span></div>
+            <div v-if="cell.pareto_front?.length" class="text-slate-400">
+              Pareto front:
+              <span class="text-slate-200">{{ cell.pareto_front.join(', ') }}</span>
+            </div>
           </template>
           <div v-else class="text-amber-400">Not yet benchmarked &mdash; no FPVR, cost or token data.</div>
         </div>
 
         <p v-if="measured" class="text-[11px] font-sans text-slate-400 leading-relaxed">
-          Shadow Benchmarking periodically replays past tasks in the background across alternative methods to verify that this pairing retains the maximum pass rate and lowest cost.
+          Shadow Benchmarking replays past tasks in the background across alternative methods and models. The winner has the best
+          score (FPVR lower confidence bound, minus cost and duration penalties) among candidates that are not beaten on every metric,
+          have enough samples and pass first time at least half the time. Failed or errored runs count against a candidate.
         </p>
         <p v-else class="text-[11px] font-sans text-slate-400 leading-relaxed">
           This cell shows the built-in best-practice policy. The router keeps its own heuristics here until a shadow benchmark

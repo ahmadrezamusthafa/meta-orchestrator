@@ -62,7 +62,8 @@ type TierAdvisor interface {
 // MethodAdvisor supplies the empirically optimal method (and tier) per stage and complexity,
 // e.g. the shadow benchmark's best_methods_matrix. ok=false keeps best practice.
 type MethodAdvisor interface {
-	AdviseMethod(stageID, complexity string) (method string, tier string, reason string, ok bool)
+	// model is the measured winner ("provider/model"), or "" to use the tier's configured model.
+	AdviseMethod(stageID, complexity string) (method, tier, model, reason string, ok bool)
 }
 
 // Router dispatches requests according to configured strategy.
@@ -329,9 +330,14 @@ func (r *Router) applyAdvisor(d *RoutingDecision, stageID, complexity, taskType 
 		return d
 	}
 	if r.methodAdvisor != nil {
-		if method, tier, reason, ok := r.methodAdvisor.AdviseMethod(stageID, complexity); ok {
+		if method, tier, model, reason, ok := r.methodAdvisor.AdviseMethod(stageID, complexity); ok {
 			d.Method = method
-			if model := r.modelForTier(tier); model != "" {
+			// Prefer the benchmarked model itself; bindToPool falls back to the tier when the
+			// operator's chain does not include it.
+			if model == "" {
+				model = r.modelForTier(tier)
+			}
+			if model != "" {
 				d.Tier = tier
 				d.Model = model
 			}
