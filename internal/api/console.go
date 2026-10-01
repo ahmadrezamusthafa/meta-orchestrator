@@ -171,6 +171,8 @@ type agentTurn struct {
 	PermissionMode string
 	// Approver answers the agent's permission prompts; nil denies them.
 	Approver llm.Approver
+	// AddDirs are extra directories the agent may read, such as attached skills.
+	AddDirs []string
 }
 
 // beginTurn marks the task console busy. It fails if a turn is already running.
@@ -296,7 +298,7 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 			Content: fmt.Sprintf("Failover: %s failed (%v) → trying %s", failed, err, next)})
 	}
 
-	req := &llm.LLMRequest{Messages: t.Messages, MaxTokens: t.MaxTokens, SessionID: t.SessionID, WorkDir: t.WorkDir, PermissionMode: t.PermissionMode, Approver: t.Approver}
+	req := &llm.LLMRequest{Messages: t.Messages, MaxTokens: t.MaxTokens, SessionID: t.SessionID, WorkDir: t.WorkDir, AddDirs: t.AddDirs, PermissionMode: t.PermissionMode, Approver: t.Approver}
 	start := time.Now()
 	resp, used, err := r.clientFactory.StreamWithFallbackChain(ctx, chain, req, emit, onFailover)
 

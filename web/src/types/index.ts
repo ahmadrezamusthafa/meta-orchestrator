@@ -55,6 +55,15 @@ export interface StageRoute {
   overridden?: boolean
   // Display only: recommended model the chain could not run
   wanted?: string
+  // Skills attached to the stage; their instructions go into the stage brief when it runs
+  skills?: string[]
+}
+
+// A skill that can be attached to a stage (enabled, with SKILL.md instructions)
+export interface SkillOptionDTO {
+  name: string
+  description: string
+  source: string
 }
 
 export interface ComplexityAssessment {
@@ -93,6 +102,8 @@ export interface TaskAnalysisDTO {
   plan: PlannedStageDTO[]
   methods: MethodOptionDTO[]
   models: ModelOptionDTO[]
+  skills: SkillOptionDTO[]
+  skill_suggestions: Record<string, string[]>
 }
 
 export interface TaskRoutingDTO {
@@ -102,6 +113,8 @@ export interface TaskRoutingDTO {
   routing_plan: StageRoute[] | null
   methods: MethodOptionDTO[]
   models: ModelOptionDTO[]
+  skills: SkillOptionDTO[]
+  skill_suggestions: Record<string, string[]>
 }
 
 export interface TaskRepoWorktreeDTO {

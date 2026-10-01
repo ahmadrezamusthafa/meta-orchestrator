@@ -286,6 +286,9 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	if system != "" {
 		args = append(args, "--append-system-prompt", system)
 	}
+	for _, dir := range req.AddDirs {
+		args = append(args, "--add-dir", dir)
+	}
 	mode := req.PermissionMode
 	if mode == "" {
 		mode = "plan" // read-only unless the caller explicitly grants more

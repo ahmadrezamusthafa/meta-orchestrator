@@ -256,6 +256,21 @@ func (r *Router) executeStage(run *stageRun) {
 	} else if task.CurrentStageID == "uat_verification" {
 		prompt += "\n\n" + r.uatStageContext(task)
 	}
+	skills, missing := r.stageSkills(task)
+	if len(missing) > 0 {
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+			"⚠ Skipping skill %s — disabled or no longer installed. Re-enable it on the Skills page, or remove it from this stage in the Routing tab.",
+			strings.Join(missing, ", "))})
+	}
+	if len(skills) > 0 {
+		if !(run.trigger == "resume" && canContinue) {
+			// A continued session already holds the skills from the stage's first turn.
+			prompt += skillsBrief(skills)
+		}
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+			"Skills for this stage: %s. Their instructions are in the agent's brief and their folders are readable to it; usage is reported when the stage finishes.",
+			strings.Join(skillNames(skills), ", "))})
+	}
 	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: prompt})
 
 	workDir := r.resolveWorkDir(task)
@@ -275,8 +290,12 @@ func (r *Router) executeStage(run *stageRun) {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: "No task worktree is available, so the agent runs read-only and will describe the changes instead of making them."})
 	}
 	resp, used, execErr := r.runAgentTurn(run.ctx, agentTurn{Source: "execute", TurnID: run.turnID, Task: task, Decision: decision,
-		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, MaxTokens: 8192, PermissionMode: permission, Approver: approver})
+		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, AddDirs: skillDirs(skills), MaxTokens: 8192,
+		PermissionMode: permission, Approver: approver})
 	r.endTurn(taskID, run.turnID, resp, used)
+	if resp != nil && len(skills) > 0 {
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: skillUsageReport(skills, resp.ToolCalls)})
+	}
 
 	r.settleStage(taskID, task.CurrentStageID, resp, used, execErr)
 }
