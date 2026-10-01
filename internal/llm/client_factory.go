@@ -79,7 +79,7 @@ func (f *ClientFactory) initializeDrivers() {
 	}
 }
 
-// GetClient resolves provider by model string (e.g. "claude/claude-3-5-sonnet" or "openai/gpt-4o").
+// GetClient resolves provider by model string (e.g. "claude/claude-sonnet-5-5" or "openai/gpt-4o").
 func (f *ClientFactory) GetClient(modelStr string) (ProviderClient, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

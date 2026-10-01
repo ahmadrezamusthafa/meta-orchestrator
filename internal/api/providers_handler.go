@@ -63,9 +63,13 @@ var defaultProviders = []ProviderDTO{
 		Name:         "Anthropic Claude",
 		Enabled:      true,
 		LatencyMs:    142,
-		DefaultModel: "claude-3-7-sonnet-20250219",
+		DefaultModel: "claude-sonnet-5-5",
 		Models: []string{
 			"claude-opus-5-5",
+			"claude-sonnet-5-5",
+			"claude-haiku-4-5",
+			"claude-fable-5-1",
+			// Earlier generations, kept so saved settings that name them still resolve.
 			"claude-3-7-sonnet-20250219",
 			"claude-3-7-sonnet",
 			"claude-3-7-sonnet-latest",
@@ -332,7 +336,11 @@ var modelMetaMap = map[string]struct {
 	LatencyMs int
 }{
 	// Claude
-	"claude-opus-5-5":            {Name: "Claude Opus 5.5 (Next-Gen Frontier)", CostPer1k: 0.015, LatencyMs: 250},
+	// CostPer1k is the input list price per 1k tokens.
+	"claude-opus-5-5":            {Name: "Claude Opus 5.5", CostPer1k: 0.004, LatencyMs: 250},
+	"claude-sonnet-5-5":          {Name: "Claude Sonnet 5.5", CostPer1k: 0.002, LatencyMs: 140},
+	"claude-haiku-4-5":           {Name: "Claude Haiku 4.5", CostPer1k: 0.001, LatencyMs: 75},
+	"claude-fable-5-1":           {Name: "Claude Fable 5.1", CostPer1k: 0.010, LatencyMs: 320},
 	"claude-3-7-sonnet-latest":   {Name: "Claude 3.7 Sonnet (Latest)", CostPer1k: 0.003, LatencyMs: 140},
 	"claude-3-7-sonnet-20250219": {Name: "Claude 3.7 Sonnet (Hybrid Reasoning)", CostPer1k: 0.003, LatencyMs: 140},
 	"claude-3-7-sonnet":          {Name: "Claude 3.7 Sonnet", CostPer1k: 0.003, LatencyMs: 140},

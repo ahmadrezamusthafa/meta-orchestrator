@@ -81,8 +81,13 @@ type Router struct {
 // DefaultPriorityChain is the chain a fresh install starts with (and "Reset Defaults" restores).
 func DefaultPriorityChain() []PriorityModelItem {
 	return []PriorityModelItem{
-		{ID: "item-1", Provider: "claude", Model: "claude-3-5-sonnet-20241022", Name: "Claude 3.5 Sonnet",
-			Enabled: true, CostPer1k: 0.003, LatencyMs: 142, Tiers: []string{TierReasoning, TierCodeGen}},
+		// One Claude model per tier, so each tier routes to its own model by default.
+		{ID: "item-1", Provider: "claude", Model: "claude-opus-5-5", Name: "Claude Opus 5.5",
+			Enabled: true, CostPer1k: 0.004, LatencyMs: 250, Tiers: []string{TierReasoning}},
+		{ID: "item-5", Provider: "claude", Model: "claude-sonnet-5-5", Name: "Claude Sonnet 5.5",
+			Enabled: true, CostPer1k: 0.002, LatencyMs: 140, Tiers: []string{TierCodeGen}},
+		{ID: "item-6", Provider: "claude", Model: "claude-haiku-4-5", Name: "Claude Haiku 4.5",
+			Enabled: true, CostPer1k: 0.001, LatencyMs: 75, Tiers: []string{TierLogParse}},
 		{ID: "item-2", Provider: "antigravity", Model: "gemini-2.0-flash", Name: "Gemini 2.0 Flash",
 			Enabled: true, CostPer1k: 0.0001, LatencyMs: 98, Tiers: []string{TierCodeGen, TierLogParse}},
 		{ID: "item-3", Provider: "chatgpt", Model: "gpt-4o", Name: "OpenAI GPT-4o",

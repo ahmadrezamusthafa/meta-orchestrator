@@ -69,7 +69,7 @@ active_sdlc: hotfix-fast-track
 	}
 
 	// Verify default fallback inheritance for non-overridden fields
-	if cfg.ModelTiers.Tier3LogParse != "claude/claude-3-5-haiku-20241022" {
-		t.Errorf("expected default Tier 3 fallback 'claude/claude-3-5-haiku-20241022', got '%s'", cfg.ModelTiers.Tier3LogParse)
+	if cfg.ModelTiers.Tier3LogParse != "claude/claude-haiku-4-5" {
+		t.Errorf("expected default Tier 3 fallback 'claude/claude-haiku-4-5', got '%s'", cfg.ModelTiers.Tier3LogParse)
 	}
 }

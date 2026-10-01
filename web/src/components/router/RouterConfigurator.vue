@@ -74,15 +74,15 @@ const isRegisteringCustom = ref(false)
 const customModelForm = ref({
   provider_id: 'claude',
   model_id: 'claude-opus-5-5',
-  model_name: 'Claude Opus 5.5 (Next-Gen Frontier)',
-  cost_per_1k: 0.015,
+  model_name: 'Claude Opus 5.5',
+  cost_per_1k: 0.004,
   latency_ms: 250,
 })
 
 const quickPresets = [
-  { provider_id: 'claude', model_id: 'claude-opus-5-5', model_name: 'Claude Opus 5.5 (Next-Gen)', cost_per_1k: 0.015, latency_ms: 250 },
-  { provider_id: 'claude', model_id: 'claude-3-7-sonnet-20250219', model_name: 'Claude 3.7 Sonnet (Hybrid Reasoning)', cost_per_1k: 0.003, latency_ms: 140 },
-  { provider_id: 'claude', model_id: 'claude-3-5-opus', model_name: 'Claude 3.5 Opus', cost_per_1k: 0.015, latency_ms: 260 },
+  { provider_id: 'claude', model_id: 'claude-opus-5-5', model_name: 'Claude Opus 5.5', cost_per_1k: 0.004, latency_ms: 250 },
+  { provider_id: 'claude', model_id: 'claude-sonnet-5-5', model_name: 'Claude Sonnet 5.5', cost_per_1k: 0.002, latency_ms: 140 },
+  { provider_id: 'claude', model_id: 'claude-haiku-4-5', model_name: 'Claude Haiku 4.5', cost_per_1k: 0.001, latency_ms: 75 },
   { provider_id: 'antigravity', model_id: 'gemini-2.5-pro', model_name: 'Gemini 2.5 Pro (Ultra Reasoning)', cost_per_1k: 0.00125, latency_ms: 120 },
   { provider_id: 'chatgpt', model_id: 'gpt-4.5-preview', model_name: 'OpenAI GPT-4.5 Preview (Orion)', cost_per_1k: 0.075, latency_ms: 320 },
 ]
@@ -843,7 +843,7 @@ function getModeIcon(mode: RouterMode) {
             <input
               v-model="customModelForm.model_id"
               type="text"
-              placeholder="e.g. claude-opus-5-5, claude-3-7-sonnet"
+              placeholder="e.g. claude-opus-5-5, claude-sonnet-5-5"
               class="w-full h-8 px-2.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono placeholder:text-slate-600 focus:outline-none focus:border-purple-500"
             />
             <span class="text-[10px] text-slate-500 mt-1 block">

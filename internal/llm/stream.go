@@ -142,7 +142,7 @@ func (d *AnthropicDriver) StreamActivity(ctx context.Context, req *LLMRequest, e
 	}
 	model := req.Model
 	if model == "" {
-		model = "claude-3-5-sonnet-20241022"
+		model = "claude-sonnet-5-5"
 	}
 	if d.apiKey != "" && !strings.Contains(d.apiKey, "••••") && strings.HasPrefix(d.apiKey, "sk-ant-") {
 		return d.streamViaAPI(ctx, req, model, emit)

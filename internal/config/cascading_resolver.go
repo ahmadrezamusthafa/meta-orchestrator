@@ -33,7 +33,7 @@ func GetDefaultConfig() *OrchestratorConfig {
 		Providers: map[string]AIProviderConfig{
 			"claude": {
 				Enabled: true,
-				Model:   "claude-3-5-sonnet-20241022",
+				Model:   "claude-sonnet-5-5",
 			},
 			"antigravity": {
 				Enabled: true,
@@ -50,9 +50,11 @@ func GetDefaultConfig() *OrchestratorConfig {
 			},
 		},
 		ModelTiers: ModelTiersConfig{
-			Tier1Reasoning: "claude/claude-3-5-sonnet-20241022",
-			Tier2CodeGen:   "claude/claude-3-5-sonnet-20241022",
-			Tier3LogParse:  "claude/claude-3-5-haiku-20241022",
+			// Tier 1 plans and designs, Tier 2 writes code and handles low-complexity work,
+			// Tier 3 grades complexity and parses logs.
+			Tier1Reasoning: "claude/claude-opus-5-5",
+			Tier2CodeGen:   "claude/claude-sonnet-5-5",
+			Tier3LogParse:  "claude/claude-haiku-4-5",
 		},
 		Router: RouterConfig{
 			Strategy:       "best_practice",
