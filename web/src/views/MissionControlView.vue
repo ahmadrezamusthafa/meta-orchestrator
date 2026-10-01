@@ -102,7 +102,8 @@ onMounted(async () => {
     />
 
     <!-- Horizontal Scrolling Kanban Board Layout -->
-    <main class="relative flex-1 p-6 overflow-x-auto" :class="taskStore.groupBy === 'epic' ? 'overflow-y-auto' : 'overflow-y-hidden'">
+    <!-- The whole board scrolls as one (both axes); columns grow with their cards. -->
+    <main class="relative flex-1 min-h-0 p-6 overflow-auto">
       <!-- Empty board: explain how work gets here -->
       <div v-if="isBoardEmpty" class="absolute inset-0 z-10 flex items-center justify-center p-6 bg-slate-950/70 backdrop-blur-[1px]">
         <div class="max-w-md w-full text-center bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
@@ -145,7 +146,7 @@ onMounted(async () => {
         @open-console="(id) => activeConsoleTaskId = id"
         @request-delete="(id) => pendingDeleteId = id"
       />
-      <div v-else class="flex items-start gap-4 h-full min-w-max pb-2">
+      <div v-else class="flex items-stretch gap-4 min-h-full min-w-max pb-2">
         <KanbanColumn
           v-for="stage in workflowStore.projectedColumns"
           :key="stage.id"

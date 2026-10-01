@@ -50,9 +50,12 @@ function handleDrop(e: DragEvent) {
     @drop="handleDrop"
     @click="$emit('toggle-collapse', stage.id)"
     title="Click to expand column"
-    class="w-14 min-w-[56px] h-full bg-slate-900/40 rounded-xl border flex flex-col items-center py-4 justify-between cursor-pointer hover:bg-slate-900/80 hover:border-slate-700 transition-all duration-150 select-none group shadow-sm"
+    class="w-14 min-w-[56px] self-stretch bg-slate-900/40 rounded-xl border cursor-pointer hover:bg-slate-900/80 hover:border-slate-700 transition-all duration-150 select-none group shadow-sm"
     :class="isDragOver ? 'border-emerald-500 bg-emerald-950/30 ring-2 ring-emerald-500/50' : 'border-slate-800'"
   >
+    <!-- Contents stay in view while the board scrolls -->
+    <!-- -top-6 offsets the board's p-6 padding so sticky content pins to the visible top edge -->
+    <div class="sticky -top-6 flex flex-col items-center gap-4 py-4">
     <!-- Top: Stage Icon & Expand Button -->
     <div class="flex flex-col items-center gap-3">
       <button
@@ -86,7 +89,7 @@ function handleDrop(e: DragEvent) {
     </div>
 
     <!-- Middle: Vertical Text Title -->
-    <div class="flex-1 flex items-center justify-center my-4 overflow-hidden">
+    <div class="flex items-center justify-center">
       <span
         class="text-xs font-semibold text-slate-400 group-hover:text-slate-200 tracking-wider whitespace-nowrap"
         style="writing-mode: vertical-rl; transform: rotate(180deg);"
@@ -106,6 +109,7 @@ function handleDrop(e: DragEvent) {
         {{ tasks.length }}
       </span>
     </div>
+    </div>
   </div>
 
   <!-- Expanded Full Column View -->
@@ -115,13 +119,14 @@ function handleDrop(e: DragEvent) {
     @dragenter.prevent="isDragOver = true"
     @dragleave="isDragOver = false"
     @drop="handleDrop"
-    class="h-full bg-slate-900/60 rounded-xl border flex flex-col overflow-hidden shadow-sm transition-all duration-150"
+    class="self-stretch bg-slate-900/60 rounded-xl border flex flex-col shadow-sm transition-all duration-150"
     :class="[
       density === 'compact' ? 'min-w-[280px] w-[280px]' : 'min-w-[320px] w-[320px]',
       isDragOver ? 'border-emerald-500 bg-emerald-950/20 ring-2 ring-emerald-500/50' : 'border-slate-800'
     ]"
   >
-    <div class="p-3 border-b border-slate-800 bg-slate-900 flex items-center justify-between gap-2">
+    <!-- -top-6 offsets the board's p-6 padding so the header pins to the visible top edge -->
+    <div class="sticky -top-6 z-10 p-3 border-b border-slate-800 bg-slate-900 rounded-t-xl flex items-center justify-between gap-2">
       <div class="flex items-center gap-2 truncate">
         <span
           v-if="stage.write_lock_workspace"
@@ -181,7 +186,7 @@ function handleDrop(e: DragEvent) {
     </div>
 
     <!-- Tasks List Container -->
-    <div class="flex-1 p-2.5 overflow-y-auto space-y-2.5">
+    <div class="flex-1 p-2.5 space-y-2.5">
       <template v-if="isLoading">
         <KanbanCardSkeleton />
         <KanbanCardSkeleton />
