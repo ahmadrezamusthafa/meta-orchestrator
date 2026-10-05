@@ -50,6 +50,8 @@ type StageRoute struct {
 	Reasoning string `json:"reasoning,omitempty"`
 	// Overridden is true when the operator changed the proposed method or model.
 	Overridden bool `json:"overridden,omitempty"`
+	// Skills the operator attached to this stage; their instructions go into the stage brief.
+	Skills []string `json:"skills,omitempty"`
 }
 
 // RouteFor returns the confirmed routing of a stage, or nil when the plan has none.

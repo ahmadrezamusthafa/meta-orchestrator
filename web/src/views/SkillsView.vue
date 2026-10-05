@@ -487,6 +487,25 @@ async function handleRescan() {
         </div>
       </div>
 
+      <!-- How skills reach the AI -->
+      <div class="px-6 py-3 border-b border-slate-800 bg-slate-900/20 flex-shrink-0">
+        <div class="flex items-start gap-3 text-[11px] text-slate-300 leading-relaxed">
+          <BookOpen class="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+          <div class="space-y-1">
+            <p class="font-semibold text-slate-100">How skills are used</p>
+            <ol class="list-decimal list-inside space-y-0.5 text-slate-400">
+              <li>Skills don't run by themselves. Open a task's <span class="text-slate-200">Routing</span> tab (or the review step when you create a task) and attach skills to a stage — up to 5 each. Suggested skills are shown with a dashed outline.</li>
+              <li>When that stage runs, each attached skill's SKILL.md instructions go into the agent's brief and the skill's folder is made readable to it.</li>
+              <li>The task's <span class="text-slate-200">Activity</span> log confirms it: "Skills for this stage: …" at the start, and "Skill usage this run" at the end, listing which of the skill's files the agent opened.</li>
+            </ol>
+            <p class="text-slate-500">
+              Only skills marked <span class="text-emerald-300">Usable in stages</span> can be attached. Turning a skill off removes it from the picker, and a stage that still lists it skips it with a warning.
+              Claude Code may also pick up skills from the repository's own <span class="font-mono">.claude/skills</span> by itself; those show in the Activity log as Skill tool calls.
+            </p>
+          </div>
+        </div>
+      </div>
+
       <!-- Toolbar: Filters and Search -->
       <div class="px-6 py-2.5 bg-slate-900/30 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
         <div class="flex items-center gap-2.5 flex-wrap">

@@ -63,6 +63,9 @@ type analyzeResponse struct {
 	Plan       []router.PlannedStage       `json:"plan"`
 	Methods    []methodOption              `json:"methods"`
 	Models     []router.ModelOption        `json:"models"`
+	// Skills are the skills a stage can use; SkillSuggestions proposes some per stage.
+	Skills           []skillOption       `json:"skills"`
+	SkillSuggestions map[string][]string `json:"skill_suggestions"`
 }
 
 // planStages is the slice of the pipeline a task runs, from start to halt inclusive.
@@ -144,16 +147,21 @@ func (r *Router) handleTaskAnalyze(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	a := r.assess(req.Context(), body.Title, body.Description, body.Complexity, body.TaskType, body.AssignedRepos)
+	stages := planStages(body.StartStage, body.HaltStage)
+	skills := r.skillOptions()
 	r.writeJSON(w, http.StatusOK, analyzeResponse{
-		Assessment: a,
-		Plan:       r.strategyRouter.Plan(planStages(body.StartStage, body.HaltStage), a.Complexity, a.TaskType, body.AssignedRepos),
-		Methods:    planMethods,
-		Models:     r.strategyRouter.ModelOptions(),
+		Assessment:       a,
+		Plan:             r.strategyRouter.Plan(stages, a.Complexity, a.TaskType, body.AssignedRepos),
+		Methods:          planMethods,
+		Models:           r.strategyRouter.ModelOptions(),
+		Skills:           skills,
+		SkillSuggestions: skillSuggestions(stages, skills),
 	})
 }
 
-// validatePlan normalizes a submitted plan and rejects unknown stages, methods and models.
+// validatePlan normalizes a submitted plan and rejects unknown stages, methods, models and skills.
 func (r *Router) validatePlan(plan []types.StageRoute) ([]types.StageRoute, error) {
+	skills := r.attachableSkills()
 	allowed := map[string]bool{}
 	for _, o := range r.strategyRouter.ModelOptions() {
 		allowed[o.Model] = true
@@ -175,6 +183,10 @@ func (r *Router) validatePlan(plan []types.StageRoute) ([]types.StageRoute, erro
 		s.Model = strings.TrimSpace(s.Model)
 		if s.Model != "" && len(allowed) > 0 && !allowed[s.Model] {
 			return nil, fmt.Errorf("model %q for %s is not enabled in your router chain", s.Model, s.StageID)
+		}
+		var err error
+		if s.Skills, err = normalizeStageSkills(s.StageID, s.Skills, skills); err != nil {
+			return nil, err
 		}
 		out = append(out, s)
 	}
@@ -212,10 +224,16 @@ func (r *Router) handleTaskRouting(w http.ResponseWriter, req *http.Request, tas
 			r.writeError(w, http.StatusNotFound, "task not found")
 			return
 		}
+		stages := make([]string, 0, len(cp.RoutingPlan))
+		for _, s := range cp.RoutingPlan {
+			stages = append(stages, s.StageID)
+		}
+		skills := r.skillOptions()
 		r.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"complexity": cp.Metadata["complexity"], "complexity_source": cp.Metadata["complexity_source"],
 			"complexity_rationale": cp.Metadata["complexity_rationale"], "routing_plan": cp.RoutingPlan,
 			"methods": planMethods, "models": r.strategyRouter.ModelOptions(),
+			"skills": skills, "skill_suggestions": skillSuggestions(stages, skills),
 		})
 	case http.MethodPut:
 		var body routingUpdate
@@ -265,6 +283,9 @@ func planSummary(plan []types.StageRoute) string {
 		p := fmt.Sprintf("%s → %s on %s", s.StageID, s.Method, s.Model)
 		if s.Overridden {
 			p += " (your choice)"
+		}
+		if len(s.Skills) > 0 {
+			p += " with skills " + strings.Join(s.Skills, ", ")
 		}
 		parts = append(parts, p)
 	}

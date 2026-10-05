@@ -58,6 +58,9 @@ const sourceTypeLabel = computed(() => {
   }
 })
 
+// Only skills with SKILL.md instructions can be attached to a stage; the rest are catalog entries.
+const attachable = computed(() => typeof props.skill.metadata?.instructions === 'string' && props.skill.metadata.instructions.trim() !== '')
+
 function handleToggle() {
   emit('toggle', !props.skill.enabled)
 }
@@ -81,6 +84,16 @@ function handleToggle() {
             <Layers class="w-3 h-3 text-slate-500" />
             {{ sourceTypeLabel }}
           </span>
+          <span
+            v-if="attachable"
+            class="px-2 py-0.5 rounded-full text-[10px] font-mono border bg-emerald-950/50 text-emerald-300 border-emerald-800/80"
+            title="Attach this skill to a stage in a task's Routing tab; its instructions go into that stage's brief."
+          >Usable in stages</span>
+          <span
+            v-else
+            class="px-2 py-0.5 rounded-full text-[10px] font-mono border bg-slate-900 text-slate-400 border-slate-700"
+            title="This entry has no SKILL.md instructions, so it cannot be attached to a stage."
+          >Catalog only</span>
         </div>
 
         <!-- Toggle Switch (Consistent iOS/Tailwind style, no raw checkbox) -->
