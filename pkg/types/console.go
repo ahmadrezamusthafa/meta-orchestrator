@@ -109,9 +109,31 @@ const (
 	ApprovalAll       = "all"  // allowed, and every later request in the task is allowed too
 )
 
+// Approval kinds: what the operator is asked to decide.
+const (
+	ApprovalKindTool     = "tool"     // run a gated tool call
+	ApprovalKindPlan     = "plan"     // approve the plan and let the agent leave read-only plan mode
+	ApprovalKindQuestion = "question" // answer the agent's multiple-choice questions
+)
+
+// ConsoleQuestionOption is one choice of a ConsoleQuestion.
+type ConsoleQuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// ConsoleQuestion is one question the agent asks the operator.
+type ConsoleQuestion struct {
+	Question    string                  `json:"question"`
+	Header      string                  `json:"header,omitempty"`
+	Options     []ConsoleQuestionOption `json:"options,omitempty"`
+	MultiSelect bool                    `json:"multi_select,omitempty"`
+}
+
 // ConsoleApproval is a permission request from the agent and its outcome.
 type ConsoleApproval struct {
 	ID          string    `json:"id"`
+	Kind        string    `json:"kind,omitempty"` // ApprovalKind*; empty means tool
 	ToolName    string    `json:"tool_name"`
 	Summary     string    `json:"summary"`              // the command, file or URL in one line
 	RuleLabel   string    `json:"rule_label,omitempty"` // what "always allow" would cover
@@ -120,4 +142,11 @@ type ConsoleApproval struct {
 	Message     string    `json:"message,omitempty"` // operator note sent to the agent on deny
 	ExpiresAt   time.Time `json:"expires_at"`
 	DecidedAt   time.Time `json:"decided_at,omitempty"`
+	// Warning explains why this request always asks, even under "allow all" (e.g. a blind conflict resolution).
+	Warning string `json:"warning,omitempty"`
+	// Mode is the permission mode the agent gets once a plan is approved (plan kind).
+	Mode string `json:"mode,omitempty"`
+	// Questions and Answers (question → chosen label(s), comma-separated) for the question kind.
+	Questions []ConsoleQuestion `json:"questions,omitempty"`
+	Answers   map[string]string `json:"answers,omitempty"`
 }

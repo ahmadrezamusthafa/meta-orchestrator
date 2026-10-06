@@ -94,8 +94,9 @@ type stageRun struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	trigger  string
-	feedback string
+	feedback string // gate rejection feedback, or the operator's message for the "message" trigger
 	lastErr  string // why the previous run of this stage ended, if it failed
+	model    string // operator-selected model; empty uses the router
 }
 
 // claimStage validates and marks a task RUNNING for its current stage. Only one claim can hold a
@@ -142,7 +143,7 @@ func (r *Router) claimStage(taskID, trigger, feedback string) (*stageRun, error)
 	}
 
 	turnID := r.console.nextID("turn")
-	ctx, cancel := context.WithTimeout(context.Background(), stageTurnTimeout(task.CurrentStageID))
+	ctx, cancel := context.WithTimeout(context.Background(), stageTurnTimeout)
 	if err := r.beginTurn(taskID, turnID, cancel); err != nil {
 		r.mu.Unlock()
 		cancel()
@@ -164,14 +165,9 @@ func (r *Router) claimStage(taskID, trigger, feedback string) (*stageRun, error)
 	return &stageRun{task: snap, turnID: turnID, ctx: ctx, cancel: cancel, trigger: trigger, feedback: feedback, lastErr: lastErr}, nil
 }
 
-// stageTurnTimeout bounds one stage turn. Code stages edit files and wait on operator approvals
-// (each up to approvalTimeout), so they get the same hour the CLI driver allows interactive turns.
-func stageTurnTimeout(stage string) time.Duration {
-	if codeStages[stage] {
-		return time.Hour
-	}
-	return 15 * time.Minute
-}
+// stageTurnTimeout bounds one stage turn. Every stage can wait on operator approvals (each up to
+// approvalTimeout), so all get the same hour the CLI driver allows interactive turns.
+const stageTurnTimeout = time.Hour
 
 // startStage claims the task's current stage and executes it in the background.
 func (r *Router) startStage(taskID, trigger, feedback string) error {
@@ -187,6 +183,40 @@ func (r *Router) startStage(taskID, trigger, feedback string) error {
 	}
 	go r.executeStage(run)
 	return nil
+}
+
+// stageIdleStates are the states in which a typed message continues the current stage rather than
+// starting a side conversation.
+var stageIdleStates = map[types.TaskState]bool{types.TaskStatePending: true, types.TaskStateSuspended: true, types.TaskStateFailed: true}
+
+// messageRunsStage reports whether an operator message should continue the task's current stage:
+// the stage is idle and could start right now (repositories assigned, prerequisites done).
+func (r *Router) messageRunsStage(taskID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t := r.tasks[taskID]
+	if t == nil || !stageIdleStates[t.State] || (codeStages[t.CurrentStageID] && len(t.AssignedRepos) == 0) {
+		return false
+	}
+	for _, dep := range t.Dependencies {
+		if d, ok := r.tasks[dep]; !ok || d.State != types.TaskStateCompleted {
+			return false
+		}
+	}
+	return true
+}
+
+// startStageWithMessage continues the current stage in the agent's session with the operator's
+// message as its instruction, so typing in the console moves the stage forward like Continue does.
+func (r *Router) startStageWithMessage(taskID, message, model string) (turnID, entryID string, err error) {
+	run, err := r.claimStage(taskID, "message", message)
+	if err != nil {
+		return "", "", err
+	}
+	run.model = model
+	user := r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindUser, TurnID: run.turnID, Content: message})
+	go r.executeStage(run)
+	return run.turnID, user.ID, nil
 }
 
 // executeTaskWithAI runs the task's current stage synchronously (used by tests and callers that
@@ -212,6 +242,9 @@ func (r *Router) executeStage(run *stageRun) {
 		taskType = router.ClassifyTaskType(task.Title, task.Description)
 	}
 	decision := r.routeTask(task, complexity, taskType)
+	if run.model != "" {
+		decision.Model, decision.FallbackChain, decision.Reasoning = run.model, []string{run.model}, "operator-selected model"
+	}
 
 	r.mu.Lock()
 	if t, ok := r.tasks[taskID]; ok {
@@ -247,14 +280,39 @@ func (r *Router) executeStage(run *stageRun) {
 	r.console.mu.Unlock()
 
 	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method)}}, history...)
-	prompt := stagePrompt(task, run.feedback)
-	if run.trigger == "resume" && canContinue {
+	message := run.trigger == "message"
+	continuing := (run.trigger == "resume" || message) && canContinue
+	feedback := run.feedback
+	if message {
+		feedback = "" // the operator's message is not rejection feedback
+	}
+	prompt := stagePrompt(task, feedback)
+	if message {
+		prompt = messagePrompt(task, run.feedback, sessionID != "", canContinue, prompt)
+		if sessionID != "" {
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+				"Continuing session %s on %s with your message.", shortID(sessionID), task.CurrentStageID)})
+		}
+		if !canContinue && task.CurrentStageID == "uat_verification" {
+			prompt += "\n\n" + r.uatStageContext(task)
+		}
+	} else if run.trigger == "resume" && canContinue {
 		// Continue the interrupted conversation instead of restarting the stage from its brief.
 		prompt = continuePrompt(task, run.lastErr)
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
 			"Continuing session %s where the last run stopped.", shortID(sessionID))})
-	} else if task.CurrentStageID == "uat_verification" {
-		prompt += "\n\n" + r.uatStageContext(task)
+	} else {
+		if run.trigger == "resume" && sessionID != "" {
+			// The session last served another stage or the chat (e.g. the card was moved back): keep
+			// the conversation, but brief the agent on this stage.
+			prompt = sessionStagePrompt(task, prompt)
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+				"Continuing session %s on %s — the agent keeps everything it already knows from this conversation.",
+				shortID(sessionID), task.CurrentStageID)})
+		}
+		if task.CurrentStageID == "uat_verification" {
+			prompt += "\n\n" + r.uatStageContext(task)
+		}
 	}
 	skills, missing := r.stageSkills(task)
 	if len(missing) > 0 {
@@ -263,7 +321,7 @@ func (r *Router) executeStage(run *stageRun) {
 			strings.Join(missing, ", "))})
 	}
 	if len(skills) > 0 {
-		if !(run.trigger == "resume" && canContinue) {
+		if !continuing {
 			// A continued session already holds the skills from the stage's first turn.
 			prompt += skillsBrief(skills)
 		}
@@ -277,21 +335,23 @@ func (r *Router) executeStage(run *stageRun) {
 	r.mu.Lock()
 	r.getOrCreateTaskProcessLocked(taskID).WorkingDir = workDir
 	r.mu.Unlock()
-	// Edits are allowed only for code stages running inside the task's own worktree — never in an
-	// operator's checkout or the orchestrator itself.
-	permission := ""
-	var approver llm.Approver
-	if codeStages[task.CurrentStageID] && r.isTaskWorktree(task.ID, workDir) {
-		permission = "acceptEdits"
-		approver = r.approverFor(taskID, run.turnID)
+	// Code stages edit freely only inside the task's own worktree. Every other run starts read-only
+	// (plan mode); if the agent needs to act it asks through its plan, and once the operator
+	// approves, gated actions still ask — so nothing is ever silently refused.
+	permission := modePlan
+	planExit := r.editMode(taskID, workDir)
+	if codeStages[task.CurrentStageID] && planExit == modeAcceptEdits {
+		permission = modeAcceptEdits
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
 			"The agent may edit files in the task worktree (%s); commands and other actions ask for your approval here. Review edits in the Changes tab.", workDir)})
 	} else if codeStages[task.CurrentStageID] {
-		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: "No task worktree is available, so the agent runs read-only and will describe the changes instead of making them."})
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: "No task worktree is available, so the agent starts read-only and describes the changes. " +
+			"If it asks to make them, approving its plan lets it act here, with every change still asking you first."})
 	}
+	msgs[0].Content += "\n" + permissionBrief(permission)
 	resp, used, execErr := r.runAgentTurn(run.ctx, agentTurn{Source: "execute", TurnID: run.turnID, Task: task, Decision: decision,
 		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, AddDirs: skillDirs(skills), MaxTokens: 8192,
-		PermissionMode: permission, Approver: approver})
+		PermissionMode: permission, Approver: r.approverFor(taskID, run.turnID, planExit)})
 	r.endTurn(taskID, run.turnID, resp, used)
 	if resp != nil && len(skills) > 0 {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: skillUsageReport(skills, resp.ToolCalls)})
@@ -314,6 +374,8 @@ func triggerText(trigger string) string {
 		return "restarted after reset"
 	case "guidance":
 		return "re-running with your guidance"
+	case "message":
+		return "continuing with your message"
 	default:
 		return "started by operator"
 	}
@@ -356,6 +418,30 @@ func continuePrompt(t *types.Task, lastErr string) string {
 	}
 	b.WriteString("\n\nEnd with a short \"Summary\" section covering the whole stage, which the operator can review before approving it.")
 	return b.String()
+}
+
+// messagePrompt is the stage turn for an operator message typed while the stage was idle. A
+// session that already works on this stage just gets the message; otherwise the agent is briefed
+// on the stage first.
+func messagePrompt(t *types.Task, msg string, hasSession, sameStage bool, brief string) string {
+	var b strings.Builder
+	switch {
+	case sameStage:
+		fmt.Fprintf(&b, "The operator says:\n%s\n\nAct on it as part of %s, continuing from where you are.", msg, stageLabel(t.CurrentStageID))
+	case hasSession:
+		fmt.Fprintf(&b, "%s\n\nThe operator says:\n%s", sessionStagePrompt(t, brief), msg)
+	default:
+		fmt.Fprintf(&b, "%s\n\nThe operator adds:\n%s", brief, msg)
+	}
+	b.WriteString("\n\nWhen this stage's work is done, end with a short \"Summary\" section covering the whole stage, which the operator can review before approving it.")
+	return b.String()
+}
+
+// sessionStagePrompt briefs a continued conversation on a stage it has not run yet.
+func sessionStagePrompt(t *types.Task, brief string) string {
+	return fmt.Sprintf("Continue in this conversation, now on %s. Use what you already know from it and do not redo finished "+
+		"work (check the working directory). Retry anything left unfinished, including actions that were refused permission "+
+		"earlier: permission requests now reach the operator in the console.\n\n%s", stageLabel(t.CurrentStageID), brief)
 }
 
 // settleStage moves the task to its post-turn state and tells the operator what happens next.

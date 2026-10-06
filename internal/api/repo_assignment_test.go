@@ -79,13 +79,13 @@ func TestCodeStageNeedsReposAndWritesOnlyInWorktree(t *testing.T) {
 		t.Fatalf("implementation should edit inside the worktree: mode=%q dir=%q", got.PermissionMode, got.WorkDir)
 	}
 
-	// Analysis stages stay read-only even inside the worktree.
+	// Analysis stages start read-only even inside the worktree, but can still ask to act.
 	r.mu.Lock()
 	r.tasks["TASK-9"].CurrentStageID, r.tasks["TASK-9"].State = "techdoc_rfc", types.TaskStatePending
 	r.mu.Unlock()
 	r.executeTaskWithAI("TASK-9")
-	if m := rec.last().PermissionMode; m != "" {
-		t.Fatalf("non-code stage must stay read-only, got %q", m)
+	if got := rec.last(); got.PermissionMode != "plan" || got.Approver == nil {
+		t.Fatalf("non-code stage must start in plan mode with an approver, got %q approver=%v", got.PermissionMode, got.Approver != nil)
 	}
 }
 

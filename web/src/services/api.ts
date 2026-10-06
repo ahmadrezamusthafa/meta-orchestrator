@@ -185,11 +185,14 @@ export const api = {
     return res.json()
   },
 
-  async decideApproval(taskId: string, approvalId: string, decision: 'allow' | 'always' | 'all' | 'deny', message?: string): Promise<{ status: string }> {
+  async decideApproval(
+    taskId: string, approvalId: string, decision: 'allow' | 'always' | 'all' | 'deny', message?: string,
+    answers?: Record<string, string>,
+  ): Promise<{ status: string }> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/approvals/${encodeURIComponent(approvalId)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision, message }),
+      body: JSON.stringify({ decision, message, answers }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => null)

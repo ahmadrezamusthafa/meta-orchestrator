@@ -20,9 +20,9 @@ import (
 
 const (
 	maxConsoleEntries   = 1000
-	maxRecordedChars    = 8000 // per request message recorded in the transcript
-	maxHistoryTurns     = 20   // conversation turns replayed to stateless providers
-	chatTurnTimeout     = 10 * time.Minute
+	maxRecordedChars    = 8000      // per request message recorded in the transcript
+	maxHistoryTurns     = 20        // conversation turns replayed to stateless providers
+	chatTurnTimeout     = time.Hour // leaves room for the operator to answer approval prompts
 	defaultChatMaxToken = 4096
 )
 
@@ -275,6 +275,11 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 		case llm.StreamToolResult:
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindToolResult, TurnID: t.TurnID, Content: ev.Text,
 				Tool: &types.ConsoleTool{ID: ev.ToolID, IsError: ev.IsError}})
+		case llm.StreamBackground:
+			closeStreams(types.ConsoleDone) // the follow-up turn's text is a new block
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: t.TurnID, Content: fmt.Sprintf(
+				"The agent's turn ended, but %d background agent(s) are still working. The session stays open so their permission "+
+					"requests reach you here; this turn finishes when they report back.", ev.Count)})
 		case llm.StreamSession:
 			if ev.SessionID != "" {
 				stage := ""
@@ -310,9 +315,14 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 	case err != nil:
 		closeStreams(types.ConsoleFailed)
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindError, TurnID: t.TurnID, Content: err.Error(), Status: types.ConsoleFailed})
+		r.reportConflicts(taskID, t.TurnID)
 		return nil, used, err
 	}
 	closeStreams(types.ConsoleDone)
+	r.reportConflicts(taskID, t.TurnID)
+	if note := denialSummary(resp.PermissionDenials); note != "" {
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: t.TurnID, Content: note})
+	}
 
 	cost := resp.TokenUsage.EstimatedCostUSD
 	if r.telemetry != nil {
@@ -420,9 +430,19 @@ func taskSystemPrompt(t *types.Task, method string) string {
 	return fmt.Sprintf("You are the AI engineering agent attached to task %s (%q) in the Meta-Orchestrator.\n"+
 		"Current stage: %s. State: %s. Execution method: %s. Assigned repositories: %s.\n"+
 		"Task description: %s\n"+
-		"Answer the operator directly and concisely. Do not claim to have run tools, tests or commands unless you actually did.",
+		"Answer the operator directly and concisely. Do not claim to have run tools, tests or commands unless you actually did.\n"+
+		conflictRules,
 		t.ID, t.Title, t.CurrentStageID, t.State, method, strings.Join(t.AssignedRepos, ", "), t.Description)
 }
+
+// conflictRules keeps the agent from "resolving" a merge conflict by taking one side wholesale.
+const conflictRules = "Merge conflicts: resolve each hunk deliberately. Read both sides and the common base " +
+	"(`git show :1:<file>`, `:2:` ours, `:3:` theirs, plus `git log --merge -p <file>`) and keep the intent of both: combine " +
+	"additions, keep the newer wording or values only where they truly replace ours, and re-apply our changes on top of the " +
+	"base's restructuring. Never resolve with a blanket `--ours`/`--theirs`, `-X ours/theirs`, or a script that drops one side, " +
+	"unless the operator explicitly asks for that side. Afterwards check there are no markers (`git diff --check`), the file " +
+	"still parses (YAML/JSON/OpenAPI), and the relevant tests or linters pass; then finish the merge or rebase. Report each " +
+	"conflicted file with what you kept from each side."
 
 // chatHistory rebuilds user/assistant turns from the transcript for stateless providers.
 func chatHistory(entries []types.ConsoleEntry) []llm.Message {
@@ -515,12 +535,23 @@ func (r *Router) handleTaskConsole(w http.ResponseWriter, req *http.Request, tas
 			r.writeError(w, http.StatusBadRequest, "message is required")
 			return
 		}
-		turnID, userID, err := r.startChatTurn(task, strings.TrimSpace(body.Message), strings.TrimSpace(body.Model))
+		msg, model := strings.TrimSpace(body.Message), strings.TrimSpace(body.Model)
+		// While the stage is idle, a message continues it in the agent's session; otherwise (running,
+		// in review, completed, blocked) it is a side conversation that leaves the stage as it is.
+		mode := "chat"
+		var turnID, userID string
+		var err error
+		if r.messageRunsStage(taskID) {
+			mode = "stage"
+			turnID, userID, err = r.startStageWithMessage(taskID, msg, model)
+		} else {
+			turnID, userID, err = r.startChatTurn(task, msg, model)
+		}
 		if err != nil {
 			r.writeError(w, http.StatusConflict, err.Error())
 			return
 		}
-		r.writeJSON(w, http.StatusAccepted, map[string]string{"turn_id": turnID, "entry_id": userID})
+		r.writeJSON(w, http.StatusAccepted, map[string]string{"turn_id": turnID, "entry_id": userID, "mode": mode})
 	}
 }
 
@@ -557,13 +588,17 @@ func (r *Router) startChatTurn(task *types.Task, message, model string) (string,
 		decision.Reasoning = "operator-selected model"
 	}
 
-	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method)}}, history...)
-	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: message})
-
 	go func() {
 		defer cancel()
+		// The operator is at the console, so the agent may act; anything gated asks them first.
+		workDir := r.resolveWorkDir(task)
+		mode := r.editMode(task.ID, workDir)
+		system := taskSystemPrompt(task, decision.Method) + "\n" + permissionBrief(mode)
+		msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: system}}, history...)
+		msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: message})
 		resp, used, _ := r.runAgentTurn(ctx, agentTurn{Source: "chat", TurnID: turnID, Task: task, Decision: decision,
-			TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: r.resolveWorkDir(task), MaxTokens: defaultChatMaxToken})
+			TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, MaxTokens: defaultChatMaxToken,
+			PermissionMode: mode, Approver: r.approverFor(task.ID, turnID, mode)})
 		r.endTurn(task.ID, turnID, resp, used)
 	}()
 	return turnID, user.ID, nil

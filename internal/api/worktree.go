@@ -313,3 +313,46 @@ func (r *Router) handleTaskDiff(w http.ResponseWriter, req *http.Request, t *typ
 	}
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{"task_id": t.ID, "against": against, "repos": results})
 }
+
+// reportConflicts warns in the console about conflicts the agent left behind in the task's
+// worktrees: an unfinished merge/rebase, paths still marked conflicted, or markers in files. A
+// conflict "resolved" without this check could reach a pull request half-done.
+func (r *Router) reportConflicts(taskID, turnID string) {
+	t := r.taskSnapshot(taskID)
+	if t == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	seen := map[string]bool{}
+	for _, wt := range r.describeWorktrees(ctx, t) {
+		if !wt.Exists || seen[wt.Checkout] {
+			continue
+		}
+		seen[wt.Checkout] = true
+		c, err := gitwt.Conflicts(ctx, wt.Checkout, wt.BaseRef)
+		if err != nil || !c.Unresolved() {
+			continue
+		}
+		var parts []string
+		if c.Operation != "" {
+			parts = append(parts, c.Operation+" still in progress")
+		}
+		if len(c.Unmerged) > 0 {
+			parts = append(parts, "unresolved: "+strings.Join(limit(c.Unmerged, 5), ", "))
+		}
+		if len(c.Markers) > 0 {
+			parts = append(parts, "conflict markers left at "+strings.Join(limit(c.Markers, 5), ", "))
+		}
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: turnID, Content: fmt.Sprintf(
+			"⚠ %s has an unfinished conflict: %s. Ask the agent to resolve it (each hunk, keeping both sides' intent), or fix it in %s before opening or updating the pull request.",
+			wt.Repo, strings.Join(parts, "; "), wt.Checkout)})
+	}
+}
+
+func limit(items []string, n int) []string {
+	if len(items) <= n {
+		return items
+	}
+	return append(append([]string(nil), items[:n]...), fmt.Sprintf("and %d more", len(items)-n))
+}
