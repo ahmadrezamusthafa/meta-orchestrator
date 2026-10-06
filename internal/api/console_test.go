@@ -47,6 +47,14 @@ func (s *streamingStub) StreamActivity(ctx context.Context, req *llm.LLMRequest,
 		SessionID: "sess-123", TokenUsage: types.TokenUsage{PromptTokens: 1000, CompletionTokens: 50, CachedTokens: 800, TotalTokens: 1050}}, nil
 }
 
+// inReview puts a task in gate review, where a typed message is a side conversation that leaves the
+// stage alone (while the stage is idle a message continues it instead).
+func inReview(r *Router, taskID string) {
+	r.mu.Lock()
+	r.tasks[taskID].State = types.TaskStateWaitingGateApproval
+	r.mu.Unlock()
+}
+
 func consoleRouter(t *testing.T, stub *streamingStub) *Router {
 	r := NewRouter(RouterConfig{RootDir: t.TempDir()})
 	for _, p := range []string{"claude", "antigravity", "openai", "opencode"} {
@@ -104,6 +112,7 @@ func kinds(entries []types.ConsoleEntry) string {
 func TestChatTurnStreamsRealActivityTranscript(t *testing.T) {
 	stub := &streamingStub{}
 	r := consoleRouter(t, stub)
+	inReview(r, "TASK-C1")
 
 	w := do(r, http.MethodPost, "/api/v1/tasks/TASK-C1/chat", `{"message":"does it compile?"}`)
 	if w.Code != http.StatusAccepted {
@@ -171,6 +180,7 @@ func TestChatTurnStreamsRealActivityTranscript(t *testing.T) {
 func TestChatBusyCancelAndClear(t *testing.T) {
 	stub := &streamingStub{block: make(chan struct{})}
 	r := consoleRouter(t, stub)
+	inReview(r, "TASK-C1")
 
 	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-C1/chat", `{"message":"long task"}`); w.Code != http.StatusAccepted {
 		t.Fatalf("chat → %d", w.Code)
@@ -245,5 +255,51 @@ func TestExecuteStreamsIntoConsoleWithoutFabricatedLogs(t *testing.T) {
 		if strings.Contains(logs, fake) {
 			t.Fatalf("fabricated activity %q still emitted", fake)
 		}
+	}
+}
+
+// Typing while the stage is idle continues the stage in the agent's session, so the task runs and
+// then goes to review — no separate "Continue session" click needed.
+func TestMessageWhileStageIsIdleContinuesTheStage(t *testing.T) {
+	stub := &streamingStub{}
+	r := consoleRouter(t, stub)
+	r.console.mu.Lock()
+	c := r.console.get("TASK-C1")
+	c.sessionID, c.sessionStage = "sess-live", "task_implementation"
+	r.console.mu.Unlock()
+
+	w := do(r, http.MethodPost, "/api/v1/tasks/TASK-C1/chat", `{"message":"fix the failing pipelines and push"}`)
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), `"mode":"stage"`) {
+		t.Fatalf("message → %d %s", w.Code, w.Body.String())
+	}
+	waitState(t, r, "TASK-C1", types.TaskStateWaitingGateApproval)
+	stub.mu.Lock()
+	last := stub.reqs[len(stub.reqs)-1]
+	stub.mu.Unlock()
+	prompt := last.Messages[len(last.Messages)-1].Content
+	if last.SessionID != "sess-live" || !strings.Contains(prompt, "fix the failing pipelines and push") ||
+		strings.Contains(prompt, "Implement the change") || strings.Contains(prompt, "rejected") {
+		t.Fatalf("the message should continue the stage's session as the operator's instruction: session %q prompt %q", last.SessionID, prompt)
+	}
+	if last.Approver == nil || last.PermissionMode == "" {
+		t.Fatal("a stage run needs its permission setup")
+	}
+	var user int
+	for _, e := range activity(t, r, "").Entries {
+		if e.Kind == types.ConsoleKindUser && e.Content == "fix the failing pipelines and push" {
+			user++
+		}
+	}
+	if user != 1 {
+		t.Fatalf("the message should be recorded once, got %d", user)
+	}
+
+	// In review the stage is left alone: a message is a side conversation.
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-C1/chat", `{"message":"why this approach?"}`); !strings.Contains(w.Body.String(), `"mode":"chat"`) {
+		t.Fatalf("a message during review must not re-run the stage: %s", w.Body.String())
+	}
+	waitIdle(t, r)
+	if s := r.taskSnapshot("TASK-C1").State; s != types.TaskStateWaitingGateApproval {
+		t.Fatalf("review state must be kept, got %s", s)
 	}
 }

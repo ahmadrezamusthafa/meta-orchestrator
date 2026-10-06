@@ -535,12 +535,23 @@ func (r *Router) handleTaskConsole(w http.ResponseWriter, req *http.Request, tas
 			r.writeError(w, http.StatusBadRequest, "message is required")
 			return
 		}
-		turnID, userID, err := r.startChatTurn(task, strings.TrimSpace(body.Message), strings.TrimSpace(body.Model))
+		msg, model := strings.TrimSpace(body.Message), strings.TrimSpace(body.Model)
+		// While the stage is idle, a message continues it in the agent's session; otherwise (running,
+		// in review, completed, blocked) it is a side conversation that leaves the stage as it is.
+		mode := "chat"
+		var turnID, userID string
+		var err error
+		if r.messageRunsStage(taskID) {
+			mode = "stage"
+			turnID, userID, err = r.startStageWithMessage(taskID, msg, model)
+		} else {
+			turnID, userID, err = r.startChatTurn(task, msg, model)
+		}
 		if err != nil {
 			r.writeError(w, http.StatusConflict, err.Error())
 			return
 		}
-		r.writeJSON(w, http.StatusAccepted, map[string]string{"turn_id": turnID, "entry_id": userID})
+		r.writeJSON(w, http.StatusAccepted, map[string]string{"turn_id": turnID, "entry_id": userID, "mode": mode})
 	}
 }
 

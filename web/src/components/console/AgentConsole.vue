@@ -12,6 +12,7 @@ import GateSelector from './GateSelector.vue'
 import SpinnerLine from './SpinnerLine.vue'
 import TaskStatusBar from './TaskStatusBar.vue'
 import { SHORTCUTS } from './consoleCommands'
+import { CODE_STAGES, stageName } from '../../composables/taskLifecycle'
 import {
   downloadText, formatCost, formatTokens, shortId, transcriptToMarkdown,
 } from './consoleFormat'
@@ -285,12 +286,25 @@ function jumpToPending() {
   el?.querySelector<HTMLElement>('button:not([disabled]), input')?.focus({ preventScroll: true })
 }
 
+// While the stage is idle, a typed message continues it in the agent's session (the daemon decides
+// the same way); otherwise it is a side conversation that leaves the stage as it is.
+const STAGE_IDLE = new Set(['PENDING', 'SUSPENDED', 'FAILED'])
+const messageRunsStage = computed(() => {
+  const t = task.value
+  if (!t || !STAGE_IDLE.has(t.state)) return false
+  return !(CODE_STAGES.has(t.current_stage_id) && !(t.assigned_repos || []).length)
+})
+
 const promptPlaceholder = computed(() =>
   gateFeedbackMode.value
     ? 'Tell the agent what to do differently (enter to submit · esc to go back)'
     : pendingApprovals.value.length
       ? 'The agent is paused — decide on its request above to let it continue'
-      : 'Ask the agent about this task…',
+      : messageRunsStage.value
+        ? `Tell the agent what to do — continues ${stageName(stage.value)}${c.sessionId.value ? ' in the current session' : ''}`
+        : isWaitingGate.value
+          ? 'Ask about this output — the stage stays in review (reject with feedback to re-run it)'
+          : 'Ask the agent about this task…',
 )
 </script>
 

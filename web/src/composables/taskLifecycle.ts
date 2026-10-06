@@ -97,21 +97,21 @@ export function taskLifecycle(task: Task | null | undefined, opts: { busy?: bool
         return {
           tone: 'idle', status: 'Ready', isRunning: false,
           title: `Ready to continue on ${s}`,
-          detail: 'The agent keeps its conversation from this console. Continue it here, or clear the console first to start fresh.',
+          detail: 'The agent keeps its conversation from this console. Continue it, or type a message below to continue with your instruction. Clear the console to start fresh.',
           primary: { kind: 'resume', label: 'Continue session', hint: `Continue the agent's conversation on ${s}, keeping what it already knows.` },
         }
       }
       return {
         tone: 'idle', status: 'Ready', isRunning: false,
         title: `Ready to run ${s}`,
-        detail: 'Nothing is running yet. Start the stage, or ask the agent a question first.',
+        detail: 'Nothing is running yet. Start the stage, or type a message below to start it with your instruction.',
         primary: { kind: 'run', label: 'Run stage', hint: `Start the agent on ${s}.` },
       }
     case 'SUSPENDED':
       return {
         tone: 'warn', status: 'Paused', isRunning: false,
         title: `Paused at ${s}`,
-        detail: 'Nothing is running. Resume to continue the agent\'s session where it stopped.',
+        detail: 'Nothing is running. Resume to continue the agent\'s session where it stopped, or type a message to continue with your instruction.',
         primary: { kind: 'resume', label: 'Resume', hint: `Continue ${s} where the agent stopped.` },
       }
     case 'FAILED':

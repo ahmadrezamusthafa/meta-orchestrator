@@ -280,6 +280,7 @@ func waitChatIdle(t *testing.T, r *Router, taskID string) {
 func TestChatTurnsAskTheOperatorInsteadOfSilentlyRefusing(t *testing.T) {
 	r, agent := interactionRouter(t, "signoff_merge", llm.ApprovalRequest{ToolName: "Bash", ToolUseID: "t1",
 		Input: map[string]interface{}{"command": "git push origin fix-ci"}})
+	inReview(r, "TASK-P") // a side conversation, not a stage run
 	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-P/chat", `{"message":"fix the pipelines and push"}`); w.Code != http.StatusAccepted {
 		t.Fatalf("chat → %d %s", w.Code, w.Body.String())
 	}

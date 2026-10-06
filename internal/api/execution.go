@@ -94,8 +94,9 @@ type stageRun struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	trigger  string
-	feedback string
+	feedback string // gate rejection feedback, or the operator's message for the "message" trigger
 	lastErr  string // why the previous run of this stage ended, if it failed
+	model    string // operator-selected model; empty uses the router
 }
 
 // claimStage validates and marks a task RUNNING for its current stage. Only one claim can hold a
@@ -184,6 +185,40 @@ func (r *Router) startStage(taskID, trigger, feedback string) error {
 	return nil
 }
 
+// stageIdleStates are the states in which a typed message continues the current stage rather than
+// starting a side conversation.
+var stageIdleStates = map[types.TaskState]bool{types.TaskStatePending: true, types.TaskStateSuspended: true, types.TaskStateFailed: true}
+
+// messageRunsStage reports whether an operator message should continue the task's current stage:
+// the stage is idle and could start right now (repositories assigned, prerequisites done).
+func (r *Router) messageRunsStage(taskID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t := r.tasks[taskID]
+	if t == nil || !stageIdleStates[t.State] || (codeStages[t.CurrentStageID] && len(t.AssignedRepos) == 0) {
+		return false
+	}
+	for _, dep := range t.Dependencies {
+		if d, ok := r.tasks[dep]; !ok || d.State != types.TaskStateCompleted {
+			return false
+		}
+	}
+	return true
+}
+
+// startStageWithMessage continues the current stage in the agent's session with the operator's
+// message as its instruction, so typing in the console moves the stage forward like Continue does.
+func (r *Router) startStageWithMessage(taskID, message, model string) (turnID, entryID string, err error) {
+	run, err := r.claimStage(taskID, "message", message)
+	if err != nil {
+		return "", "", err
+	}
+	run.model = model
+	user := r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindUser, TurnID: run.turnID, Content: message})
+	go r.executeStage(run)
+	return run.turnID, user.ID, nil
+}
+
 // executeTaskWithAI runs the task's current stage synchronously (used by tests and callers that
 // already run in their own goroutine).
 func (r *Router) executeTaskWithAI(taskID string) {
@@ -207,6 +242,9 @@ func (r *Router) executeStage(run *stageRun) {
 		taskType = router.ClassifyTaskType(task.Title, task.Description)
 	}
 	decision := r.routeTask(task, complexity, taskType)
+	if run.model != "" {
+		decision.Model, decision.FallbackChain, decision.Reasoning = run.model, []string{run.model}, "operator-selected model"
+	}
 
 	r.mu.Lock()
 	if t, ok := r.tasks[taskID]; ok {
@@ -242,8 +280,23 @@ func (r *Router) executeStage(run *stageRun) {
 	r.console.mu.Unlock()
 
 	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method)}}, history...)
-	prompt := stagePrompt(task, run.feedback)
-	if run.trigger == "resume" && canContinue {
+	message := run.trigger == "message"
+	continuing := (run.trigger == "resume" || message) && canContinue
+	feedback := run.feedback
+	if message {
+		feedback = "" // the operator's message is not rejection feedback
+	}
+	prompt := stagePrompt(task, feedback)
+	if message {
+		prompt = messagePrompt(task, run.feedback, sessionID != "", canContinue, prompt)
+		if sessionID != "" {
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+				"Continuing session %s on %s with your message.", shortID(sessionID), task.CurrentStageID)})
+		}
+		if !canContinue && task.CurrentStageID == "uat_verification" {
+			prompt += "\n\n" + r.uatStageContext(task)
+		}
+	} else if run.trigger == "resume" && canContinue {
 		// Continue the interrupted conversation instead of restarting the stage from its brief.
 		prompt = continuePrompt(task, run.lastErr)
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
@@ -268,7 +321,7 @@ func (r *Router) executeStage(run *stageRun) {
 			strings.Join(missing, ", "))})
 	}
 	if len(skills) > 0 {
-		if !(run.trigger == "resume" && canContinue) {
+		if !continuing {
 			// A continued session already holds the skills from the stage's first turn.
 			prompt += skillsBrief(skills)
 		}
@@ -321,6 +374,8 @@ func triggerText(trigger string) string {
 		return "restarted after reset"
 	case "guidance":
 		return "re-running with your guidance"
+	case "message":
+		return "continuing with your message"
 	default:
 		return "started by operator"
 	}
@@ -362,6 +417,23 @@ func continuePrompt(t *types.Task, lastErr string) string {
 		fmt.Fprintf(&b, "\n\nOperator guidance:\n%s\n", g)
 	}
 	b.WriteString("\n\nEnd with a short \"Summary\" section covering the whole stage, which the operator can review before approving it.")
+	return b.String()
+}
+
+// messagePrompt is the stage turn for an operator message typed while the stage was idle. A
+// session that already works on this stage just gets the message; otherwise the agent is briefed
+// on the stage first.
+func messagePrompt(t *types.Task, msg string, hasSession, sameStage bool, brief string) string {
+	var b strings.Builder
+	switch {
+	case sameStage:
+		fmt.Fprintf(&b, "The operator says:\n%s\n\nAct on it as part of %s, continuing from where you are.", msg, stageLabel(t.CurrentStageID))
+	case hasSession:
+		fmt.Fprintf(&b, "%s\n\nThe operator says:\n%s", sessionStagePrompt(t, brief), msg)
+	default:
+		fmt.Fprintf(&b, "%s\n\nThe operator adds:\n%s", brief, msg)
+	}
+	b.WriteString("\n\nWhen this stage's work is done, end with a short \"Summary\" section covering the whole stage, which the operator can review before approving it.")
 	return b.String()
 }
 
