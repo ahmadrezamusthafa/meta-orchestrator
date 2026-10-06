@@ -97,7 +97,9 @@ func TestPauseInterruptsLiveTurnAndResumeContinuesSession(t *testing.T) {
 	}
 }
 
-func TestResumeRestartsStageWhenSessionNeverReachedIt(t *testing.T) {
+// A card moved back to a stage keeps the agent's conversation: Continue resumes the same session
+// and briefs it on the stage.
+func TestResumeContinuesSessionOnAStageItNeverReached(t *testing.T) {
 	stub := &streamingStub{}
 	r := consoleRouter(t, stub)
 	r.console.mu.Lock()
@@ -111,8 +113,9 @@ func TestResumeRestartsStageWhenSessionNeverReachedIt(t *testing.T) {
 	stub.mu.Lock()
 	last := stub.reqs[len(stub.reqs)-1]
 	stub.mu.Unlock()
-	if prompt := last.Messages[len(last.Messages)-1].Content; !strings.Contains(prompt, "Implement the change") {
-		t.Fatalf("a stage the session never saw must start from its brief: %q", prompt)
+	prompt := last.Messages[len(last.Messages)-1].Content
+	if last.SessionID != "sess-old" || !strings.Contains(prompt, "Continue in this conversation") || !strings.Contains(prompt, "Implement the change") {
+		t.Fatalf("resume should keep the session and brief it on the stage: session %q prompt %q", last.SessionID, prompt)
 	}
 }
 

@@ -248,8 +248,18 @@ func (r *Router) executeStage(run *stageRun) {
 		prompt = continuePrompt(task, run.lastErr)
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
 			"Continuing session %s where the last run stopped.", shortID(sessionID))})
-	} else if task.CurrentStageID == "uat_verification" {
-		prompt += "\n\n" + r.uatStageContext(task)
+	} else {
+		if run.trigger == "resume" && sessionID != "" {
+			// The session last served another stage or the chat (e.g. the card was moved back): keep
+			// the conversation, but brief the agent on this stage.
+			prompt = sessionStagePrompt(task, prompt)
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+				"Continuing session %s on %s — the agent keeps everything it already knows from this conversation.",
+				shortID(sessionID), task.CurrentStageID)})
+		}
+		if task.CurrentStageID == "uat_verification" {
+			prompt += "\n\n" + r.uatStageContext(task)
+		}
 	}
 	skills, missing := r.stageSkills(task)
 	if len(missing) > 0 {
@@ -353,6 +363,13 @@ func continuePrompt(t *types.Task, lastErr string) string {
 	}
 	b.WriteString("\n\nEnd with a short \"Summary\" section covering the whole stage, which the operator can review before approving it.")
 	return b.String()
+}
+
+// sessionStagePrompt briefs a continued conversation on a stage it has not run yet.
+func sessionStagePrompt(t *types.Task, brief string) string {
+	return fmt.Sprintf("Continue in this conversation, now on %s. Use what you already know from it and do not redo finished "+
+		"work (check the working directory). Retry anything left unfinished, including actions that were refused permission "+
+		"earlier: permission requests now reach the operator in the console.\n\n%s", stageLabel(t.CurrentStageID), brief)
 }
 
 // settleStage moves the task to its post-turn state and tells the operator what happens next.

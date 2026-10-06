@@ -390,6 +390,7 @@ const promptPlaceholder = computed(() =>
           :task="task"
           :busy="c.busy.value"
           :pending="actionPending"
+          :has-session="!!c.sessionId.value"
           @run="runTask"
           @resume="resumeTask"
           @pause="pauseTask"

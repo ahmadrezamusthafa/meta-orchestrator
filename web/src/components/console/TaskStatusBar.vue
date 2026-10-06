@@ -9,6 +9,8 @@ const props = defineProps<{
   /** An agent turn is streaming right now. */
   busy: boolean
   pending: boolean
+  /** The console holds an agent conversation a run can continue. */
+  hasSession?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -20,7 +22,7 @@ const emit = defineEmits<{
 
 const stage = computed(() => props.task?.current_stage_id || '')
 const stageIndex = computed(() => STAGES.indexOf(stage.value as (typeof STAGES)[number]))
-const life = computed(() => taskLifecycle(props.task, { busy: props.busy }))
+const life = computed(() => taskLifecycle(props.task, { busy: props.busy, hasSession: props.hasSession }))
 // Review happens in the gate selector right below the bar, so the bar offers no button for it.
 const action = computed(() => (life.value?.primary?.kind === 'review' || life.value?.primary?.kind === 'assign' || life.value?.primary?.kind === 'approve' ? undefined : life.value?.primary))
 

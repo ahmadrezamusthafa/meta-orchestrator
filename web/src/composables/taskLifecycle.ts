@@ -58,7 +58,11 @@ export interface Lifecycle {
   isRunning: boolean
 }
 
-export function taskLifecycle(task: Task | null | undefined, opts: { busy?: boolean } = {}): Lifecycle | null {
+/**
+ * busy: an agent turn is streaming. hasSession: the console holds an agent conversation that a run
+ * can continue (only the console knows; other surfaces leave it unset).
+ */
+export function taskLifecycle(task: Task | null | undefined, opts: { busy?: boolean; hasSession?: boolean } = {}): Lifecycle | null {
   if (!task) return null
   const s = stageName(task.current_stage_id)
   const meta = task.metadata || {}
@@ -89,6 +93,14 @@ export function taskLifecycle(task: Task | null | undefined, opts: { busy?: bool
         primary: { kind: 'pause', label: 'Pause', hint: 'Stop the agent now. Resume later to run this stage again.' },
       }
     case 'PENDING':
+      if (opts.hasSession) {
+        return {
+          tone: 'idle', status: 'Ready', isRunning: false,
+          title: `Ready to continue on ${s}`,
+          detail: 'The agent keeps its conversation from this console. Continue it here, or clear the console first to start fresh.',
+          primary: { kind: 'resume', label: 'Continue session', hint: `Continue the agent's conversation on ${s}, keeping what it already knows.` },
+        }
+      }
       return {
         tone: 'idle', status: 'Ready', isRunning: false,
         title: `Ready to run ${s}`,

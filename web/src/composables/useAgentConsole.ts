@@ -292,6 +292,7 @@ export function useAgentConsole(taskIdSource: MaybeRefOrGetter<string>) {
     if (!taskId.value) return
     await api.clearTaskActivity(taskId.value)
     entries.value = []
+    serverSessionId.value = '' // the daemon drops the agent session on clear, too
     completedTurns.clear()
   }
 
@@ -378,6 +379,7 @@ export function useAgentConsole(taskIdSource: MaybeRefOrGetter<string>) {
       case 'agent.activity.clear': {
         if (!belongs(event, event.payload?.task_id)) return
         entries.value = []
+        serverSessionId.value = ''
         completedTurns.clear()
         break
       }
