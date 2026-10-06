@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -20,9 +21,8 @@ import (
 
 const (
 	maxConsoleEntries   = 1000
-	maxRecordedChars    = 8000      // per request message recorded in the transcript
-	maxHistoryTurns     = 20        // conversation turns replayed to stateless providers
-	chatTurnTimeout     = time.Hour // leaves room for the operator to answer approval prompts
+	maxRecordedChars    = 8000 // per request message recorded in the transcript
+	maxHistoryTurns     = 20   // conversation turns replayed to stateless providers
 	defaultChatMaxToken = 4096
 )
 
@@ -240,6 +240,7 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 		Messages: recorded, SessionID: t.SessionID, Source: t.Source,
 	}})
 
+	guard := newRetryGuard()
 	var textID, thinkID string
 	var streaming []string
 	closeStreams := func(status string) {
@@ -270,9 +271,11 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 			r.appendDelta(taskID, thinkID, types.ConsoleKindThinking, ev.Text)
 		case llm.StreamToolUse:
 			closeStreams(types.ConsoleDone) // text after a tool call is a new assistant block
+			guard.toolUse(ev.ToolID, ev.ToolName, ev.ToolInput)
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindToolUse, TurnID: t.TurnID,
 				Tool: &types.ConsoleTool{ID: ev.ToolID, Name: ev.ToolName, Input: ev.ToolInput}})
 		case llm.StreamToolResult:
+			guard.toolResult(ev.ToolID, ev.IsError)
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindToolResult, TurnID: t.TurnID, Content: ev.Text,
 				Tool: &types.ConsoleTool{ID: ev.ToolID, IsError: ev.IsError}})
 		case llm.StreamBackground:
@@ -303,9 +306,18 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 			Content: fmt.Sprintf("Failover: %s failed (%v) → trying %s", failed, err, next)})
 	}
 
-	req := &llm.LLMRequest{Messages: t.Messages, MaxTokens: t.MaxTokens, SessionID: t.SessionID, WorkDir: t.WorkDir, AddDirs: t.AddDirs, PermissionMode: t.PermissionMode, Approver: t.Approver}
+	approver := guard.guard(t.Approver, func(cmd string) {
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: t.TurnID, Content: fmt.Sprintf(
+			"Refused `%s`: it already failed %d times in this turn with no file changes since. The agent was told to fix the cause or change approach.",
+			cmd, maxIdenticalFailures)})
+	})
+	req := &llm.LLMRequest{Messages: t.Messages, MaxTokens: t.MaxTokens, SessionID: t.SessionID, WorkDir: t.WorkDir, AddDirs: t.AddDirs,
+		PermissionMode: t.PermissionMode, Approver: approver, AllowedTools: readOnlyCommands}
 	start := time.Now()
 	resp, used, err := r.clientFactory.StreamWithFallbackChain(ctx, chain, req, emit, onFailover)
+	if errors.Is(err, context.DeadlineExceeded) {
+		err = fmt.Errorf("%w (%s)", llm.ErrTurnTimeLimit, agentTurnTimeout)
+	}
 
 	switch {
 	case ctx.Err() == context.Canceled:
@@ -431,9 +443,19 @@ func taskSystemPrompt(t *types.Task, method string) string {
 		"Current stage: %s. State: %s. Execution method: %s. Assigned repositories: %s.\n"+
 		"Task description: %s\n"+
 		"Answer the operator directly and concisely. Do not claim to have run tools, tests or commands unless you actually did.\n"+
-		conflictRules,
+		toolUseRules+"\n"+conflictRules,
 		t.ID, t.Title, t.CurrentStageID, t.State, method, strings.Join(t.AssignedRepos, ", "), t.Description)
 }
+
+// toolUseRules keep the agent from spending tokens on redundant tool calls and blind retries: every
+// call and its output are re-read on each later step of the turn.
+const toolUseRules = "Work efficiently — every tool call and its output add to the cost of each later step. Use the Read, " +
+	"Grep and Glob tools instead of cat, head, grep, find or ls in the shell. Read only the files and line ranges you need, " +
+	"and do not re-read a file you already have unless it changed. Send independent tool calls together in one message. " +
+	"Keep command output short (quiet flags, `| tail -n 50`) and run the narrowest test or build that proves a change " +
+	"before any full suite. When a command fails, read its error before acting and never re-run it unchanged: fix the " +
+	"cause or try a different approach. After two failed attempts at the same step, stop and tell the operator what is " +
+	"blocking you instead of trying variations. Do not sleep or poll waiting for something to finish."
 
 // conflictRules keeps the agent from "resolving" a merge conflict by taking one side wholesale.
 const conflictRules = "Merge conflicts: resolve each hunk deliberately. Read both sides and the common base " +
@@ -558,7 +580,7 @@ func (r *Router) handleTaskConsole(w http.ResponseWriter, req *http.Request, tas
 // startChatTurn records the operator message and runs the model turn in the background.
 func (r *Router) startChatTurn(task *types.Task, message, model string) (string, string, error) {
 	turnID := r.console.nextID("turn")
-	ctx, cancel := context.WithTimeout(context.Background(), chatTurnTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), agentTurnTimeout)
 	if err := r.beginTurn(task.ID, turnID, cancel); err != nil {
 		cancel()
 		return "", "", err
