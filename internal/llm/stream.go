@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,6 +31,13 @@ const (
 // backgroundIdleGrace is how long the host waits for the CLI's follow-up turn after the last
 // background task finished, before it disconnects anyway.
 var backgroundIdleGrace = 2 * time.Minute
+
+// Defaults for interactive agent turns (LLMRequest.Timeout / IdleTimeout). The idle timeout is
+// longer than any single tool call can run (the CLI caps Bash at 10 minutes).
+var (
+	DefaultAgentTurnLimit   = 3 * time.Hour
+	DefaultAgentIdleTimeout = 20 * time.Minute
+)
 
 // StreamEvent is one real-time increment of a model turn.
 type StreamEvent struct {
@@ -300,6 +308,9 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	for _, dir := range req.AddDirs {
 		args = append(args, "--add-dir", dir)
 	}
+	if len(req.AllowedTools) > 0 {
+		args = append(args, "--allowedTools", strings.Join(req.AllowedTools, ","))
+	}
 	mode := req.PermissionMode
 	if mode == "" {
 		mode = "plan" // read-only unless the caller explicitly grants more
@@ -310,11 +321,21 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 		if interactive {
-			timeout = time.Hour // leaves room for the operator to answer approval prompts
+			timeout = DefaultAgentTurnLimit
 		}
 	}
-	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+	idleTimeout := req.IdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = DefaultAgentIdleTimeout
+	}
+	// A working agent streams output continuously, so silence — not total duration — is what marks a
+	// stuck turn. The time limit only backstops a runaway one.
+	idleCtx, stopIdle := context.WithCancelCause(ctx)
+	defer stopIdle(nil)
+	cmdCtx, cancel := context.WithTimeout(idleCtx, timeout)
 	defer cancel()
+	watch := newIdleWatch(idleTimeout, func() { stopIdle(ErrAgentIdle) })
+	defer watch.stop()
 	cmd := exec.CommandContext(cmdCtx, cli, args...)
 	if req.WorkDir != "" {
 		cmd.Dir = req.WorkDir
@@ -373,6 +394,7 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for sc.Scan() {
+		watch.touch()
 		var line cliStreamLine
 		if json.Unmarshal(sc.Bytes(), &line) != nil {
 			continue
@@ -381,7 +403,11 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 		case "control_request":
 			if host != nil {
 				raw := append([]byte(nil), sc.Bytes()...) // the scanner reuses its buffer
-				go host.answer(cmdCtx, raw, req.Approver)
+				watch.hold()                              // waiting for the operator is not idleness
+				go func() {
+					defer watch.release()
+					host.answer(cmdCtx, raw, req.Approver)
+				}()
 			}
 		case "system":
 			if line.SessionID != "" {
@@ -485,6 +511,12 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	}
 	if resp.Content == "" {
 		resp.Content = text.String()
+	}
+	if cmdCtx.Err() != nil && !gotResult {
+		if errors.Is(context.Cause(idleCtx), ErrAgentIdle) {
+			return nil, fmt.Errorf("%w for %s, so the turn was stopped", ErrAgentIdle, idleTimeout)
+		}
+		return nil, fmt.Errorf("%w (%s)", ErrTurnTimeLimit, timeout)
 	}
 	if waitErr != nil && !gotResult {
 		return nil, fmt.Errorf("claude CLI: %v: %s", waitErr, strings.TrimSpace(stderr.String()))
@@ -767,6 +799,49 @@ type cliHost struct {
 	mu     sync.Mutex
 	w      io.WriteCloser
 	closed bool
+}
+
+// idleWatch calls fire once nothing has touched it for d, except while a hold is open.
+type idleWatch struct {
+	mu    sync.Mutex
+	d     time.Duration
+	timer *time.Timer
+	holds int
+	done  bool
+}
+
+func newIdleWatch(d time.Duration, fire func()) *idleWatch {
+	return &idleWatch{d: d, timer: time.AfterFunc(d, fire)}
+}
+
+func (w *idleWatch) touch() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.done && w.holds == 0 {
+		w.timer.Reset(w.d)
+	}
+}
+
+func (w *idleWatch) hold() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.holds++
+	w.timer.Stop()
+}
+
+func (w *idleWatch) release() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.holds--; w.holds == 0 && !w.done {
+		w.timer.Reset(w.d)
+	}
+}
+
+func (w *idleWatch) stop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.done = true
+	w.timer.Stop()
 }
 
 func (h *cliHost) send(v interface{}) {

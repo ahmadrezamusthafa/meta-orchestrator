@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -50,10 +51,23 @@ type LLMRequest struct {
 	PermissionMode string `json:"permission_mode,omitempty"`
 	// Timeout bounds agentic turns; zero uses the driver default.
 	Timeout time.Duration `json:"-"`
+	// IdleTimeout stops an agentic turn that produces no output for this long (time spent waiting
+	// for the operator to answer a permission prompt does not count); zero uses the driver default.
+	IdleTimeout time.Duration `json:"-"`
+	// AllowedTools are permission rules the agent may use without asking (Claude Code CLI
+	// --allowedTools, e.g. "Bash(git status:*)").
+	AllowedTools []string `json:"allowed_tools,omitempty"`
 	// Approver answers the agent's permission prompts (Claude Code CLI). Nil means nobody can
 	// answer, so anything that needs permission is denied.
 	Approver Approver `json:"-"`
 }
+
+// Errors an agentic turn stops with when it runs out of time. The provider session is kept, so
+// the turn can be continued.
+var (
+	ErrAgentIdle     = errors.New("the agent produced no output")
+	ErrTurnTimeLimit = errors.New("the turn hit its time limit")
+)
 
 // ApprovalRequest is an agent's request to use a tool that needs operator permission.
 type ApprovalRequest struct {

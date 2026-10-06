@@ -143,7 +143,7 @@ func (r *Router) claimStage(taskID, trigger, feedback string) (*stageRun, error)
 	}
 
 	turnID := r.console.nextID("turn")
-	ctx, cancel := context.WithTimeout(context.Background(), stageTurnTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), agentTurnTimeout)
 	if err := r.beginTurn(taskID, turnID, cancel); err != nil {
 		r.mu.Unlock()
 		cancel()
@@ -165,9 +165,10 @@ func (r *Router) claimStage(taskID, trigger, feedback string) (*stageRun, error)
 	return &stageRun{task: snap, turnID: turnID, ctx: ctx, cancel: cancel, trigger: trigger, feedback: feedback, lastErr: lastErr}, nil
 }
 
-// stageTurnTimeout bounds one stage turn. Every stage can wait on operator approvals (each up to
-// approvalTimeout), so all get the same hour the CLI driver allows interactive turns.
-const stageTurnTimeout = time.Hour
+// agentTurnTimeout backstops one stage or chat turn. The driver stops a turn first — after
+// llm.DefaultAgentIdleTimeout without output (waits on operator approvals excluded) or at
+// llm.DefaultAgentTurnLimit — with an error that says which; this margin keeps that message.
+var agentTurnTimeout = llm.DefaultAgentTurnLimit + 5*time.Minute
 
 // startStage claims the task's current stage and executes it in the background.
 func (r *Router) startStage(taskID, trigger, feedback string) error {
@@ -500,6 +501,9 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 		proc.Status = "FAILED"
 		proc.CurrentStep = "Failed: " + stage
 		note = fmt.Sprintf("✗ %s failed: %v\nContinue to pick up the agent's session where it stopped, or ask the agent about the failure below.", stage, execErr)
+		if timedOut(execErr) {
+			note = fmt.Sprintf("⏱ %s stopped: %v. The agent's session and the files it changed are kept — Continue picks up where it stopped.", stage, execErr)
+		}
 	default:
 		r.setTaskState(task, types.TaskStateWaitingGateApproval)
 		task.Metadata["active_model"] = servedModel(model, resp)
@@ -521,6 +525,11 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 	}
 	r.addEntry(taskID, types.ConsoleEntry{Kind: kind, Content: note})
 	r.broadcastTask(snap)
+}
+
+// timedOut reports whether a turn ended because it ran out of time rather than because it failed.
+func timedOut(err error) bool {
+	return errors.Is(err, llm.ErrAgentIdle) || errors.Is(err, llm.ErrTurnTimeLimit) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // pauseTask interrupts a live turn (if any) and suspends the task.
