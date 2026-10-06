@@ -1121,6 +1121,8 @@ export interface ConsoleApprovalInfo {
   message?: string
   expires_at: string
   decided_at?: string
+  /** why this request asks even under "allow all" (e.g. a blind conflict resolution) */
+  warning?: string
   /** plan kind: permission mode the agent gets once the plan is approved */
   mode?: string
   questions?: ConsoleQuestionInfo[]

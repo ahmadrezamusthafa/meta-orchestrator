@@ -142,6 +142,8 @@ type ConsoleApproval struct {
 	Message     string    `json:"message,omitempty"` // operator note sent to the agent on deny
 	ExpiresAt   time.Time `json:"expires_at"`
 	DecidedAt   time.Time `json:"decided_at,omitempty"`
+	// Warning explains why this request always asks, even under "allow all" (e.g. a blind conflict resolution).
+	Warning string `json:"warning,omitempty"`
 	// Mode is the permission mode the agent gets once a plan is approved (plan kind).
 	Mode string `json:"mode,omitempty"`
 	// Questions and Answers (question → chosen label(s), comma-separated) for the question kind.

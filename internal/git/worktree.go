@@ -121,6 +121,56 @@ func IsDirty(ctx context.Context, dir string) (bool, error) {
 	return strings.TrimSpace(out) != "", err
 }
 
+// ConflictState is what is left of a merge conflict in a work tree.
+type ConflictState struct {
+	Operation string   // merge, rebase, cherry-pick or revert still in progress; empty when none
+	Unmerged  []string // paths git still marks as conflicted
+	Markers   []string // "path:line" of conflict markers left in files (committed or not)
+}
+
+// Unresolved reports whether anything needs the operator's attention.
+func (c ConflictState) Unresolved() bool {
+	return c.Operation != "" || len(c.Unmerged) > 0 || len(c.Markers) > 0
+}
+
+// Conflicts inspects dir for an unfinished merge-like operation, unmerged paths, and conflict
+// markers left in files changed since baseRef (HEAD when empty).
+func Conflicts(ctx context.Context, dir, baseRef string) (ConflictState, error) {
+	var c ConflictState
+	for _, op := range []struct{ ref, name string }{{"MERGE_HEAD", "merge"}, {"CHERRY_PICK_HEAD", "cherry-pick"}, {"REVERT_HEAD", "revert"}} {
+		if refExists(ctx, dir, op.ref) {
+			c.Operation = op.name
+		}
+	}
+	for _, d := range []string{"rebase-merge", "rebase-apply"} {
+		if out, err := run(ctx, dir, "rev-parse", "--git-path", d); err == nil {
+			p := strings.TrimSpace(out)
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(dir, p)
+			}
+			if _, err := os.Stat(p); err == nil {
+				c.Operation = "rebase"
+			}
+		}
+	}
+	out, err := run(ctx, dir, "diff", "--name-only", "--diff-filter=U")
+	if err != nil {
+		return c, err
+	}
+	c.Unmerged = strings.Fields(out)
+	if baseRef == "" || !refExists(ctx, dir, baseRef) {
+		baseRef = "HEAD"
+	}
+	// --check exits non-zero when it finds problems, so its output matters, not its error.
+	out, _ = run(ctx, dir, "diff", "--check", baseRef)
+	for _, line := range strings.Split(out, "\n") {
+		if i := strings.Index(line, ": leftover conflict marker"); i > 0 {
+			c.Markers = append(c.Markers, line[:i])
+		}
+	}
+	return c, nil
+}
+
 // RemoveWorktreeIfClean detaches a worktree that holds no uncommitted work. The branch (and its
 // commits) is always kept. It reports whether the worktree was removed.
 func RemoveWorktreeIfClean(ctx context.Context, repo, dir string) (bool, error) {

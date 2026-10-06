@@ -106,3 +106,32 @@ func TestWorktreeDiffLifecycle(t *testing.T) {
 		t.Fatal("removing the worktree must keep the branch")
 	}
 }
+
+func TestConflictsFindsUnfinishedMergesAndLeftoverMarkers(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t)
+	if c, err := Conflicts(ctx, repo, "master"); err != nil || c.Unresolved() {
+		t.Fatalf("clean repo reported %+v %v", c, err)
+	}
+
+	// Both branches change the same line: the merge stops with a conflict.
+	gitT(t, repo, "checkout", "-q", "-b", "feat")
+	_ = os.WriteFile(filepath.Join(repo, "app.go"), []byte("package app\n\nfunc A() { feat() }\n"), 0o644)
+	gitT(t, repo, "commit", "-q", "-am", "feat")
+	gitT(t, repo, "checkout", "-q", "master")
+	_ = os.WriteFile(filepath.Join(repo, "app.go"), []byte("package app\n\nfunc A() { master() }\n"), 0o644)
+	gitT(t, repo, "commit", "-q", "-am", "master")
+	gitT(t, repo, "checkout", "-q", "feat")
+	_ = exec.Command("git", "-C", repo, "merge", "master").Run()
+	c, err := Conflicts(ctx, repo, "master")
+	if err != nil || c.Operation != "merge" || len(c.Unmerged) != 1 || c.Unmerged[0] != "app.go" {
+		t.Fatalf("unfinished merge = %+v %v", c, err)
+	}
+
+	// Committing the file with its markers still in it ends the merge but not the conflict.
+	gitT(t, repo, "commit", "-q", "-am", "merge")
+	c, _ = Conflicts(ctx, repo, "master")
+	if c.Operation != "" || len(c.Unmerged) != 0 || len(c.Markers) == 0 || !strings.HasPrefix(c.Markers[0], "app.go:") {
+		t.Fatalf("committed markers = %+v", c)
+	}
+}

@@ -275,6 +275,11 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 		case llm.StreamToolResult:
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindToolResult, TurnID: t.TurnID, Content: ev.Text,
 				Tool: &types.ConsoleTool{ID: ev.ToolID, IsError: ev.IsError}})
+		case llm.StreamBackground:
+			closeStreams(types.ConsoleDone) // the follow-up turn's text is a new block
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: t.TurnID, Content: fmt.Sprintf(
+				"The agent's turn ended, but %d background agent(s) are still working. The session stays open so their permission "+
+					"requests reach you here; this turn finishes when they report back.", ev.Count)})
 		case llm.StreamSession:
 			if ev.SessionID != "" {
 				stage := ""
@@ -310,9 +315,11 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 	case err != nil:
 		closeStreams(types.ConsoleFailed)
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindError, TurnID: t.TurnID, Content: err.Error(), Status: types.ConsoleFailed})
+		r.reportConflicts(taskID, t.TurnID)
 		return nil, used, err
 	}
 	closeStreams(types.ConsoleDone)
+	r.reportConflicts(taskID, t.TurnID)
 	if note := denialSummary(resp.PermissionDenials); note != "" {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: t.TurnID, Content: note})
 	}
@@ -423,9 +430,19 @@ func taskSystemPrompt(t *types.Task, method string) string {
 	return fmt.Sprintf("You are the AI engineering agent attached to task %s (%q) in the Meta-Orchestrator.\n"+
 		"Current stage: %s. State: %s. Execution method: %s. Assigned repositories: %s.\n"+
 		"Task description: %s\n"+
-		"Answer the operator directly and concisely. Do not claim to have run tools, tests or commands unless you actually did.",
+		"Answer the operator directly and concisely. Do not claim to have run tools, tests or commands unless you actually did.\n"+
+		conflictRules,
 		t.ID, t.Title, t.CurrentStageID, t.State, method, strings.Join(t.AssignedRepos, ", "), t.Description)
 }
+
+// conflictRules keeps the agent from "resolving" a merge conflict by taking one side wholesale.
+const conflictRules = "Merge conflicts: resolve each hunk deliberately. Read both sides and the common base " +
+	"(`git show :1:<file>`, `:2:` ours, `:3:` theirs, plus `git log --merge -p <file>`) and keep the intent of both: combine " +
+	"additions, keep the newer wording or values only where they truly replace ours, and re-apply our changes on top of the " +
+	"base's restructuring. Never resolve with a blanket `--ours`/`--theirs`, `-X ours/theirs`, or a script that drops one side, " +
+	"unless the operator explicitly asks for that side. Afterwards check there are no markers (`git diff --check`), the file " +
+	"still parses (YAML/JSON/OpenAPI), and the relevant tests or linters pass; then finish the merge or rebase. Report each " +
+	"conflicted file with what you kept from each side."
 
 // chatHistory rebuilds user/assistant turns from the transcript for stateless providers.
 func chatHistory(entries []types.ConsoleEntry) []llm.Message {

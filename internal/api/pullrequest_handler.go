@@ -122,6 +122,13 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 		case d.TargetBranch == "" || d.TargetBranch == "HEAD":
 			d.Blocker = "the worktree has no base branch to target"
 		}
+		if d.Blocker == "" && wt.Exists && wt.Error == "" {
+			// Committing "pending edits" with `git add -A` would mark a half-merged file resolved,
+			// markers and all, and push it.
+			if c, err := gitwt.Conflicts(ctx, wt.Checkout, wt.BaseRef); err == nil && c.Unresolved() {
+				d.Blocker = conflictBlocker(c)
+			}
+		}
 		if d.Blocker == "" {
 			if rem, err := gitwt.OriginRemote(ctx, wt.Checkout); err != nil {
 				d.Blocker = err.Error()
@@ -313,4 +320,19 @@ var unsafeFileChars = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
 func safeFileName(s string) string {
 	return strings.Trim(unsafeFileChars.ReplaceAllString(s, "-"), "-.")
+}
+
+// conflictBlocker explains why a pull request cannot be opened while a conflict is unfinished.
+func conflictBlocker(c gitwt.ConflictState) string {
+	var parts []string
+	if c.Operation != "" {
+		parts = append(parts, "a "+c.Operation+" is still in progress")
+	}
+	if len(c.Unmerged) > 0 {
+		parts = append(parts, "unresolved files: "+strings.Join(limit(c.Unmerged, 5), ", "))
+	}
+	if len(c.Markers) > 0 {
+		parts = append(parts, "conflict markers at "+strings.Join(limit(c.Markers, 5), ", "))
+	}
+	return "unfinished merge conflict (" + strings.Join(parts, "; ") + ") — ask the agent to resolve it hunk by hunk, then open the pull request"
 }

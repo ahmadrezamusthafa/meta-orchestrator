@@ -23,7 +23,13 @@ const (
 	StreamToolUse       = "tool_use"
 	StreamToolResult    = "tool_result"
 	StreamSession       = "session" // session/model identity reported by the provider
+	// StreamBackground: the main turn ended while background agents keep working; Count says how many.
+	StreamBackground = "background"
 )
+
+// backgroundIdleGrace is how long the host waits for the CLI's follow-up turn after the last
+// background task finished, before it disconnects anyway.
+var backgroundIdleGrace = 2 * time.Minute
 
 // StreamEvent is one real-time increment of a model turn.
 type StreamEvent struct {
@@ -35,6 +41,7 @@ type StreamEvent struct {
 	IsError   bool                   `json:"is_error,omitempty"`
 	SessionID string                 `json:"session_id,omitempty"`
 	Model     string                 `json:"model,omitempty"`
+	Count     int                    `json:"count,omitempty"`
 }
 
 // ActivityStreamer is implemented by drivers that can stream a turn incrementally.
@@ -190,6 +197,8 @@ type cliStreamLine struct {
 	Usage     *anthropicUsage `json:"usage"`
 	// PermissionDenials (result line) are the tool calls the CLI refused during the turn.
 	PermissionDenials []PermissionDenial `json:"permission_denials"`
+	// Tasks (background_tasks_changed) are the background tasks still running.
+	Tasks []json.RawMessage `json:"tasks"`
 }
 
 type anthropicUsage struct {
@@ -339,6 +348,27 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	var text strings.Builder
 	partialText := false
 	gotResult := false
+	// Background agents keep working, and asking for permission, after the main turn's result; the
+	// CLI then runs a follow-up turn with their outcome. Closing stdin at the first result made every
+	// later permission request fail with "Stream closed", so the host stays connected until a result
+	// arrives while no background task is running.
+	background := 0
+	awaitingTurn := false // a result arrived; the next turn has not started yet
+	var idle *time.Timer
+	defer func() {
+		if idle != nil {
+			idle.Stop()
+		}
+	}()
+	turnActive := func() {
+		awaitingTurn = false
+		if idle != nil {
+			idle.Stop()
+			idle = nil
+		}
+	}
+	var usage anthropicUsage
+	var cost float64
 
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
@@ -360,10 +390,18 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 			if line.Model != "" {
 				resp.Model = line.Model
 			}
-			if line.Subtype == "init" {
+			switch line.Subtype {
+			case "init":
+				turnActive()
 				emit(StreamEvent{Type: StreamSession, SessionID: line.SessionID, Model: line.Model})
+			case "background_tasks_changed":
+				background = len(line.Tasks)
+				if background == 0 && awaitingTurn && host != nil && idle == nil {
+					idle = time.AfterFunc(backgroundIdleGrace, host.close) // no follow-up turn came
+				}
 			}
 		case "stream_event":
+			turnActive()
 			var ev sseEvent
 			if json.Unmarshal(line.Event, &ev) == nil && ev.Type == "content_block_delta" {
 				switch ev.Delta.Type {
@@ -376,6 +414,7 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 				}
 			}
 		case "assistant":
+			turnActive()
 			var msg messageEnvelope
 			if json.Unmarshal(line.Message, &msg) != nil {
 				continue
@@ -408,23 +447,34 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 			}
 		case "result":
 			gotResult = true
+			awaitingTurn = true
 			if host != nil {
-				host.close() // the turn is over; let the CLI exit
+				if background == 0 {
+					host.close() // the work is over; let the CLI exit
+				} else {
+					emit(StreamEvent{Type: StreamBackground, Count: background})
+				}
 			}
 			if line.SessionID != "" {
 				resp.SessionID = line.SessionID
 			}
+			// A follow-up turn reports its own token usage, which is summed; total_cost_usd is already
+			// the running total for the process.
 			if line.Usage != nil {
-				resp.TokenUsage = line.Usage.tokenUsage()
+				usage.InputTokens += line.Usage.InputTokens
+				usage.OutputTokens += line.Usage.OutputTokens
+				usage.CacheReadInputTokens += line.Usage.CacheReadInputTokens
+				usage.CacheCreationInputTokens += line.Usage.CacheCreationInputTokens
+				resp.TokenUsage = usage.tokenUsage()
 			}
-			resp.TokenUsage.EstimatedCostUSD = line.TotalCost
-			resp.PermissionDenials = line.PermissionDenials
+			cost = max(cost, line.TotalCost)
+			resp.TokenUsage.EstimatedCostUSD = cost
+			resp.PermissionDenials = append(resp.PermissionDenials, line.PermissionDenials...)
+			resp.FinishReason = "stop"
 			if line.IsError || (line.Subtype != "" && line.Subtype != "success") {
 				resp.FinishReason = "error"
-				if line.Result != "" {
-					resp.Content = line.Result
-				}
-			} else if line.Result != "" {
+			}
+			if line.Result != "" {
 				resp.Content = line.Result
 			}
 		}

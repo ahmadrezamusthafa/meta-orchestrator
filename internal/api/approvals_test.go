@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -360,5 +362,65 @@ func TestDenialSummaryNamesWhatWasBlocked(t *testing.T) {
 		{ToolName: llm.ToolExitPlanMode}})
 	if !strings.Contains(s, "2 action(s)") || !strings.Contains(s, "Bash `git push`") || !strings.Contains(s, "plan not approved") {
 		t.Fatalf("summary = %q", s)
+	}
+}
+
+func TestBlindConflictResolutionAlwaysAsks(t *testing.T) {
+	for cmd, want := range map[string]bool{
+		"git checkout --theirs api_spec.yaml":       true,
+		"git checkout --ours -- .":                  true,
+		"git restore --source=HEAD --theirs a.yaml": true,
+		"git merge -X theirs origin/master":         true,
+		"git merge --strategy-option=ours origin/m": true,
+		"git merge -s ours origin/master":           true,
+		"git checkout feature/ours-and-theirs":      false,
+		"git merge origin/master":                   false,
+		"git log --merge -p api_spec.yaml":          false,
+	} {
+		if got := isBlindResolution("Bash", map[string]interface{}{"command": cmd}); got != want {
+			t.Errorf("isBlindResolution(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+
+	r, agent := interactionRouter(t, "task_implementation", llm.ApprovalRequest{ToolName: "Bash", ToolUseID: "t1",
+		Input: map[string]interface{}{"command": "git checkout --theirs api_spec.yaml"}})
+	r.setAllowAll("TASK-P", true)
+	go r.executeTaskWithAI("TASK-P")
+	id := awaitApproval(t, r, "TASK-P") // allow-all does not answer it
+	if a := lastApproval(r, "TASK-P"); a.Warning == "" || a.RuleLabel != "" {
+		t.Fatalf("a blind resolution should warn and offer no rule: %+v", a)
+	}
+	do(r, http.MethodPost, "/api/v1/tasks/TASK-P/approvals/"+id, `{"decision":"deny","message":"merge both sides"}`)
+	waitState(t, r, "TASK-P", types.TaskStateWaitingGateApproval)
+	if d := agent.decision(); d.Allow || !strings.Contains(d.Message, "merge both sides") {
+		t.Fatalf("deny must reach the agent: %+v", d)
+	}
+}
+
+func TestTurnEndReportsConflictsLeftInTheWorktree(t *testing.T) {
+	r, agent := interactionRouter(t, "task_implementation", llm.ApprovalRequest{ToolName: "Read", Input: map[string]interface{}{}})
+	r.setAllowAll("TASK-P", true)
+	dir := r.resolveWorkDir(r.taskSnapshot("TASK-P"))
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> origin/master\n"), 0o644)
+	r.executeTaskWithAI("TASK-P")
+	_ = agent
+	r.console.mu.Lock()
+	defer r.console.mu.Unlock()
+	for _, e := range r.console.get("TASK-P").entries {
+		if strings.Contains(e.Content, "unfinished conflict") && strings.Contains(e.Content, "main.go:") {
+			return
+		}
+	}
+	t.Fatal("the console must warn about conflict markers left in the worktree")
+}
+
+// The incident's second half: the PR flow committed a half-merged api_spec.yaml, markers and all.
+func TestPullRequestIsBlockedWhileAConflictIsUnfinished(t *testing.T) {
+	r, _ := interactionRouter(t, "task_implementation", llm.ApprovalRequest{})
+	dir := r.resolveWorkDir(r.taskSnapshot("TASK-P"))
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> origin/master\n"), 0o644)
+	drafts := r.buildPRDrafts(context.Background(), r.taskSnapshot("TASK-P"))
+	if len(drafts) != 1 || drafts[0].CanCreate || !strings.Contains(drafts[0].Blocker, "conflict markers at main.go:") {
+		t.Fatalf("a pull request must not be opened over conflict markers: %+v", drafts[0])
 	}
 }

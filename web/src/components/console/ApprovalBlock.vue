@@ -197,6 +197,9 @@ onUnmounted(() => clearInterval(clock))
         <p v-if="entry.content" class="font-sans text-xs text-slate-400">{{ entry.content }}</p>
         <pre class="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-[12px] text-slate-100">{{ a.summary }}</pre>
         <p v-if="a.blocked_path" class="text-[11px] text-slate-500">Outside the workspace: {{ a.blocked_path }}</p>
+        <p v-if="a.warning" class="flex items-start gap-1.5 rounded border border-rose-800/60 bg-rose-950/30 px-2 py-1.5 font-sans text-[11px] text-rose-200" role="note">
+          <ShieldAlert class="mt-px h-3.5 w-3.5 flex-shrink-0 text-rose-400" /> {{ a.warning }}
+        </p>
       </template>
     </div>
 

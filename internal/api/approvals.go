@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,6 +50,17 @@ func (r approvalRule) matches(tool string, input map[string]interface{}) bool {
 		}
 	}
 	return cmd == r.Prefix || strings.HasPrefix(cmd, r.Prefix+" ")
+}
+
+// blindResolution matches commands that settle a conflict by taking one side wholesale. They
+// always ask the operator, even under "allow all" or a saved rule, because they silently drop
+// the other side's changes.
+var blindResolution = regexp.MustCompile(`\b(checkout|restore)\b[^|;&]*--(ours|theirs)\b|` +
+	`(^|\s)-X\s*(ours|theirs)\b|--strategy-option[= ](ours|theirs)\b|(^|\s)-s\s*ours\b|--strategy[= ]ours\b`)
+
+func isBlindResolution(tool string, input map[string]interface{}) bool {
+	cmd, _ := input["command"].(string)
+	return tool == "Bash" && blindResolution.MatchString(cmd)
 }
 
 // ruleFor proposes the narrowest useful "always allow" rule for a request.
@@ -132,6 +144,7 @@ type pendingApproval struct {
 	kind      string
 	rule      approvalRule
 	questions []types.ConsoleQuestion
+	blind     bool // takes one side of a conflict wholesale
 	ch        chan approvalAnswer
 }
 
@@ -209,7 +222,7 @@ func (r *Router) setAllowAll(taskID string, on bool) bool {
 		r.approvals.mu.Lock()
 		var waiting []*pendingApproval
 		for id, p := range r.approvals.pending {
-			if p.taskID == taskID && p.kind != types.ApprovalKindQuestion { // only the operator can answer a question
+			if p.taskID == taskID && p.kind != types.ApprovalKindQuestion && !p.blind { // only the operator can answer these
 				waiting = append(waiting, p)
 				delete(r.approvals.pending, id)
 			}
@@ -267,8 +280,14 @@ func (r *Router) approverFor(taskID, turnID, planExit string) llm.Approver {
 			return llm.ApprovalDecision{Allow: true, Mode: planExit}
 		}
 
-		// A question needs an answer only the operator can give: rules and "allow all" never answer it.
-		if kind != types.ApprovalKindQuestion {
+		// A question needs an answer only the operator can give, and taking one side of a conflict
+		// wholesale drops work: rules and "allow all" never answer either.
+		blind := isBlindResolution(req.ToolName, req.Input)
+		if blind {
+			info.Warning = "This keeps one side of a merge conflict wholesale and drops the other side's changes. " +
+				"Allow it only if that is really what you want."
+		}
+		if kind != types.ApprovalKindQuestion && !blind {
 			if r.taskAllowsAll(taskID) {
 				return auto(allowAllLabel)
 			}
@@ -281,9 +300,9 @@ func (r *Router) approverFor(taskID, turnID, planExit string) llm.Approver {
 			}
 		}
 
-		p := &pendingApproval{id: r.console.nextID("apr"), taskID: taskID, kind: kind, questions: info.Questions,
+		p := &pendingApproval{id: r.console.nextID("apr"), taskID: taskID, kind: kind, questions: info.Questions, blind: blind,
 			ch: make(chan approvalAnswer, 1)}
-		if kind == types.ApprovalKindTool {
+		if kind == types.ApprovalKindTool && !blind {
 			p.rule = ruleFor(req.ToolName, req.Input)
 			info.RuleLabel = p.rule.label()
 		}
@@ -294,7 +313,7 @@ func (r *Router) approverFor(taskID, turnID, planExit string) llm.Approver {
 		r.approvals.pending[p.id] = p
 		r.approvals.mu.Unlock()
 		r.setPendingApprovals(taskID, +1)
-		if kind != types.ApprovalKindQuestion && r.taskAllowsAll(taskID) { // "allow all" was switched on while this request was being filed
+		if kind != types.ApprovalKindQuestion && !blind && r.taskAllowsAll(taskID) { // "allow all" was switched on while this request was being filed
 			r.approvals.mu.Lock()
 			if r.approvals.pending[p.id] == p {
 				delete(r.approvals.pending, p.id)
