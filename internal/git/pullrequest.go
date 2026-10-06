@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -116,6 +117,21 @@ func Push(ctx context.Context, dir, branch string) error {
 		return fmt.Errorf("git push: %s", msg)
 	}
 	return nil
+}
+
+// Unpushed counts the commits on HEAD that origin's copy of branch does not have yet, as of the
+// last fetch or push. onRemote is false when the branch was never pushed (every commit is unpushed).
+func Unpushed(ctx context.Context, dir, branch string) (n int, onRemote bool, err error) {
+	remote := "refs/remotes/origin/" + branch
+	if !refExists(ctx, dir, remote) {
+		return 0, false, nil
+	}
+	out, err := run(ctx, dir, "rev-list", "--count", remote+"..HEAD")
+	if err != nil {
+		return 0, true, err
+	}
+	n, err = strconv.Atoi(strings.TrimSpace(out))
+	return n, true, err
 }
 
 // CommitSubjects lists the subjects of commits on HEAD that are not on baseRef, oldest first.

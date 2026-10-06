@@ -354,6 +354,7 @@ func (r *Router) executeStage(run *stageRun) {
 		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, AddDirs: skillDirs(skills), MaxTokens: 8192,
 		PermissionMode: permission, Approver: r.approverFor(taskID, run.turnID, planExit)})
 	r.endTurn(taskID, run.turnID, resp, used)
+	r.notePRSync(taskID, run.turnID)
 	if resp != nil && len(skills) > 0 {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: skillUsageReport(skills, resp.ToolCalls)})
 	}

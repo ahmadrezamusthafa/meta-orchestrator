@@ -4,7 +4,7 @@ import { api } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import MarkdownView from '../common/MarkdownView.vue'
 import type { Task, PullRequestDraftDTO } from '../../types'
-import { GitPullRequest, GitBranch, ExternalLink, Loader2, RefreshCw, AlertCircle, Copy, Check, Eye, Pencil } from 'lucide-vue-next'
+import { GitPullRequest, GitBranch, ExternalLink, Loader2, RefreshCw, AlertCircle, Copy, Check, Eye, Pencil, UploadCloud, CheckCircle2 } from 'lucide-vue-next'
 
 const props = defineProps<{ task: Task }>()
 const emit = defineEmits<{ (e: 'refresh'): void }>()
@@ -22,6 +22,11 @@ const copied = ref('')
 
 const draft = computed(() => drafts.value.find((d) => d.repo === selected.value) || drafts.value[0] || null)
 const running = computed(() => props.task.state === 'RUNNING')
+const outOfSync = computed(() => draft.value?.sync === 'out_of_sync')
+const actionLabel = computed(() => {
+  if (!draft.value?.existing_url) return 'Commit, push & open pull request'
+  return outOfSync.value ? 'Commit, push & update pull request' : 'Update pull request'
+})
 const edited = computed(() => !!draft.value && (title.value !== draft.value.title || body.value !== draft.value.body))
 
 function adopt(d: PullRequestDraftDTO | null) {
@@ -76,7 +81,7 @@ async function copy(text: string, key: string) {
   }
 }
 
-watch(() => [props.task.state, props.task.current_stage_id], () => load(true))
+watch(() => [props.task.state, props.task.current_stage_id, props.task.metadata?.pr_out_of_sync], () => load(true))
 onMounted(() => load())
 </script>
 
@@ -92,6 +97,11 @@ onMounted(() => load())
             Opens the task branch as a pull request in the standard format: ticket, summary, type of change, changed files,
             acceptance criteria, how to test, risk &amp; rollback and the review checklist. Pending edits in the worktree are
             committed first. Opening again refreshes the existing pull request.
+          </p>
+          <p class="text-xs text-slate-400 leading-relaxed">
+            An opened pull request is <span class="text-slate-200">not updated automatically</span>: changes the agent or you make
+            afterwards stay in the worktree until you choose <span class="text-slate-200">Update pull request</span>, which commits,
+            pushes and refreshes the description.
           </p>
         </div>
         <button type="button" @click="load()" :disabled="loading" class="h-8 px-3 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5 disabled:opacity-60">
@@ -120,7 +130,7 @@ onMounted(() => load())
             <span class="flex items-center gap-1.5 font-mono text-teal-300"><GitBranch class="w-3.5 h-3.5" /> {{ draft.source_branch }}</span>
             <span class="text-slate-500">→</span>
             <span class="font-mono text-slate-200">{{ draft.target_branch || '—' }}</span>
-            <span class="text-slate-400">{{ draft.files }} file(s) · {{ draft.commits }} commit(s)<template v-if="draft.uncommitted"> · uncommitted edits</template></span>
+            <span class="text-slate-400">{{ draft.files }} file(s) · {{ draft.commits }} commit(s)<template v-if="draft.uncommitted"> · uncommitted edits</template><template v-if="draft.on_remote && draft.unpushed"> · {{ draft.unpushed }} not pushed</template><template v-else-if="!draft.on_remote && draft.commits"> · not pushed yet</template></span>
             <a v-if="draft.repo_url" :href="draft.repo_url" target="_blank" rel="noopener" class="text-slate-400 hover:text-slate-100 flex items-center gap-1 capitalize">
               {{ draft.provider || 'remote' }} <ExternalLink class="w-3 h-3" />
             </a>
@@ -128,6 +138,17 @@ onMounted(() => load())
               class="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded bg-violet-950/70 border border-violet-800/70 text-violet-200 hover:text-white">
               <GitPullRequest class="w-3 h-3" /> Open pull request <ExternalLink class="w-3 h-3" />
             </a>
+          </div>
+          <div v-if="outOfSync" role="status"
+            class="p-2.5 rounded-lg border border-sky-800/60 bg-sky-950/30 text-xs text-sky-200 flex items-start gap-2">
+            <UploadCloud class="w-4 h-4 flex-shrink-0 mt-px" />
+            <div class="space-y-0.5">
+              <div class="font-semibold">Pull request needs an update</div>
+              <div class="text-sky-200/80">{{ draft.sync_note }}</div>
+            </div>
+          </div>
+          <div v-else-if="draft.sync === 'in_sync'" role="status" class="text-[11px] text-emerald-300 flex items-center gap-1.5">
+            <CheckCircle2 class="w-3.5 h-3.5" /> {{ draft.sync_note }}
           </div>
           <div v-if="draft.uncommitted" class="text-[11px] text-slate-400">
             Pending edits are committed as <code class="font-mono text-slate-200">{{ draft.commit_message }}</code>
@@ -165,7 +186,7 @@ onMounted(() => load())
               :title="running ? 'Wait for the stage to finish' : draft.blocker || ''"
               class="ml-auto h-9 px-4 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
               <Loader2 v-if="opening" class="w-3.5 h-3.5 animate-spin" /><GitPullRequest v-else class="w-3.5 h-3.5" />
-              {{ draft.existing_url ? 'Update pull request' : 'Commit, push & open pull request' }}
+              {{ actionLabel }}
             </button>
           </div>
         </section>

@@ -52,3 +52,28 @@ func TestCommitAllAndSubjects(t *testing.T) {
 		t.Fatalf("subjects = %v, %v", subjects, err)
 	}
 }
+
+func TestUnpushedCountsCommitsOriginLacks(t *testing.T) {
+	ctx := context.Background()
+	origin := t.TempDir()
+	gitT(t, origin, "init", "-q", "--bare")
+	dir := newRepo(t)
+	gitT(t, dir, "remote", "add", "origin", origin)
+	gitT(t, dir, "checkout", "-q", "-b", "feat/x")
+
+	if n, onRemote, err := Unpushed(ctx, dir, "feat/x"); err != nil || onRemote || n != 0 {
+		t.Fatalf("before the first push: n=%d onRemote=%v err=%v", n, onRemote, err)
+	}
+	gitT(t, dir, "push", "-q", "-u", "origin", "feat/x")
+	if n, onRemote, err := Unpushed(ctx, dir, "feat/x"); err != nil || !onRemote || n != 0 {
+		t.Fatalf("after push: n=%d onRemote=%v err=%v", n, onRemote, err)
+	}
+	for i, f := range []string{"a.go", "b.go"} {
+		_ = os.WriteFile(filepath.Join(dir, f), []byte("package app\n"), 0o644)
+		gitT(t, dir, "add", f)
+		gitT(t, dir, "commit", "-q", "-m", "change "+strings.Repeat("x", i+1))
+	}
+	if n, onRemote, err := Unpushed(ctx, dir, "feat/x"); err != nil || !onRemote || n != 2 {
+		t.Fatalf("two local commits: n=%d onRemote=%v err=%v", n, onRemote, err)
+	}
+}

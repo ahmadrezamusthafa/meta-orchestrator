@@ -224,6 +224,8 @@ onMounted(() => {
           :class="activeTab === t.id ? 'bg-slate-800 border-slate-700 text-slate-100 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'">
           <component :is="t.icon" class="w-3.5 h-3.5" />
           {{ t.label }}
+          <span v-if="t.id === 'pr' && task?.metadata?.pr_out_of_sync" class="w-1.5 h-1.5 rounded-full bg-amber-400"
+            title="The pull request does not have the latest changes — update it" aria-label="pull request needs update" />
         </button>
       </nav>
 

@@ -158,6 +158,13 @@ export interface PullRequestDraftDTO {
   commits: number
   files: number
   existing_url?: string
+  /** local commits origin does not have yet */
+  unpushed: number
+  /** false until the branch has been pushed */
+  on_remote: boolean
+  /** whether the opened pull request has every change in the worktree */
+  sync: 'not_opened' | 'in_sync' | 'out_of_sync'
+  sync_note?: string
   can_create: boolean
   blocker?: string
 }

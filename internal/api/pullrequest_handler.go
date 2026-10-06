@@ -35,8 +35,15 @@ type prDraft struct {
 	Commits      int      `json:"commits"`
 	Files        int      `json:"files"`
 	ExistingURL  string   `json:"existing_url,omitempty"`
-	CanCreate    bool     `json:"can_create"`
-	Blocker      string   `json:"blocker,omitempty"` // why the pull request cannot be opened yet
+	// Unpushed counts local commits origin does not have yet; OnRemote is false before the first push.
+	Unpushed int  `json:"unpushed"`
+	OnRemote bool `json:"on_remote"`
+	// Sync tells whether an opened pull request shows the worktree: prNotOpened, prInSync or
+	// prOutOfSync; SyncNote says what is missing from it.
+	Sync      string `json:"sync"`
+	SyncNote  string `json:"sync_note,omitempty"`
+	CanCreate bool   `json:"can_create"`
+	Blocker   string `json:"blocker,omitempty"` // why the pull request cannot be opened yet
 
 	wt     taskWorktree
 	remote gitwt.Remote
@@ -144,6 +151,7 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 				}
 			}
 			d.Uncommitted, _ = gitwt.IsDirty(ctx, wt.Dir)
+			d.Unpushed, d.OnRemote, _ = gitwt.Unpushed(ctx, wt.Checkout, d.SourceBranch)
 			in.Commits, _ = gitwt.CommitSubjects(ctx, wt.Checkout, wt.BaseRef, wt.SubPath)
 			if d.Uncommitted {
 				in.Commits = append(in.Commits, d.CommitMsg+" (pending — committed when the pull request is opened)")
@@ -159,9 +167,92 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 			d.Blocker = "pull requests open from the task_implementation stage onward"
 		}
 		d.CanCreate = d.Blocker == ""
+		d.Sync, d.SyncNote = prSync(d)
 		d.Title, d.Body = pullrequest.Title(in), pullrequest.Body(in)
 	}
 	return drafts
+}
+
+// Pull request sync states (prDraft.Sync).
+const (
+	prNotOpened = "not_opened"
+	prInSync    = "in_sync"
+	prOutOfSync = "out_of_sync"
+)
+
+// prSync compares an opened pull request with the worktree: changes made after it was opened (by
+// the agent or by hand) only reach it when the branch is pushed again.
+func prSync(d *prDraft) (state, note string) {
+	if d.ExistingURL == "" {
+		return prNotOpened, ""
+	}
+	var missing []string
+	switch {
+	case !d.OnRemote:
+		missing = append(missing, "the branch "+d.SourceBranch+" is not on the remote")
+	case d.Unpushed > 0:
+		missing = append(missing, fmt.Sprintf("%d commit(s) not pushed", d.Unpushed))
+	}
+	if d.Uncommitted {
+		missing = append(missing, "uncommitted edits in the worktree")
+	}
+	if len(missing) == 0 {
+		return prInSync, "The pull request has every change in the worktree."
+	}
+	return prOutOfSync, "The pull request is missing local changes: " + strings.Join(missing, " and ") +
+		". Update the pull request to commit, push and refresh its description."
+}
+
+// notePRSync tells the operator, once per change, when work done after a pull request was opened
+// has not reached it yet, and keeps the task's pr_out_of_sync flag (the board badge) current.
+func (r *Router) notePRSync(taskID, turnID string) {
+	t := r.taskSnapshot(taskID)
+	if t == nil {
+		return
+	}
+	opened := false
+	for k := range t.Metadata {
+		if strings.HasPrefix(k, "pr_url.") {
+			opened = true
+			break
+		}
+	}
+	if !opened {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	var stale []string
+	var notes []string
+	for _, d := range r.buildPRDrafts(ctx, t) {
+		if d.Sync != prOutOfSync {
+			continue
+		}
+		stale = append(stale, fmt.Sprintf("%s:%d:%t:%t", d.Repo, d.Unpushed, d.OnRemote, d.Uncommitted))
+		notes = append(notes, fmt.Sprintf("%s (%s)", d.Repo, d.ExistingURL))
+	}
+	sig := strings.Join(stale, ",")
+
+	r.mu.Lock()
+	task, ok := r.tasks[taskID]
+	if !ok || task.Metadata["pr_out_of_sync"] == sig {
+		r.mu.Unlock()
+		return
+	}
+	if sig == "" {
+		delete(task.Metadata, "pr_out_of_sync")
+	} else {
+		task.Metadata["pr_out_of_sync"] = sig
+	}
+	task.UpdatedAt = time.Now()
+	snap := cloneTask(task)
+	r.mu.Unlock()
+	r.broadcastTask(snap)
+	if sig != "" {
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: turnID, Content: fmt.Sprintf(
+			"⇡ The pull request for %s does not have the latest changes yet. Open the Pull Request tab and choose "+
+				"Update pull request to commit, push and refresh it.", strings.Join(notes, ", "))})
+	}
 }
 
 // prCredentials resolves the connector credentials for a provider without exposing them.
@@ -312,6 +403,7 @@ func (r *Router) openPullRequest(ctx context.Context, taskID string, body PullRe
 		note += "\nPending edits were committed as \"" + d.CommitMsg + "\"."
 	}
 	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: note})
+	r.notePRSync(taskID, "") // clears the out-of-sync flag
 	r.broadcastTask(r.taskSnapshot(taskID))
 	return &prOpened{Repo: d.Repo, URL: res.URL, Number: res.Number, Updated: res.Updated, Committed: committed}, nil
 }

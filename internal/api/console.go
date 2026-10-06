@@ -640,6 +640,7 @@ func (r *Router) startChatTurn(task *types.Task, message, model string) (string,
 			TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, MaxTokens: defaultChatMaxToken,
 			PermissionMode: mode, Approver: r.approverFor(task.ID, turnID, mode)})
 		r.endTurn(task.ID, turnID, resp, used)
+		r.notePRSync(task.ID, turnID)
 	}()
 	return turnID, user.ID, nil
 }
