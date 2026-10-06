@@ -32,6 +32,10 @@ const (
 // background task finished, before it disconnects anyway.
 var backgroundIdleGrace = 2 * time.Minute
 
+// turnEndGrace is how long the host keeps the CLI's stdin open after a result with no background
+// work, in case the CLI starts another turn (it does so right away when it has one queued).
+var turnEndGrace = 3 * time.Second
+
 // Defaults for interactive agent turns (LLMRequest.Timeout / IdleTimeout). The idle timeout is
 // longer than any single tool call can run (the CLI caps Bash at 10 minutes).
 var (
@@ -369,10 +373,11 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	var text strings.Builder
 	partialText := false
 	gotResult := false
-	// Background agents keep working, and asking for permission, after the main turn's result; the
-	// CLI then runs a follow-up turn with their outcome. Closing stdin at the first result made every
-	// later permission request fail with "Stream closed", so the host stays connected until a result
-	// arrives while no background task is running.
+	// The CLI can run several turns in one process: background agents keep working, and asking for
+	// permission, after the main turn's result and are followed by a turn with their outcome, and a
+	// resumed session first runs turns about background work that was cut off. Closing stdin at the
+	// first result made every later permission request fail with "Stream closed", so the host only
+	// disconnects once no background task is running and no new turn started within a grace period.
 	background := 0
 	awaitingTurn := false // a result arrived; the next turn has not started yet
 	var idle *time.Timer
@@ -388,6 +393,12 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 			idle = nil
 		}
 	}
+	closeAfter := func(grace time.Duration) {
+		if idle != nil {
+			idle.Stop()
+		}
+		idle = time.AfterFunc(grace, host.close)
+	}
 	var usage anthropicUsage
 	var cost float64
 
@@ -402,6 +413,7 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 		switch line.Type {
 		case "control_request":
 			if host != nil {
+				turnActive()
 				raw := append([]byte(nil), sc.Bytes()...) // the scanner reuses its buffer
 				watch.hold()                              // waiting for the operator is not idleness
 				go func() {
@@ -422,8 +434,8 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 				emit(StreamEvent{Type: StreamSession, SessionID: line.SessionID, Model: line.Model})
 			case "background_tasks_changed":
 				background = len(line.Tasks)
-				if background == 0 && awaitingTurn && host != nil && idle == nil {
-					idle = time.AfterFunc(backgroundIdleGrace, host.close) // no follow-up turn came
+				if background == 0 && awaitingTurn && host != nil {
+					closeAfter(backgroundIdleGrace) // waits for the follow-up turn with their outcome
 				}
 			}
 		case "stream_event":
@@ -476,8 +488,12 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 			awaitingTurn = true
 			if host != nil {
 				if background == 0 {
-					host.close() // the work is over; let the CLI exit
+					closeAfter(turnEndGrace) // unless another turn starts, the work is over; let the CLI exit
 				} else {
+					if idle != nil {
+						idle.Stop()
+						idle = nil
+					}
 					emit(StreamEvent{Type: StreamBackground, Count: background})
 				}
 			}

@@ -241,6 +241,8 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 	}})
 
 	guard := newRetryGuard()
+	channelLost := false // the CLI reported its permission channel closed
+	lastSession := ""
 	var textID, thinkID string
 	var streaming []string
 	closeStreams := func(status string) {
@@ -279,6 +281,12 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 			r.docker.release(ev.ToolID)
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindToolResult, TurnID: t.TurnID, Content: ev.Text,
 				Tool: &types.ConsoleTool{ID: ev.ToolID, IsError: ev.IsError}})
+			if ev.IsError && !channelLost && strings.Contains(ev.Text, permissionChannelClosed) {
+				channelLost = true
+				r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindError, TurnID: t.TurnID, Content: "The agent's permission " +
+					"channel closed, so its tool calls that need approval fail without reaching you. Interrupt the turn and Continue " +
+					"to reconnect the session."})
+			}
 		case llm.StreamBackground:
 			closeStreams(types.ConsoleDone) // the follow-up turn's text is a new block
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: t.TurnID, Content: fmt.Sprintf(
@@ -292,7 +300,8 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 				}
 				r.rememberSession(taskID, t.TurnID, ev.SessionID, stage)
 			}
-			if ev.Model != "" || ev.SessionID != "" {
+			if (ev.Model != "" || ev.SessionID != "") && ev.SessionID+"|"+ev.Model != lastSession {
+				lastSession = ev.SessionID + "|" + ev.Model // each turn of the process reports it again
 				content := strings.TrimSpace(fmt.Sprintf("Session %s · model %s", shortID(ev.SessionID), ev.Model))
 				if ev.Model != "" && !sameModel(chain[0], ev.Model) {
 					content += fmt.Sprintf(" (router picked %s; the provider CLI uses its own configured model)", chain[0])
@@ -451,6 +460,10 @@ func taskSystemPrompt(t *types.Task, method string) string {
 		toolUseRules+"\n"+dockerRules+"\n"+conflictRules,
 		t.ID, t.Title, t.CurrentStageID, t.State, method, strings.Join(t.AssignedRepos, ", "), t.Description)
 }
+
+// permissionChannelClosed is what the Claude Code CLI reports for a permission request it could not
+// send because the host closed its stdin.
+const permissionChannelClosed = "Stream closed"
 
 // toolUseRules keep the agent from spending tokens on redundant tool calls and blind retries: every
 // call and its output are re-read on each later step of the turn.
