@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -149,6 +150,7 @@ func main() {
 		TaskStorePath:     filepath.Join(cwd, ".sdlc", "tasks.json"),
 		ProviderStatePath: filepath.Join(cwd, ".sdlc", "providers.json"),
 		EnableJiraSync:    true,
+		Docker:            dockerLimits(),
 	})
 	mux.Handle("/api/", apiRouter)
 
@@ -181,4 +183,11 @@ func main() {
 	_ = server.Shutdown(shutdownCtx)
 
 	fmt.Println("[Shutdown] Daemon shutdown cleanly completed.")
+}
+
+// dockerLimits reads MO_DOCKER_MAX_CONCURRENT (Docker commands agents may run at once) and
+// MO_DOCKER_CPUS (--cpus for containers agents start; "0" disables). Unset uses the defaults.
+func dockerLimits() api.DockerLimits {
+	n, _ := strconv.Atoi(os.Getenv("MO_DOCKER_MAX_CONCURRENT"))
+	return api.DockerLimits{MaxConcurrent: n, CPUs: os.Getenv("MO_DOCKER_CPUS")}
 }

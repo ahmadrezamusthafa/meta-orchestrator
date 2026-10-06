@@ -45,6 +45,8 @@ type RouterConfig struct {
 	// QuotaFetchers read provider-side plan limits per provider id. Nil uses the local Claude Code
 	// and Antigravity logins (quota.DefaultFetchers); tests pass an empty map to stay offline.
 	QuotaFetchers map[string]quota.Fetcher
+	// Docker limits the Docker work agents run on this machine; zero values use the defaults.
+	Docker DockerLimits
 	// EnableJiraSync runs the background JIRA → board sync using the rules in connectors.json.
 	EnableJiraSync bool
 }
@@ -70,6 +72,7 @@ type Router struct {
 	persistMu     sync.Mutex
 	worktreeMu    sync.Mutex // serializes git worktree creation/removal
 	approvals     *approvalHub
+	docker        *dockerGate         // limits concurrent Docker commands across all agents
 	busyOps       sync.Map            // "pr:<task>" / "uat:<task>" while a delivery job runs
 	prClient      *pullrequest.Client // opens pull requests; tests point it at a fake API
 	uatRunner     uatScreenshotRunner // captures UAT screenshots; tests stub it
@@ -133,6 +136,7 @@ func NewRouter(cfg RouterConfig) *Router {
 		dismissedJira:  make(map[string]bool),
 		jira:           newJiraSyncState(),
 		approvals:      newApprovalHub(),
+		docker:         newDockerGate(cfg.Docker),
 		prClient:       &pullrequest.Client{},
 		stop:           make(chan struct{}),
 	}

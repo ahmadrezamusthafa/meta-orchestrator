@@ -173,3 +173,13 @@ Click on any task card on the Kanban board to enter the **Active Task Detail Vie
 make test
 ```
 Runs both the Go backend race-detector unit test suites and frontend Vue TypeScript strict typechecking.
+
+### Q5: Agents' Docker commands use too much CPU
+Heavy Docker commands that agents run (`build`, `run`, `exec`, `compose up`, `pull`, …) share a machine-wide limit; extra ones wait for a free slot, and the console says what they are waiting on. Read-only commands (`ps`, `images`, `inspect`, `compose ps/config`) never wait. Containers agents start with `docker run`/`create` get a `--cpus` limit unless the command sets its own. Set before starting the daemon:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MO_DOCKER_MAX_CONCURRENT` | `2` | Heavy Docker commands running at once across all tasks |
+| `MO_DOCKER_CPUS` | `2` | `--cpus` added to containers agents start; `0` adds none |
+
+Only commands that go through the console's approval flow are limited (this includes "allow all"). Docker called indirectly, e.g. from a `make` target or script, is not detected.

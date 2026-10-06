@@ -276,6 +276,7 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 				Tool: &types.ConsoleTool{ID: ev.ToolID, Name: ev.ToolName, Input: ev.ToolInput}})
 		case llm.StreamToolResult:
 			guard.toolResult(ev.ToolID, ev.IsError)
+			r.docker.release(ev.ToolID)
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindToolResult, TurnID: t.TurnID, Content: ev.Text,
 				Tool: &types.ConsoleTool{ID: ev.ToolID, IsError: ev.IsError}})
 		case llm.StreamBackground:
@@ -306,10 +307,14 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 			Content: fmt.Sprintf("Failover: %s failed (%v) → trying %s", failed, err, next)})
 	}
 
+	defer r.docker.releaseTurn(t.TurnID)
 	approver := guard.guard(t.Approver, func(cmd string) {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: t.TurnID, Content: fmt.Sprintf(
 			"Refused `%s`: it already failed %d times in this turn with no file changes since. The agent was told to fix the cause or change approach.",
 			cmd, maxIdenticalFailures)})
+	})
+	approver = r.docker.wrap(approver, taskID, t.TurnID, func(msg string) {
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: t.TurnID, Content: msg})
 	})
 	req := &llm.LLMRequest{Messages: t.Messages, MaxTokens: t.MaxTokens, SessionID: t.SessionID, WorkDir: t.WorkDir, AddDirs: t.AddDirs,
 		PermissionMode: t.PermissionMode, Approver: approver, AllowedTools: readOnlyCommands}
@@ -443,7 +448,7 @@ func taskSystemPrompt(t *types.Task, method string) string {
 		"Current stage: %s. State: %s. Execution method: %s. Assigned repositories: %s.\n"+
 		"Task description: %s\n"+
 		"Answer the operator directly and concisely. Do not claim to have run tools, tests or commands unless you actually did.\n"+
-		toolUseRules+"\n"+conflictRules,
+		toolUseRules+"\n"+dockerRules+"\n"+conflictRules,
 		t.ID, t.Title, t.CurrentStageID, t.State, method, strings.Join(t.AssignedRepos, ", "), t.Description)
 }
 
