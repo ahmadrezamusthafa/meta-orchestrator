@@ -197,3 +197,168 @@ func TestAllowAllBypassesEveryApproval(t *testing.T) {
 		t.Fatalf("missing allow_all must be rejected, got %d", w.Code)
 	}
 }
+
+// interactionProvider files one fixed approval request and records the decision.
+type interactionProvider struct {
+	stubProvider
+	mu   sync.Mutex
+	ask  llm.ApprovalRequest
+	reqs []llm.LLMRequest
+	last llm.ApprovalDecision
+}
+
+func (p *interactionProvider) Complete(ctx context.Context, req *llm.LLMRequest) (*llm.LLMResponse, error) {
+	resp, _ := p.stubProvider.Complete(ctx, req)
+	p.mu.Lock()
+	p.reqs = append(p.reqs, *req)
+	ask := p.ask
+	p.mu.Unlock()
+	if req.Approver == nil {
+		resp.Content = "NO_APPROVER"
+		return resp, nil
+	}
+	d := req.Approver(ctx, ask)
+	p.mu.Lock()
+	p.last = d
+	p.mu.Unlock()
+	return resp, nil
+}
+func (p *interactionProvider) Stream(ctx context.Context, req *llm.LLMRequest, ch chan<- types.ThoughtChunk) (*llm.LLMResponse, error) {
+	return p.Complete(ctx, req)
+}
+func (p *interactionProvider) decision() llm.ApprovalDecision {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.last
+}
+
+func interactionRouter(t *testing.T, stage string, ask llm.ApprovalRequest) (*Router, *interactionProvider) {
+	r, _ := worktreeRouter(t)
+	agent := &interactionProvider{ask: ask}
+	for _, p := range []string{"claude", "antigravity", "openai", "opencode"} {
+		r.clientFactory.OverrideProvider(p, agent)
+	}
+	r.mu.Lock()
+	r.tasks["TASK-P"] = &types.Task{ID: "TASK-P", Title: "Fix CI", CurrentStageID: stage, State: types.TaskStatePending,
+		AssignedRepos: []string{"app"}, Metadata: map[string]string{}}
+	r.mu.Unlock()
+	return r, agent
+}
+
+func lastApproval(r *Router, taskID string) *types.ConsoleApproval {
+	r.console.mu.Lock()
+	defer r.console.mu.Unlock()
+	entries := r.console.get(taskID).entries
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Approval != nil {
+			a := *entries[i].Approval
+			return &a
+		}
+	}
+	return nil
+}
+
+func waitChatIdle(t *testing.T, r *Router, taskID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		r.console.mu.Lock()
+		busy := r.console.get(taskID).busy
+		r.console.mu.Unlock()
+		if !busy {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("chat turn never finished")
+}
+
+// The incident: console chat ran read-only with nobody to ask, so pushes and fixes were silently
+// refused. Chat turns must reach the operator.
+func TestChatTurnsAskTheOperatorInsteadOfSilentlyRefusing(t *testing.T) {
+	r, agent := interactionRouter(t, "signoff_merge", llm.ApprovalRequest{ToolName: "Bash", ToolUseID: "t1",
+		Input: map[string]interface{}{"command": "git push origin fix-ci"}})
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-P/chat", `{"message":"fix the pipelines and push"}`); w.Code != http.StatusAccepted {
+		t.Fatalf("chat → %d %s", w.Code, w.Body.String())
+	}
+	id := awaitApproval(t, r, "TASK-P")
+	do(r, http.MethodPost, "/api/v1/tasks/TASK-P/approvals/"+id, `{"decision":"allow"}`)
+	waitChatIdle(t, r, "TASK-P")
+	if !agent.decision().Allow {
+		t.Fatal("the approved push must be allowed")
+	}
+	req := agent.reqs[0]
+	if req.PermissionMode != "acceptEdits" || !r.isTaskWorktree("TASK-P", req.WorkDir) {
+		t.Fatalf("chat in the task worktree should edit freely and ask for the rest: mode=%q dir=%q", req.PermissionMode, req.WorkDir)
+	}
+	if !strings.Contains(req.Messages[0].Content, "make the call directly") {
+		t.Fatalf("the agent must be told how permissions work:\n%s", req.Messages[0].Content)
+	}
+}
+
+func TestApprovingAPlanLetsTheAgentAct(t *testing.T) {
+	r, agent := interactionRouter(t, "techdoc_rfc", llm.ApprovalRequest{ToolName: llm.ToolExitPlanMode, ToolUseID: "t1",
+		Input: map[string]interface{}{"plan": "1. Fix the lint error\n2. Push"}})
+	go r.executeTaskWithAI("TASK-P")
+	id := awaitApproval(t, r, "TASK-P")
+	a := lastApproval(r, "TASK-P")
+	if a.Kind != types.ApprovalKindPlan || a.Summary != "1. Fix the lint error\n2. Push" || a.Mode != "acceptEdits" || a.RuleLabel != "" {
+		t.Fatalf("plan request should show the plan and what approving grants: %+v", a)
+	}
+	do(r, http.MethodPost, "/api/v1/tasks/TASK-P/approvals/"+id, `{"decision":"allow"}`)
+	waitState(t, r, "TASK-P", types.TaskStateWaitingGateApproval)
+	if d := agent.decision(); !d.Allow || d.Mode != "acceptEdits" {
+		t.Fatalf("approving the plan should switch the agent to acceptEdits: %+v", d)
+	}
+
+	// Rejecting keeps it planning, with the operator's note.
+	r.mu.Lock()
+	r.tasks["TASK-P"].State = types.TaskStatePending
+	r.mu.Unlock()
+	go r.executeTaskWithAI("TASK-P")
+	id = awaitApproval(t, r, "TASK-P")
+	do(r, http.MethodPost, "/api/v1/tasks/TASK-P/approvals/"+id, `{"decision":"deny","message":"cover the retry path too"}`)
+	waitState(t, r, "TASK-P", types.TaskStateWaitingGateApproval)
+	if d := agent.decision(); d.Allow || !strings.Contains(d.Message, "plan mode") || !strings.Contains(d.Message, "retry path") {
+		t.Fatalf("rejecting the plan should keep the agent planning: %+v", d)
+	}
+}
+
+func TestAgentQuestionsNeedTheOperatorsAnswer(t *testing.T) {
+	r, agent := interactionRouter(t, "prd_discovery", llm.ApprovalRequest{ToolName: llm.ToolAskUserQuestion, ToolUseID: "t1",
+		Input: map[string]interface{}{"questions": []interface{}{map[string]interface{}{"question": "Which branch?", "header": "Branch",
+			"options": []interface{}{map[string]interface{}{"label": "main"}, map[string]interface{}{"label": "release"}}}}}})
+	r.setAllowAll("TASK-P", true) // allow-all cannot answer a question
+	go r.executeTaskWithAI("TASK-P")
+	id := awaitApproval(t, r, "TASK-P")
+	a := lastApproval(r, "TASK-P")
+	if a.Kind != types.ApprovalKindQuestion || len(a.Questions) != 1 || len(a.Questions[0].Options) != 2 {
+		t.Fatalf("question request should carry its questions: %+v", a)
+	}
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-P/approvals/"+id, `{"decision":"allow"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("allowing without answers must be rejected, got %d", w.Code)
+	}
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-P/approvals/"+id, `{"decision":"allow","answers":{"Which branch?":"release"}}`); w.Code != http.StatusOK {
+		t.Fatalf("answer → %d %s", w.Code, w.Body.String())
+	}
+	waitState(t, r, "TASK-P", types.TaskStateWaitingGateApproval)
+	d := agent.decision()
+	answers, _ := d.UpdatedInput["answers"].(map[string]string)
+	if !d.Allow || answers["Which branch?"] != "release" || d.UpdatedInput["questions"] == nil {
+		t.Fatalf("the answer must reach the agent in the tool input: %+v", d)
+	}
+	if got := lastApproval(r, "TASK-P").Answers["Which branch?"]; got != "release" {
+		t.Fatalf("the console should record the answer, got %q", got)
+	}
+}
+
+func TestDenialSummaryNamesWhatWasBlocked(t *testing.T) {
+	if denialSummary(nil) != "" {
+		t.Fatal("no denials, no note")
+	}
+	s := denialSummary([]llm.PermissionDenial{{ToolName: "Bash", Input: map[string]interface{}{"command": "git push"}},
+		{ToolName: llm.ToolExitPlanMode}})
+	if !strings.Contains(s, "2 action(s)") || !strings.Contains(s, "Bash `git push`") || !strings.Contains(s, "plan not approved") {
+		t.Fatalf("summary = %q", s)
+	}
+}

@@ -142,7 +142,7 @@ func (r *Router) claimStage(taskID, trigger, feedback string) (*stageRun, error)
 	}
 
 	turnID := r.console.nextID("turn")
-	ctx, cancel := context.WithTimeout(context.Background(), stageTurnTimeout(task.CurrentStageID))
+	ctx, cancel := context.WithTimeout(context.Background(), stageTurnTimeout)
 	if err := r.beginTurn(taskID, turnID, cancel); err != nil {
 		r.mu.Unlock()
 		cancel()
@@ -164,14 +164,9 @@ func (r *Router) claimStage(taskID, trigger, feedback string) (*stageRun, error)
 	return &stageRun{task: snap, turnID: turnID, ctx: ctx, cancel: cancel, trigger: trigger, feedback: feedback, lastErr: lastErr}, nil
 }
 
-// stageTurnTimeout bounds one stage turn. Code stages edit files and wait on operator approvals
-// (each up to approvalTimeout), so they get the same hour the CLI driver allows interactive turns.
-func stageTurnTimeout(stage string) time.Duration {
-	if codeStages[stage] {
-		return time.Hour
-	}
-	return 15 * time.Minute
-}
+// stageTurnTimeout bounds one stage turn. Every stage can wait on operator approvals (each up to
+// approvalTimeout), so all get the same hour the CLI driver allows interactive turns.
+const stageTurnTimeout = time.Hour
 
 // startStage claims the task's current stage and executes it in the background.
 func (r *Router) startStage(taskID, trigger, feedback string) error {
@@ -277,21 +272,23 @@ func (r *Router) executeStage(run *stageRun) {
 	r.mu.Lock()
 	r.getOrCreateTaskProcessLocked(taskID).WorkingDir = workDir
 	r.mu.Unlock()
-	// Edits are allowed only for code stages running inside the task's own worktree — never in an
-	// operator's checkout or the orchestrator itself.
-	permission := ""
-	var approver llm.Approver
-	if codeStages[task.CurrentStageID] && r.isTaskWorktree(task.ID, workDir) {
-		permission = "acceptEdits"
-		approver = r.approverFor(taskID, run.turnID)
+	// Code stages edit freely only inside the task's own worktree. Every other run starts read-only
+	// (plan mode); if the agent needs to act it asks through its plan, and once the operator
+	// approves, gated actions still ask — so nothing is ever silently refused.
+	permission := modePlan
+	planExit := r.editMode(taskID, workDir)
+	if codeStages[task.CurrentStageID] && planExit == modeAcceptEdits {
+		permission = modeAcceptEdits
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
 			"The agent may edit files in the task worktree (%s); commands and other actions ask for your approval here. Review edits in the Changes tab.", workDir)})
 	} else if codeStages[task.CurrentStageID] {
-		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: "No task worktree is available, so the agent runs read-only and will describe the changes instead of making them."})
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: "No task worktree is available, so the agent starts read-only and describes the changes. " +
+			"If it asks to make them, approving its plan lets it act here, with every change still asking you first."})
 	}
+	msgs[0].Content += "\n" + permissionBrief(permission)
 	resp, used, execErr := r.runAgentTurn(run.ctx, agentTurn{Source: "execute", TurnID: run.turnID, Task: task, Decision: decision,
 		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, AddDirs: skillDirs(skills), MaxTokens: 8192,
-		PermissionMode: permission, Approver: approver})
+		PermissionMode: permission, Approver: r.approverFor(taskID, run.turnID, planExit)})
 	r.endTurn(taskID, run.turnID, resp, used)
 	if resp != nil && len(skills) > 0 {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: skillUsageReport(skills, resp.ToolCalls)})

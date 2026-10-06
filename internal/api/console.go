@@ -20,9 +20,9 @@ import (
 
 const (
 	maxConsoleEntries   = 1000
-	maxRecordedChars    = 8000 // per request message recorded in the transcript
-	maxHistoryTurns     = 20   // conversation turns replayed to stateless providers
-	chatTurnTimeout     = 10 * time.Minute
+	maxRecordedChars    = 8000      // per request message recorded in the transcript
+	maxHistoryTurns     = 20        // conversation turns replayed to stateless providers
+	chatTurnTimeout     = time.Hour // leaves room for the operator to answer approval prompts
 	defaultChatMaxToken = 4096
 )
 
@@ -313,6 +313,9 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 		return nil, used, err
 	}
 	closeStreams(types.ConsoleDone)
+	if note := denialSummary(resp.PermissionDenials); note != "" {
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: t.TurnID, Content: note})
+	}
 
 	cost := resp.TokenUsage.EstimatedCostUSD
 	if r.telemetry != nil {
@@ -557,13 +560,17 @@ func (r *Router) startChatTurn(task *types.Task, message, model string) (string,
 		decision.Reasoning = "operator-selected model"
 	}
 
-	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method)}}, history...)
-	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: message})
-
 	go func() {
 		defer cancel()
+		// The operator is at the console, so the agent may act; anything gated asks them first.
+		workDir := r.resolveWorkDir(task)
+		mode := r.editMode(task.ID, workDir)
+		system := taskSystemPrompt(task, decision.Method) + "\n" + permissionBrief(mode)
+		msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: system}}, history...)
+		msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: message})
 		resp, used, _ := r.runAgentTurn(ctx, agentTurn{Source: "chat", TurnID: turnID, Task: task, Decision: decision,
-			TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: r.resolveWorkDir(task), MaxTokens: defaultChatMaxToken})
+			TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, MaxTokens: defaultChatMaxToken,
+			PermissionMode: mode, Approver: r.approverFor(task.ID, turnID, mode)})
 		r.endTurn(task.ID, turnID, resp, used)
 	}()
 	return turnID, user.ID, nil

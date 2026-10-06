@@ -188,6 +188,8 @@ type cliStreamLine struct {
 	IsError   bool            `json:"is_error"`
 	TotalCost float64         `json:"total_cost_usd"`
 	Usage     *anthropicUsage `json:"usage"`
+	// PermissionDenials (result line) are the tool calls the CLI refused during the turn.
+	PermissionDenials []PermissionDenial `json:"permission_denials"`
 }
 
 type anthropicUsage struct {
@@ -416,6 +418,7 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 				resp.TokenUsage = line.Usage.tokenUsage()
 			}
 			resp.TokenUsage.EstimatedCostUSD = line.TotalCost
+			resp.PermissionDenials = line.PermissionDenials
 			if line.IsError || (line.Subtype != "" && line.Subtype != "success") {
 				resp.FinishReason = "error"
 				if line.Result != "" {
@@ -764,10 +767,21 @@ func (h *cliHost) answer(ctx context.Context, raw []byte, approve Approver) {
 	decision := map[string]interface{}{"behavior": "deny", "message": d.Message}
 	if d.Allow {
 		input := msg.Request.Input
+		if d.UpdatedInput != nil {
+			input = d.UpdatedInput
+		}
 		if input == nil {
 			input = map[string]interface{}{}
 		}
 		decision = map[string]interface{}{"behavior": "allow", "updatedInput": input}
+		if msg.Request.ToolName == ToolExitPlanMode {
+			// Approving the plan alone keeps the CLI in plan mode, where it still refuses every edit.
+			mode := d.Mode
+			if mode == "" {
+				mode = "default"
+			}
+			decision["updatedPermissions"] = []map[string]interface{}{{"type": "setMode", "mode": mode, "destination": "session"}}
+		}
 	} else if d.Message == "" {
 		decision["message"] = "The operator denied this action."
 	}

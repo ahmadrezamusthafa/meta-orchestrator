@@ -1102,8 +1102,17 @@ export interface ConsoleStateInfo {
   stage?: string
 }
 
+export interface ConsoleQuestionInfo {
+  question: string
+  header?: string
+  options?: Array<{ label: string; description?: string }>
+  multi_select?: boolean
+}
+
 export interface ConsoleApprovalInfo {
   id: string
+  /** tool: a gated tool call · plan: approve the plan and leave plan mode · question: answer the agent */
+  kind?: 'tool' | 'plan' | 'question'
   tool_name: string
   summary: string
   rule_label?: string
@@ -1112,6 +1121,11 @@ export interface ConsoleApprovalInfo {
   message?: string
   expires_at: string
   decided_at?: string
+  /** plan kind: permission mode the agent gets once the plan is approved */
+  mode?: string
+  questions?: ConsoleQuestionInfo[]
+  /** question kind: question → chosen answer */
+  answers?: Record<string, string>
 }
 
 export interface ConsoleEntry {

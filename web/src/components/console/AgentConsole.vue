@@ -268,10 +268,29 @@ const wsLabel = computed(() => {
   return 'offline'
 })
 
+// Requests the paused agent is waiting on. The decision lives in the transcript, which may be
+// scrolled away, so the input region always points at the oldest one.
+const pendingApprovals = computed(() => c.entries.value.filter(e => e.kind === 'approval' && e.approval?.decision === 'pending'))
+const PENDING_LABEL = { tool: 'permission to continue', plan: 'approval of its plan', question: 'an answer to its question' }
+const pendingLabel = computed(() => {
+  const n = pendingApprovals.value.length
+  if (n > 1) return `${n} decisions`
+  return PENDING_LABEL[pendingApprovals.value[0]?.approval?.kind || 'tool']
+})
+
+function jumpToPending() {
+  const id = pendingApprovals.value[0]?.approval?.id
+  const el = id ? scroller.value?.querySelector<HTMLElement>(`[data-approval-id="${CSS.escape(id)}"]`) : null
+  el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  el?.querySelector<HTMLElement>('button:not([disabled]), input')?.focus({ preventScroll: true })
+}
+
 const promptPlaceholder = computed(() =>
   gateFeedbackMode.value
     ? 'Tell the agent what to do differently (enter to submit · esc to go back)'
-    : 'Ask the agent about this task…',
+    : pendingApprovals.value.length
+      ? 'The agent is paused — decide on its request above to let it continue'
+      : 'Ask the agent about this task…',
 )
 </script>
 
@@ -376,6 +395,17 @@ const promptPlaceholder = computed(() =>
           @pause="pauseTask"
           @reset="resetTask"
         />
+
+        <button
+          v-if="pendingApprovals.length"
+          type="button"
+          class="flex w-full items-center gap-2 rounded-md border border-amber-600/70 bg-amber-950/30 px-3 py-1.5 text-left font-mono text-xs text-amber-200 hover:bg-amber-950/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-400"
+          @click="jumpToPending"
+        >
+          <ShieldAlert class="h-3.5 w-3.5 flex-shrink-0 text-amber-400" />
+          <span>The agent is paused, waiting for {{ pendingLabel }}.</span>
+          <span class="ml-auto text-amber-300/80 underline">Review ↑</span>
+        </button>
 
         <GateSelector
           v-if="showGate"

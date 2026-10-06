@@ -64,10 +64,29 @@ type ApprovalRequest struct {
 	BlockedPath string
 }
 
+// Tools whose permission prompt is an operator interaction rather than a gated action.
+const (
+	// ToolExitPlanMode asks the operator to approve the agent's plan and leave read-only plan mode.
+	ToolExitPlanMode = "ExitPlanMode"
+	// ToolAskUserQuestion asks the operator multiple-choice questions; the answers go back in its input.
+	ToolAskUserQuestion = "AskUserQuestion"
+)
+
 // ApprovalDecision answers an ApprovalRequest. Message is shown to the agent when denied.
 type ApprovalDecision struct {
 	Allow   bool
 	Message string
+	// Mode is the permission mode the agent switches to when an allowed ExitPlanMode leaves plan
+	// mode; empty means "default" (every gated action still asks).
+	Mode string
+	// UpdatedInput replaces the tool input when allowed (AskUserQuestion answers); nil keeps it.
+	UpdatedInput map[string]interface{}
+}
+
+// PermissionDenial is a tool call the agent could not make because permission was refused.
+type PermissionDenial struct {
+	ToolName string                 `json:"tool_name"`
+	Input    map[string]interface{} `json:"tool_input,omitempty"`
 }
 
 // Approver blocks until the request is decided or ctx ends.
@@ -83,6 +102,8 @@ type LLMResponse struct {
 	Model        string           `json:"model"`
 	SessionID    string           `json:"session_id,omitempty"`
 	DurationMS   int64            `json:"duration_ms,omitempty"`
+	// PermissionDenials lists the tool calls of the turn that were refused permission.
+	PermissionDenials []PermissionDenial `json:"permission_denials,omitempty"`
 }
 
 // ProviderClient specifies the standard driver contract for all AI providers.
