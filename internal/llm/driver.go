@@ -67,6 +67,8 @@ type LLMRequest struct {
 var (
 	ErrAgentIdle     = errors.New("the agent produced no output")
 	ErrTurnTimeLimit = errors.New("the turn hit its time limit")
+	// ErrPromptBlocked: a local Claude Code hook (e.g. UserPromptSubmit) refused the prompt.
+	ErrPromptBlocked = errors.New("a Claude Code hook blocked the prompt before it reached the model")
 )
 
 // ApprovalRequest is an agent's request to use a tool that needs operator permission.
