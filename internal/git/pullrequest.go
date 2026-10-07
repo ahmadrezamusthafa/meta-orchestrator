@@ -88,6 +88,7 @@ func CommitAll(ctx context.Context, dir, pathspec, message string) (bool, error)
 	if pathspec != "" && pathspec != "." {
 		scope = []string{"--", pathspec}
 	}
+	_ = ExcludeDependencyDirs(ctx, dir) // never sweep installed dependencies into the commit
 	if _, err := run(ctx, dir, append([]string{"add", "-A"}, scope...)...); err != nil {
 		return false, err
 	}

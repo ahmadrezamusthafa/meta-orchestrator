@@ -127,6 +127,7 @@ func (r *Router) ensureTaskWorktrees(ctx context.Context, taskID string) []taskW
 			}
 		}
 		wt.Exists, wt.Error = true, ""
+		_ = gitwt.ExcludeDependencyDirs(ctx, wt.Checkout) // keeps `git add -A` by the agent off installed dependencies
 		bases[wt.Repo] = wt.BaseRef
 	}
 

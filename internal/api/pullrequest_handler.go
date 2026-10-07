@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -128,6 +129,11 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 			d.Blocker = "no worktree yet — run the task first"
 		case d.TargetBranch == "" || d.TargetBranch == "HEAD":
 			d.Blocker = "the worktree has no base branch to target"
+		}
+		if d.Blocker == "" && wt.Exists && wt.Error == "" {
+			if deps, err := gitwt.AddedDependencyFiles(ctx, wt.Checkout, wt.BaseRef); err == nil && len(deps) > 0 {
+				d.Blocker = dependencyBlocker(deps)
+			}
 		}
 		if d.Blocker == "" && wt.Exists && wt.Error == "" {
 			// Committing "pending edits" with `git add -A` would mark a half-merged file resolved,
@@ -290,6 +296,7 @@ func (r *Router) handleTaskPullRequest(w http.ResponseWriter, req *http.Request,
 		ctx, cancel := context.WithTimeout(req.Context(), time.Minute)
 		defer cancel()
 		r.writeJSON(w, http.StatusOK, map[string]interface{}{"task_id": t.ID, "stage_ready": prAllowed(t), "drafts": r.buildPRDrafts(ctx, t)})
+		go r.notePRSync(t.ID, "") // the worktree may have changed outside an agent turn; keep the tab badge current
 	case http.MethodPost:
 		var body PullRequestRequest
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -412,6 +419,18 @@ var unsafeFileChars = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
 func safeFileName(s string) string {
 	return strings.Trim(unsafeFileChars.ReplaceAllString(s, "-"), "-.")
+}
+
+// dependencyBlocker explains why a branch that commits installed dependencies cannot be pushed.
+func dependencyBlocker(deps map[string]int) string {
+	var dirs []string
+	for d, n := range deps {
+		dirs = append(dirs, fmt.Sprintf("%s (%d files)", d, n))
+	}
+	sort.Strings(dirs)
+	return "the branch commits installed dependencies: " + strings.Join(limit(dirs, 5), ", ") + ". They are local tool " +
+		"output, not part of the change — ask the agent to take them out of the branch's commits (keep the files on disk), " +
+		"then open the pull request"
 }
 
 // conflictBlocker explains why a pull request cannot be opened while a conflict is unfinished.

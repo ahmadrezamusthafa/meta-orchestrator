@@ -163,12 +163,134 @@ func Conflicts(ctx context.Context, dir, baseRef string) (ConflictState, error) 
 	}
 	// --check exits non-zero when it finds problems, so its output matters, not its error.
 	out, _ = run(ctx, dir, "diff", "--check", baseRef)
-	for _, line := range strings.Split(out, "\n") {
-		if i := strings.Index(line, ": leftover conflict marker"); i > 0 {
-			c.Markers = append(c.Markers, line[:i])
+	c.Markers = conflictHunks(dir, out)
+	return c, nil
+}
+
+// conflictHunks keeps the "path:line" markers `git diff --check` reported in files that hold a
+// real conflict hunk: an opening <<<<<<< and a closing >>>>>>>. git also flags a lone ======= line,
+// which in Markdown is a heading underline (gem and package docs are full of them), and a file
+// with only those is not conflicted.
+func conflictHunks(dir, checkOutput string) []string {
+	byFile := map[string][]string{}
+	var order []string
+	for _, line := range strings.Split(checkOutput, "\n") {
+		i := strings.Index(line, ": leftover conflict marker")
+		if i <= 0 {
+			continue
+		}
+		loc := line[:i]
+		j := strings.LastIndex(loc, ":")
+		if j <= 0 {
+			continue
+		}
+		path := loc[:j]
+		if _, seen := byFile[path]; !seen {
+			order = append(order, path)
+		}
+		byFile[path] = append(byFile[path], loc)
+	}
+	var markers []string
+	for _, path := range order {
+		raw, err := os.ReadFile(filepath.Join(dir, path))
+		if err != nil {
+			markers = append(markers, byFile[path]...) // cannot tell; keep what git reported
+			continue
+		}
+		lines := strings.Split(string(raw), "\n")
+		var open, closed bool
+		for _, loc := range byFile[path] {
+			n, err := strconv.Atoi(loc[strings.LastIndex(loc, ":")+1:])
+			if err != nil || n < 1 || n > len(lines) {
+				continue
+			}
+			open = open || strings.HasPrefix(lines[n-1], "<<<<<<<")
+			closed = closed || strings.HasPrefix(lines[n-1], ">>>>>>>")
+		}
+		if open && closed {
+			markers = append(markers, byFile[path]...)
 		}
 	}
-	return c, nil
+	return markers
+}
+
+// dependencyDirs are installed dependencies and build caches that agents create by running a
+// project's tooling (bundle install --path, npm install, test coverage, …). They never belong in a
+// task's commits.
+var dependencyDirs = []string{"**/vendor/bundle/", "node_modules/", ".bundle/", ".venv/", "__pycache__/",
+	".pytest_cache/", ".gradle/", "**/coverage/"}
+
+// ExcludeDependencyDirs adds dependencyDirs to the repository's local exclude file
+// (.git/info/exclude), so `git add -A` — by the agent or when a pull request is opened — leaves
+// them out. It only affects untracked files and is never committed.
+func ExcludeDependencyDirs(ctx context.Context, dir string) error {
+	out, err := run(ctx, dir, "rev-parse", "--git-path", "info/exclude")
+	if err != nil {
+		return err
+	}
+	path := strings.TrimSpace(out)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	existing, _ := os.ReadFile(path)
+	have := map[string]bool{}
+	for _, l := range strings.Split(string(existing), "\n") {
+		have[strings.TrimSpace(l)] = true
+	}
+	var add []string
+	for _, p := range dependencyDirs {
+		if !have[p] {
+			add = append(add, p)
+		}
+	}
+	if len(add) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	prefix := ""
+	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+		prefix = "\n"
+	}
+	_, err = f.WriteString(prefix + "# installed dependencies and caches (meta-orchestrator)\n" + strings.Join(add, "\n") + "\n")
+	return err
+}
+
+// AddedDependencyFiles counts files under dependencyDirs that the branch adds against baseRef,
+// grouped by directory (e.g. "vendor/bundle" → 15748).
+func AddedDependencyFiles(ctx context.Context, dir, baseRef string) (map[string]int, error) {
+	out, err := run(ctx, dir, "diff", "--name-only", "--diff-filter=A", baseRef+"...HEAD")
+	if err != nil {
+		return nil, err
+	}
+	found := map[string]int{}
+	for _, p := range strings.Split(strings.TrimSpace(out), "\n") {
+		if d := dependencyDir(p); d != "" {
+			found[d]++
+		}
+	}
+	return found, nil
+}
+
+// dependencyDir returns the dependency directory a path lies in ("" when none).
+func dependencyDir(path string) string {
+	parts := strings.Split(path, "/")
+	for i, part := range parts {
+		switch {
+		case part == "vendor" && i+1 < len(parts) && parts[i+1] == "bundle":
+			return strings.Join(parts[:i+2], "/")
+		case part == "node_modules" || part == ".bundle" || part == ".venv" || part == "__pycache__" ||
+			part == ".pytest_cache" || part == ".gradle":
+			return strings.Join(parts[:i+1], "/")
+		}
+	}
+	return ""
 }
 
 // RemoveWorktreeIfClean detaches a worktree that holds no uncommitted work. The branch (and its
