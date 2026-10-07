@@ -167,6 +167,34 @@ func TestRejectNeedsFeedbackAndRerunsWithIt(t *testing.T) {
 	}
 }
 
+// Rejecting output from a session that ran this stage sends only the feedback: the session already
+// holds the brief, and re-sending the task description can trip local prompt hooks (PII filters).
+func TestRejectInSameSessionSendsOnlyFeedback(t *testing.T) {
+	stub := &streamingStub{}
+	r := consoleRouter(t, stub)
+	r.mu.Lock()
+	r.tasks["TASK-C1"].Description = "rotate the key of svc@example.iam"
+	r.tasks["TASK-C1"].State = types.TaskStateWaitingGateApproval
+	r.mu.Unlock()
+	r.console.mu.Lock()
+	c := r.console.get("TASK-C1")
+	c.sessionID, c.sessionStage = "sess-live", "task_implementation"
+	r.console.mu.Unlock()
+
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-C1/gate", `{"approved":false,"feedback":"static analysis fails on pronto"}`); w.Code != http.StatusOK {
+		t.Fatalf("reject → %d %s", w.Code, w.Body.String())
+	}
+	waitState(t, r, "TASK-C1", types.TaskStateWaitingGateApproval)
+	stub.mu.Lock()
+	last := stub.reqs[len(stub.reqs)-1]
+	stub.mu.Unlock()
+	prompt := last.Messages[len(last.Messages)-1].Content
+	if last.SessionID != "sess-live" || !strings.Contains(prompt, "static analysis fails on pronto") ||
+		strings.Contains(prompt, "svc@example.iam") || strings.Contains(prompt, "Implement the change") {
+		t.Fatalf("reject should continue the session with the feedback only: session %q prompt %q", last.SessionID, prompt)
+	}
+}
+
 func TestFinalApprovalCompletesAndStartsDependents(t *testing.T) {
 	r := hermeticRouter(t)
 	r.mu.Lock()

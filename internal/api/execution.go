@@ -282,7 +282,8 @@ func (r *Router) executeStage(run *stageRun) {
 
 	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method)}}, history...)
 	message := run.trigger == "message"
-	continuing := (run.trigger == "resume" || message) && canContinue
+	rejected := run.trigger == "gate_rejected"
+	continuing := (run.trigger == "resume" || message || rejected) && canContinue
 	feedback := run.feedback
 	if message {
 		feedback = "" // the operator's message is not rejection feedback
@@ -297,6 +298,12 @@ func (r *Router) executeStage(run *stageRun) {
 		if !canContinue && task.CurrentStageID == "uat_verification" {
 			prompt += "\n\n" + r.uatStageContext(task)
 		}
+	} else if rejected && canContinue {
+		// The session already holds this stage's brief and its previous output: send only the
+		// feedback, not the whole brief (and task description) again.
+		prompt = rejectionPrompt(task, feedback)
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+			"Continuing session %s on %s with your feedback.", shortID(sessionID), task.CurrentStageID)})
 	} else if run.trigger == "resume" && canContinue {
 		// Continue the interrupted conversation instead of restarting the stage from its brief.
 		prompt = continuePrompt(task, run.lastErr)
@@ -420,6 +427,14 @@ func continuePrompt(t *types.Task, lastErr string) string {
 	}
 	b.WriteString("\n\nEnd with a short \"Summary\" section covering the whole stage, which the operator can review before approving it.")
 	return b.String()
+}
+
+// rejectionPrompt re-runs a stage in the session that produced the rejected output, so the agent
+// already knows the stage brief and only needs the operator's feedback.
+func rejectionPrompt(t *types.Task, feedback string) string {
+	return fmt.Sprintf("The operator rejected your output for %s with this feedback — address it, continuing from where "+
+		"you are (check the working directory; do not redo finished work):\n%s\n\nEnd with a short \"Summary\" section "+
+		"covering the whole stage, which the operator can review before approving it.", stageLabel(t.CurrentStageID), feedback)
 }
 
 // messagePrompt is the stage turn for an operator message typed while the stage was idle. A

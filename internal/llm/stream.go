@@ -211,6 +211,10 @@ type cliStreamLine struct {
 	PermissionDenials []PermissionDenial `json:"permission_denials"`
 	// Tasks (background_tasks_changed) are the background tasks still running.
 	Tasks []json.RawMessage `json:"tasks"`
+	// Content and PreventContinuation (system "informational") report a hook that stopped the turn,
+	// e.g. a UserPromptSubmit hook refusing the prompt before it reaches the model.
+	Content             string `json:"content"`
+	PreventContinuation bool   `json:"prevent_continuation"`
 }
 
 type anthropicUsage struct {
@@ -401,6 +405,7 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	}
 	var usage anthropicUsage
 	var cost float64
+	var blocked string // why a hook stopped the turn before the model ran
 
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
@@ -436,6 +441,10 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 				background = len(line.Tasks)
 				if background == 0 && awaitingTurn && host != nil {
 					closeAfter(backgroundIdleGrace) // waits for the follow-up turn with their outcome
+				}
+			case "informational":
+				if line.PreventContinuation {
+					blocked = hookBlockReason(line.Content)
 				}
 			}
 		case "stream_event":
@@ -537,6 +546,13 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	if waitErr != nil && !gotResult {
 		return nil, fmt.Errorf("claude CLI: %v: %s", waitErr, strings.TrimSpace(stderr.String()))
 	}
+	if blocked != "" {
+		// The CLI reports a refused prompt as a successful result whose text is the refusal (with the
+		// prompt echoed back); it never reached the model, so the turn failed.
+		resp.FinishReason = "error"
+		resp.Content = blocked
+		return resp, fmt.Errorf("%w: %s", ErrPromptBlocked, blocked)
+	}
 	if resp.FinishReason == "error" {
 		return resp, fmt.Errorf("claude CLI turn failed: %s", firstLine(resp.Content))
 	}
@@ -547,6 +563,19 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	}
 	resp.DurationMS = time.Since(start).Milliseconds()
 	return resp, nil
+}
+
+// hookBlockReason is the CLI's hook refusal without the echoed prompt, which may hold the very
+// data the hook objected to.
+func hookBlockReason(content string) string {
+	if i := strings.Index(content, "Original prompt:"); i >= 0 {
+		content = content[:i]
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "a Claude Code hook stopped the turn"
+	}
+	return content
 }
 
 func firstLine(s string) string {

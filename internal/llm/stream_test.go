@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -107,8 +108,27 @@ func TestClaudeCLIErrorResultFails(t *testing.T) {
 	_ = os.WriteFile(cli, []byte("#!/bin/sh\necho '{\"type\":\"result\",\"subtype\":\"error_max_turns\",\"is_error\":true,\"result\":\"Reached max turns\"}'\n"), 0o755)
 	d := NewAnthropicDriver("", "")
 	d.SetCLIPath(cli)
-	if _, err := d.StreamActivity(context.Background(), &LLMRequest{Messages: []Message{{Role: RoleUser, Content: "x"}}}, nil); err == nil ||
+	if _, err := d.StreamActivity(context.Background(), &LLMRequest{Messages: []Message{{Role: RoleUser, Content: "x"}}}, func(StreamEvent) {}); err == nil ||
 		!strings.Contains(err.Error(), "Reached max turns") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// A UserPromptSubmit hook that refuses the prompt comes back as a "successful" result whose text is
+// the refusal; the turn never reached the model, so it must fail — without echoing the prompt.
+func TestClaudeCLIHookBlockedPromptFails(t *testing.T) {
+	dir := t.TempDir()
+	cli := filepath.Join(dir, "claude")
+	lines := []string{
+		`{"type":"system","subtype":"init","session_id":"s1","model":"claude-sonnet-x"}`,
+		`{"type":"system","subtype":"informational","content":"UserPromptSubmit operation blocked by hook:\nPII Shield blocked this prompt\n\nOriginal prompt: mail svc@example.iam","level":"warning","prevent_continuation":true}`,
+		`{"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":"UserPromptSubmit operation blocked by hook:\nPII Shield blocked this prompt\n\nOriginal prompt: mail svc@example.iam","session_id":"s1","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0}}`,
+	}
+	_ = os.WriteFile(cli, []byte("#!/bin/sh\ncat <<'EOF'\n"+strings.Join(lines, "\n")+"\nEOF\n"), 0o755)
+	d := NewAnthropicDriver("", "")
+	d.SetCLIPath(cli)
+	_, err := d.StreamActivity(context.Background(), &LLMRequest{Messages: []Message{{Role: RoleUser, Content: "x"}}}, func(StreamEvent) {})
+	if !errors.Is(err, ErrPromptBlocked) || !strings.Contains(err.Error(), "PII Shield") || strings.Contains(err.Error(), "svc@example.iam") {
 		t.Fatalf("err = %v", err)
 	}
 }
