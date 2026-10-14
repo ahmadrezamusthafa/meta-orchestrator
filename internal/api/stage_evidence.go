@@ -148,6 +148,10 @@ func (r *Router) evidenceBrief(task *types.Task, p *evidencePrep) string {
 		"It may hold evidence from an earlier run: re-record every case and delete files that no longer apply.\n", p.Dir)
 	b.WriteString("- Run the complete test suites of every repository you changed, for real. Fix what your change broke and re-run until they pass; " +
 		"a failure that also happens without your change is pre-existing — keep it and say so. Never report a result you did not run.\n")
+	b.WriteString("- Make it reviewable step by step by someone who did not write the change: per case the starting state (Given), " +
+		"each action with a caption, a check after every action that proves its result, and the proof pointed out. " +
+		"A change with any UI gets a walkthrough of the screen it changes in the app running locally; a backend change gets calls to its API " +
+		"running locally. Cover the negative and edge cases the acceptance criteria name.\n")
 	if doc, err := r.resolveArtifactPath(task.ID, stageDocName("atdd_creation")); err == nil {
 		if _, err := os.Stat(doc); err == nil {
 			fmt.Fprintf(&b, "- Record one case per acceptance test case in %s (its atdd-cases block), using the case id as the evidence case id, plus one case per full suite run.\n", doc)

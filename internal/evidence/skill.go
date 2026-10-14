@@ -21,8 +21,9 @@ var skillFS embed.FS
 const SkillName = "test-evidence-video"
 
 // SkillDescription is the one-line purpose of the built-in skill.
-const SkillDescription = "Built in: runs every affected test suite for real, then records one narrated video per test case " +
-	"(test commands with real output, browser walkthroughs of the running app) plus evidence.json."
+const SkillDescription = "Built in: runs every affected test suite for real, then records one narrated video per test case — " +
+	"test commands with real output and counts, API calls with their checks, browser walkthroughs of the running app with every " +
+	"action and check annotated — plus a screenshot per step and evidence.json."
 
 // RecorderScript is the recorder's path inside the installed skill directory.
 const RecorderScript = "scripts/record-evidence.mjs"
@@ -67,13 +68,39 @@ const ManifestFile = "evidence.json"
 type Part struct {
 	Action   string `json:"action"`
 	Caption  string `json:"caption,omitempty"`
-	Status   string `json:"status,omitempty"`
+	Note     string `json:"note,omitempty"`   // what the step proves
+	Status   string `json:"status,omitempty"` // passed, failed, skipped (not run after a failure), info (a note card)
+	Verified bool   `json:"verified,omitempty"`
 	Error    string `json:"error,omitempty"`
 	Command  string `json:"command,omitempty"`
 	ExitCode *int   `json:"exit_code,omitempty"`
 	Seconds  int    `json:"seconds,omitempty"`
+	Summary  string `json:"summary,omitempty"` // e.g. test counts, or the HTTP status of an API call
 	Log      string `json:"log,omitempty"`
 	URL      string `json:"url,omitempty"`
+	Method   string `json:"method,omitempty"`
+	// HTTPStatus is the response status of an API step.
+	HTTPStatus int `json:"http_status,omitempty"`
+	// At is when the step starts in the case's video, in seconds.
+	At *float64 `json:"at,omitempty"`
+	// Shot is the annotated screenshot of the step, relative to the evidence directory.
+	Shot string `json:"shot,omitempty"`
+}
+
+// Repo is a repository under test: the commit the evidence was recorded on.
+type Repo struct {
+	Name        string `json:"name"`
+	Branch      string `json:"branch,omitempty"`
+	Commit      string `json:"commit,omitempty"`
+	Uncommitted bool   `json:"uncommitted,omitempty"`
+}
+
+// Environment is what a case was recorded against.
+type Environment struct {
+	BaseURL  string `json:"base_url,omitempty"`
+	Browser  string `json:"browser,omitempty"`
+	Viewport string `json:"viewport,omitempty"`
+	Repos    []Repo `json:"repos,omitempty"`
 }
 
 // Case is one test case and its video.
@@ -81,6 +108,7 @@ type Case struct {
 	ID         string   `json:"id"`
 	Title      string   `json:"title,omitempty"`
 	Covers     []string `json:"covers,omitempty"`
+	Given      string   `json:"given,omitempty"`
 	Expected   string   `json:"expected,omitempty"`
 	Status     string   `json:"status"` // passed, failed, blocked
 	Video      string   `json:"video,omitempty"`
@@ -88,6 +116,12 @@ type Case struct {
 	Notes      string   `json:"notes,omitempty"`
 	Parts      []Part   `json:"parts,omitempty"`
 	RecordedAt string   `json:"recorded_at,omitempty"`
+	DurationS  int      `json:"duration_s,omitempty"`
+	// ResultAt is when the result card starts in the video, in seconds.
+	ResultAt    *float64     `json:"result_at,omitempty"`
+	Environment *Environment `json:"environment,omitempty"`
+	// Issues are the browser's console errors and failing requests during the case.
+	Issues []string `json:"issues,omitempty"`
 	// VideoMissing is set by Collect when the manifest names a video that is not in the directory.
 	VideoMissing bool `json:"video_missing,omitempty"`
 }
@@ -99,7 +133,10 @@ type Suite struct {
 	Status     string `json:"status"`
 	Passed     *int   `json:"passed,omitempty"` // nil when the run did not report counts
 	Failed     *int   `json:"failed,omitempty"`
+	Skipped    *int   `json:"skipped,omitempty"`
+	Seconds    int    `json:"seconds,omitempty"`
 	Log        string `json:"log,omitempty"`
+	Case       string `json:"case,omitempty"` // the case whose video shows this run
 }
 
 // Manifest is evidence.json: written by the recorder, or by the agent for a library skill.
@@ -183,13 +220,18 @@ func Collect(dir string) Report {
 		c := &m.Cases[i]
 		c.Video, c.Poster = cleanRel(c.Video), cleanRel(c.Poster)
 		c.VideoMissing = c.Video != "" && !present[c.Video]
+		for j := range c.Parts {
+			c.Parts[j].Shot, c.Parts[j].Log = cleanRel(c.Parts[j].Shot), cleanRel(c.Parts[j].Log)
+		}
 		if c.Status == "passed" {
 			rep.Passed++
 		} else {
 			rep.Failed++
 		}
 	}
-	for _, s := range m.Suites {
+	for i := range m.Suites {
+		s := &m.Suites[i]
+		s.Log = cleanRel(s.Log)
 		if s.Status != "passed" {
 			rep.Failed++
 		}

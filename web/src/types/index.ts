@@ -254,19 +254,36 @@ export interface UATGuideSettings {
 export interface EvidencePartDTO {
   action: string
   caption?: string
+  note?: string
+  // passed, failed, skipped (not run after a failure), info (a note card)
   status?: string
+  verified?: boolean
   error?: string
   command?: string
   exit_code?: number
   seconds?: number
+  summary?: string
   log?: string
   url?: string
+  method?: string
+  http_status?: number
+  // seconds into the case's video
+  at?: number
+  shot?: string
+}
+
+export interface EvidenceEnvironmentDTO {
+  base_url?: string
+  browser?: string
+  viewport?: string
+  repos?: { name: string; branch?: string; commit?: string; uncommitted?: boolean }[]
 }
 
 export interface EvidenceCaseDTO {
   id: string
   title?: string
   covers?: string[]
+  given?: string
   expected?: string
   status: string
   video?: string
@@ -274,6 +291,11 @@ export interface EvidenceCaseDTO {
   notes?: string
   parts?: EvidencePartDTO[]
   recorded_at?: string
+  duration_s?: number
+  result_at?: number
+  environment?: EvidenceEnvironmentDTO
+  // browser console errors and failing requests during the case
+  issues?: string[]
   video_missing?: boolean
 }
 
@@ -283,7 +305,11 @@ export interface EvidenceSuiteDTO {
   status: string
   passed?: number
   failed?: number
+  skipped?: number
+  seconds?: number
   log?: string
+  // the case whose video shows this run
+  case?: string
 }
 
 export interface TaskEvidenceDTO {

@@ -46,7 +46,8 @@ func TestCollectReadsVideosAndManifest(t *testing.T) {
 		t.Fatalf("videos without manifest = %+v", r)
 	}
 
-	write(ManifestFile, `{"cases":[{"id":"TC-1","status":"passed","video":"TC-1.mp4"},
+	write(ManifestFile, `{"cases":[{"id":"TC-1","status":"passed","video":"TC-1.mp4",
+			"parts":[{"action":"click","status":"passed","at":3.5,"shot":"shots/TC-1-01.png"},{"action":"run","shot":"/etc/x.png","log":"../x.log"}]},
 		{"id":"TC-2","status":"blocked","video":"../../etc/passwd"},{"id":"TC-4","status":"passed","video":"gone.mp4"}],
 		"suites":[{"repository":"api","status":"failed"}]}`)
 	r := Collect(dir)
@@ -55,6 +56,9 @@ func TestCollectReadsVideosAndManifest(t *testing.T) {
 	}
 	if r.Manifest.Cases[1].Video != "" {
 		t.Fatalf("a path outside the evidence dir must be dropped, got %q", r.Manifest.Cases[1].Video)
+	}
+	if p := r.Manifest.Cases[0].Parts; p[0].Shot != "shots/TC-1-01.png" || p[0].At == nil || *p[0].At != 3.5 || p[1].Shot != "" || p[1].Log != "" {
+		t.Fatalf("parts = %+v", p)
 	}
 	if !r.Manifest.Cases[2].VideoMissing || r.Manifest.Cases[0].VideoMissing {
 		t.Fatalf("video_missing = %+v", r.Manifest.Cases)
