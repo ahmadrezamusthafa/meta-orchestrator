@@ -120,6 +120,25 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// evidenceRunPrompt is the turn that records evidence for an implementation already in the
+// worktree (the operator pressed Record evidence): test and record, do not re-implement.
+func evidenceRunPrompt(t *types.Task, sameSession bool) string {
+	var b strings.Builder
+	if sameSession {
+		fmt.Fprintf(&b, "Continue in this conversation on %s: the implementation is done. ", stageLabel(t.CurrentStageID))
+	} else {
+		fmt.Fprintf(&b, "Stage: %s — the implementation of this task is already in the working directory.\n\nTask: %s\n", stageLabel(t.CurrentStageID), t.Title)
+		if t.Description != "" {
+			fmt.Fprintf(&b, "Description: %s\n", t.Description)
+		}
+		b.WriteString("\nRead the changes first (git diff against the base branch). ")
+	}
+	b.WriteString("Now test the change completely and record the test evidence as described below. Do not re-implement or refactor; " +
+		"change code only when a test exposes a bug in this change, and say so in the Summary.")
+	b.WriteString("\n\nEnd with the \"## Test evidence\" section and a short \"Summary\" the operator can review.")
+	return b.String()
+}
+
 // evidenceBrief is the stage-prompt section that asks for complete testing and video evidence.
 func (r *Router) evidenceBrief(task *types.Task, p *evidencePrep) string {
 	var b strings.Builder
@@ -219,11 +238,21 @@ func plural(n int) string {
 	return "s"
 }
 
-// handleTaskEvidence serves GET /api/v1/tasks/{id}/evidence: the evidence setting and what the
-// evidence directory holds. Files are fetched through /api/v1/artifacts/{id}/evidence/{path}.
+// handleTaskEvidence serves /api/v1/tasks/{id}/evidence. GET: the evidence setting and what the
+// evidence directory holds (files come from /api/v1/artifacts/{id}/evidence/{path}). POST: run an
+// evidence turn on the Implementation stage — test the change and record the videos.
 func (r *Router) handleTaskEvidence(w http.ResponseWriter, req *http.Request, task *types.Task) {
+	if req.Method == http.MethodPost {
+		if reason := evidenceBlocked(task); reason != "" {
+			r.writeJSON(w, http.StatusConflict, map[string]interface{}{"status": "not_started", "task_id": task.ID, "error": reason})
+			return
+		}
+		r.addEntry(task.ID, types.ConsoleEntry{Kind: types.ConsoleKindUser, Content: "Record test evidence for the implementation"})
+		r.respondStageStart(w, task.ID, r.startStage(task.ID, "evidence", ""))
+		return
+	}
 	if req.Method != http.MethodGet {
-		r.writeError(w, http.StatusMethodNotAllowed, "GET required for evidence")
+		r.writeError(w, http.StatusMethodNotAllowed, "GET or POST required for evidence")
 		return
 	}
 	enabled, skill := evidenceSetting(task, evidenceStage)
@@ -231,9 +260,27 @@ func (r *Router) handleTaskEvidence(w http.ResponseWriter, req *http.Request, ta
 		skill = evidence.SkillName
 	}
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"task_id": task.ID, "enabled": enabled, "skill": skill, "stage_id": evidenceStage,
+		"task_id": task.ID, "enabled": enabled, "skill": skill, "stage_id": evidenceStage, "record_blocked": evidenceBlocked(task),
 		"base_path": "evidence/", "report": evidence.Collect(r.evidenceDir(task.ID)),
 	})
+}
+
+// evidenceBlocked says why evidence cannot be recorded for the task right now, or "".
+func evidenceBlocked(t *types.Task) string {
+	switch {
+	case t.CurrentStageID != evidenceStage:
+		return fmt.Sprintf("test evidence is recorded on the Implementation stage; this task is on %s", t.CurrentStageID)
+	case t.State == types.TaskStateRunning:
+		return "the agent is already running this task — record evidence when the turn ends"
+	case t.State == types.TaskStateCompleted:
+		return "the task is completed"
+	case len(t.AssignedRepos) == 0:
+		return "assign the task's repositories first"
+	}
+	if on, _ := evidenceSetting(t, evidenceStage); !on {
+		return "test evidence is off for this task — turn it on under Evidence settings"
+	}
+	return ""
 }
 
 // evidenceSkillOption describes the built-in evidence skill for the plan editor.

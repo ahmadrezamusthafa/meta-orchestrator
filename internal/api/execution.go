@@ -283,13 +283,20 @@ func (r *Router) executeStage(run *stageRun) {
 	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method)}}, history...)
 	message := run.trigger == "message"
 	rejected := run.trigger == "gate_rejected"
-	continuing := (run.trigger == "resume" || message || rejected) && canContinue
+	evidenceOnly := run.trigger == "evidence" // record test evidence for the implementation already done
+	continuing := (run.trigger == "resume" || message || rejected || evidenceOnly) && canContinue
 	feedback := run.feedback
 	if message {
 		feedback = "" // the operator's message is not rejection feedback
 	}
 	prompt := stagePrompt(task, feedback)
-	if message {
+	if evidenceOnly {
+		prompt = evidenceRunPrompt(task, canContinue)
+		if canContinue {
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+				"Continuing session %s on %s to test the change and record evidence.", shortID(sessionID), task.CurrentStageID)})
+		}
+	} else if message {
 		prompt = messagePrompt(task, run.feedback, sessionID != "", canContinue, prompt)
 		if sessionID != "" {
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
@@ -328,6 +335,9 @@ func (r *Router) executeStage(run *stageRun) {
 			"⚠ Skipping skill %s — disabled or no longer installed. Re-enable it on the Skills page, or remove it from this stage in the Routing tab.",
 			strings.Join(missing, ", "))})
 	}
+	if evidenceOnly {
+		skills, missing = nil, nil // the turn only records evidence: just the evidence skill
+	}
 	ev, evNotes := r.prepareEvidence(run.ctx, task)
 	for _, n := range evNotes {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: n})
@@ -344,8 +354,9 @@ func (r *Router) executeStage(run *stageRun) {
 				"Turn it off or pick another skill in the Routing tab.", ev.Skill.Name, ev.Dir)})
 	}
 	if len(skills) > 0 {
-		if !continuing {
-			// A continued session already holds the skills from the stage's first turn.
+		// A continued session already holds the skills from the stage's first turn — except an
+		// evidence run, whose session may predate evidence (or this evidence skill).
+		if !continuing || evidenceOnly {
 			prompt += skillsBrief(skills)
 			if ev != nil {
 				prompt += r.evidenceBrief(task, ev)
@@ -389,7 +400,7 @@ func (r *Router) executeStage(run *stageRun) {
 		r.reportEvidence(taskID, run.turnID, ev)
 	}
 
-	r.settleStage(taskID, task.CurrentStageID, resp, used, execErr)
+	r.settleStage(taskID, task.CurrentStageID, resp, used, execErr, !evidenceOnly)
 }
 
 func triggerText(trigger string) string {
@@ -408,6 +419,8 @@ func triggerText(trigger string) string {
 		return "re-running with your guidance"
 	case "message":
 		return "continuing with your message"
+	case "evidence":
+		return "recording test evidence for the implementation"
 	default:
 		return "started by operator"
 	}
@@ -492,7 +505,8 @@ func sessionStagePrompt(t *types.Task, brief string) string {
 }
 
 // settleStage moves the task to its post-turn state and tells the operator what happens next.
-func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model string, execErr error) {
+// saveDoc is false for an evidence run, so it never replaces the stage's output (the PR description).
+func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model string, execErr error, saveDoc bool) {
 	var runRec telemetry.RunRecord
 	var haveRun bool
 	if r.telemetry != nil {
@@ -500,7 +514,7 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 		go func() { _, _ = r.recalibrate(context.Background()) }()
 	}
 
-	if execErr == nil && resp != nil {
+	if execErr == nil && resp != nil && saveDoc {
 		r.saveStageDocument(taskID, stage, model, resp.Content)
 		if stage == "uat_verification" && strings.TrimSpace(resp.Content) != "" {
 			defer r.startUATGuide(taskID) // after the gate state below is settled

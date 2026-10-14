@@ -220,6 +220,12 @@ export const api = {
     return res.json()
   },
 
+  // Runs an evidence turn on the Implementation stage: test the change and record the videos
+  async recordTaskEvidence(taskId: string): Promise<void> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/evidence`, { method: 'POST' })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Could not start recording test evidence')
+  },
+
   // URL of a file in the task's artifacts (videos stream from here)
   artifactURL(taskId: string, path: string): string {
     return `${BASE_URL}/artifacts/${encodeURIComponent(taskId)}/${path.split('/').map(encodeURIComponent).join('/')}`

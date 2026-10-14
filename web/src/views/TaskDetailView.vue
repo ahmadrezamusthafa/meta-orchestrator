@@ -237,7 +237,8 @@ onMounted(() => {
         <TaskScopePanel v-else-if="activeTab === 'scope'" :task="task" :dependencies="dependencies" @updated="load" />
         <TaskRoutingPanel v-else-if="activeTab === 'routing'" :task="task" @updated="load" />
         <TaskDiffViewer v-else-if="activeTab === 'changes'" :task-id="taskId" :worktree="worktree" />
-        <TaskEvidencePanel v-else-if="activeTab === 'evidence'" :task="task" @open-routing="activeTab = 'routing'" />
+        <TaskEvidencePanel v-else-if="activeTab === 'evidence'" :task="task" @open-routing="activeTab = 'routing'"
+          @open-console="activeTab = 'console'" />
         <TaskPullRequestPanel v-else-if="activeTab === 'pr'" :task="task" @refresh="loadContext" />
         <TaskUATGuidePanel v-else-if="activeTab === 'uat'" :task="task" />
         <TaskWorkspacePanel v-else-if="activeTab === 'workspace'" :task="task" :worktree="worktree" :start-editing="route.query.edit === 'repos'"

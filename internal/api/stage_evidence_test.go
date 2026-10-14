@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/evidence"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
@@ -219,4 +220,63 @@ func TestLibraryEvidenceSkillIsBriefedInsteadOfBuiltin(t *testing.T) {
 	if strings.Join(req.AddDirs, ",") != dir+","+r.evidenceDir("TASK-E4") {
 		t.Fatalf("AddDirs = %v", req.AddDirs)
 	}
+}
+
+func TestRecordEvidenceRunsAnEvidenceTurnAndKeepsTheStageOutput(t *testing.T) {
+	stub := &evidenceStub{}
+	r, root := evidenceRouter(t, stub)
+	writeSkill(t, root, "probe-impl", "Implement it", "Implement carefully.")
+	r.cfg.SkillResolver.Rescan()
+	model := r.strategyRouter.ModelOptions()[0].Model
+	r.mu.Lock()
+	r.tasks["TASK-E5"] = &types.Task{ID: "TASK-E5", Title: "Refund flow", CurrentStageID: "task_implementation", State: types.TaskStateWaitingGateApproval,
+		AssignedRepos: []string{"backend-core"}, Metadata: map[string]string{"complexity": "LOW"},
+		RoutingPlan: []types.StageRoute{{StageID: "task_implementation", Method: "react", Model: model, Skills: []string{"probe-impl"}}}}
+	r.tasks["TASK-E6"] = &types.Task{ID: "TASK-E6", Title: "Other", CurrentStageID: "techdoc_rfc", State: types.TaskStatePending,
+		AssignedRepos: []string{"backend-core"}, Metadata: map[string]string{}}
+	r.mu.Unlock()
+	r.saveStageDocument("TASK-E5", "task_implementation", "m", "## Summary\nthe implementation")
+	doc, _ := r.resolveArtifactPath("TASK-E5", stageDocName("task_implementation"))
+
+	if w := do(r, "POST", "/api/v1/tasks/TASK-E6/evidence", ""); w.Code != 409 || !strings.Contains(w.Body.String(), "Implementation stage") {
+		t.Fatalf("evidence on another stage → %d %s", w.Code, w.Body.String())
+	}
+	if w := do(r, "POST", "/api/v1/tasks/TASK-E5/evidence", ""); w.Code != 200 {
+		t.Fatalf("record evidence → %d %s", w.Code, w.Body.String())
+	}
+	waitState(t, r, "TASK-E5", types.TaskStateWaitingGateApproval)
+	waitIdleTask(t, r, "TASK-E5")
+
+	stub.mu.Lock()
+	prompt := stub.reqs[len(stub.reqs)-1].Messages[len(stub.reqs[len(stub.reqs)-1].Messages)-1].Content
+	stub.mu.Unlock()
+	for _, want := range []string{"already in the working directory", "Do not re-implement", "## Test evidence", `<skill name="test-evidence-video"`} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("evidence prompt is missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, `<skill name="probe-impl"`) {
+		t.Fatal("an evidence run should load only the evidence skill")
+	}
+	if raw, _ := os.ReadFile(doc); !strings.Contains(string(raw), "the implementation") {
+		t.Fatalf("the evidence run must keep the implementation output, got:\n%s", raw)
+	}
+	if !strings.Contains(consoleText(r, "TASK-E5"), "No test evidence video was recorded") {
+		t.Fatal("the evidence run should report what it recorded")
+	}
+}
+
+// waitIdleTask waits until the task's console has no live turn.
+func waitIdleTask(t *testing.T, r *Router, taskID string) {
+	t.Helper()
+	for i := 0; i < 500; i++ {
+		r.console.mu.Lock()
+		busy := r.console.get(taskID).busy
+		r.console.mu.Unlock()
+		if !busy {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("turn did not finish")
 }

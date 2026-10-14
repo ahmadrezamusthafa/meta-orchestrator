@@ -2,12 +2,14 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import type { Task, TaskEvidenceDTO, EvidenceCaseDTO } from '../../types'
 import { api } from '../../services/api'
-import { Film, RefreshCw, Loader2, CheckCircle2, XCircle, AlertTriangle, FileText, Route } from 'lucide-vue-next'
+import { useToastStore } from '../../stores/toast'
+import { Film, RefreshCw, Loader2, CheckCircle2, XCircle, AlertTriangle, FileText, Route, Clapperboard } from 'lucide-vue-next'
 
 // Test evidence of the Implementation stage: a video per test case (recorded by the built-in
 // test-evidence-video skill or a library skill), the full suite runs, and each case's parts.
 const props = defineProps<{ task: Task }>()
-const emit = defineEmits<{ (e: 'open-routing'): void }>()
+const emit = defineEmits<{ (e: 'open-routing'): void; (e: 'open-console'): void }>()
+const toast = useToastStore()
 
 const data = ref<TaskEvidenceDTO | null>(null)
 const loading = ref(false)
@@ -64,6 +66,22 @@ async function openLog(path: string) {
     logError.value = e?.message || `Could not open ${path}`
   }
 }
+// Record evidence runs an agent turn; its commands ask for approval in the Console, so go there.
+const recording = ref(false)
+const blocked = computed(() => data.value?.record_blocked ?? '')
+async function record() {
+  recording.value = true
+  try {
+    await api.recordTaskEvidence(props.task.id)
+    toast.info('Recording test evidence', 'The agent tests the change and records the videos. Approve its commands in the Console.')
+    emit('open-console')
+  } catch (e: any) {
+    toast.error('Could not record evidence', e?.message || '')
+  } finally {
+    recording.value = false
+  }
+}
+
 watch(selected, () => { log.value = null; logError.value = '' })
 </script>
 
@@ -91,6 +109,11 @@ watch(selected, () => { log.value = null; logError.value = '' })
               class="h-8 px-3 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5">
               <Route class="w-3.5 h-3.5" /> Evidence settings
             </button>
+            <button type="button" @click="record" :disabled="!!blocked || recording" :title="blocked || 'Test the implementation and record a video per test case'"
+              class="h-8 px-3 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+              <Loader2 v-if="recording" class="w-3.5 h-3.5 animate-spin" /><Clapperboard v-else class="w-3.5 h-3.5" />
+              {{ items.length ? 'Record again' : 'Record evidence' }}
+            </button>
             <button type="button" @click="load" :disabled="loading" aria-label="Refresh test evidence"
               class="h-8 px-3 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5 disabled:opacity-50">
               <Loader2 v-if="loading" class="w-3.5 h-3.5 animate-spin" /><RefreshCw v-else class="w-3.5 h-3.5" /> Refresh
@@ -109,8 +132,10 @@ watch(selected, () => { log.value = null; logError.value = '' })
       <section v-if="data && !items.length" class="p-8 rounded-xl bg-slate-900 border border-dashed border-slate-700 text-center space-y-1">
         <Film class="w-6 h-6 text-slate-600 mx-auto" />
         <p class="text-sm text-slate-300">No test evidence yet</p>
-        <p class="text-xs text-slate-500">The Implementation stage records it when it runs. If it finished without videos, ask the agent in the
-          Console to record them.</p>
+        <p class="text-xs text-slate-500">The Implementation stage records it when it runs.
+          <template v-if="!blocked">Implementation already done? <strong class="text-slate-300">Record evidence</strong> tests it and records the
+            videos now, without changing the stage's output.</template>
+          <template v-else>{{ blocked }}.</template></p>
       </section>
 
       <div v-if="items.length" class="grid gap-4 lg:grid-cols-[18rem_1fr]">

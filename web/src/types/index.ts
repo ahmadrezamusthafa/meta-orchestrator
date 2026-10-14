@@ -292,6 +292,8 @@ export interface TaskEvidenceDTO {
   skill: string
   stage_id: string
   base_path: string
+  // Why Record evidence cannot run now ("" when it can)
+  record_blocked: string
   report: {
     manifest?: { title?: string; generated_by?: string; updated_at?: string; cases: EvidenceCaseDTO[]; suites?: EvidenceSuiteDTO[] }
     manifest_error?: string
