@@ -328,14 +328,34 @@ func (r *Router) executeStage(run *stageRun) {
 			"⚠ Skipping skill %s — disabled or no longer installed. Re-enable it on the Skills page, or remove it from this stage in the Routing tab.",
 			strings.Join(missing, ", "))})
 	}
+	ev, evNotes := r.prepareEvidence(run.ctx, task)
+	for _, n := range evNotes {
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: n})
+	}
+	addDirs := skillDirs(skills)
+	wasAttached := false // the operator also attached the evidence skill to the stage
+	if ev != nil {
+		if wasAttached = containsSkill(skills, ev.Skill.Name); !wasAttached {
+			skills = append(skills, ev.Skill)
+		}
+		addDirs = append(skillDirs(skills), ev.Dir)
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+			"Test evidence is on for this stage: after implementing, the agent runs the tests completely and records a video per test case with %s into %s. "+
+				"Turn it off or pick another skill in the Routing tab.", ev.Skill.Name, ev.Dir)})
+	}
 	if len(skills) > 0 {
 		if !continuing {
 			// A continued session already holds the skills from the stage's first turn.
 			prompt += skillsBrief(skills)
+			if ev != nil {
+				prompt += r.evidenceBrief(task, ev)
+			}
 		}
-		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
-			"Skills for this stage: %s. Their instructions are in the agent's brief and their folders are readable to it; usage is reported when the stage finishes.",
-			strings.Join(skillNames(skills), ", "))})
+		if attached := len(skills) - btoi(ev != nil && !wasAttached); attached > 0 {
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+				"Skills for this stage: %s. Their instructions are in the agent's brief and their folders are readable to it; usage is reported when the stage finishes.",
+				strings.Join(skillNames(skills[:attached]), ", "))})
+		}
 	}
 	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: prompt})
 
@@ -358,12 +378,15 @@ func (r *Router) executeStage(run *stageRun) {
 	}
 	msgs[0].Content += "\n" + permissionBrief(permission)
 	resp, used, execErr := r.runAgentTurn(run.ctx, agentTurn{Source: "execute", TurnID: run.turnID, Task: task, Decision: decision,
-		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, AddDirs: skillDirs(skills), MaxTokens: 8192,
+		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, AddDirs: addDirs, MaxTokens: 8192,
 		PermissionMode: permission, Approver: r.approverFor(taskID, run.turnID, planExit)})
 	r.endTurn(taskID, run.turnID, resp, used)
 	r.notePRSync(taskID, run.turnID)
 	if resp != nil && len(skills) > 0 {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: skillUsageReport(skills, resp.ToolCalls)})
+	}
+	if ev != nil && execErr == nil && resp != nil {
+		r.reportEvidence(taskID, run.turnID, ev)
 	}
 
 	r.settleStage(taskID, task.CurrentStageID, resp, used, execErr)
@@ -388,6 +411,13 @@ func triggerText(trigger string) string {
 	default:
 		return "started by operator"
 	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // stagePrompt is the user turn for a stage, including any operator feedback.

@@ -14,7 +14,7 @@ const toast = useToastStore()
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
-const options = ref<Pick<TaskAnalysisDTO, 'methods' | 'models' | 'skills' | 'skill_suggestions'>>({
+const options = ref<Pick<TaskAnalysisDTO, 'methods' | 'models' | 'skills' | 'skill_suggestions' | 'evidence_skill' | 'evidence_suggestions'>>({
   methods: [], models: [], skills: [], skill_suggestions: {},
 })
 const assessment = ref<ComplexityAssessment | null>(null)
@@ -44,7 +44,8 @@ async function load(regrade?: Complexity) {
     const a = await api.analyzeTask({ title: props.task.title, description: props.task.description,
       assigned_repos: props.task.assigned_repos, complexity: cx, task_type: props.task.metadata?.task_type,
       start_stage: start, halt_stage: halt })
-    options.value = { methods: a.methods, models: a.models, skills: a.skills ?? [], skill_suggestions: a.skill_suggestions ?? {} }
+    options.value = { methods: a.methods, models: a.models, skills: a.skills ?? [], skill_suggestions: a.skill_suggestions ?? {},
+      evidence_skill: a.evidence_skill, evidence_suggestions: a.evidence_suggestions ?? [] }
     current.value = Object.fromEntries(a.plan.map((p) => [p.stage_id, { method: p.method, model: p.model }]))
     assessment.value = {
       ...a.assessment,
@@ -56,6 +57,7 @@ async function load(regrade?: Complexity) {
     const base: StageRoute[] = plan.length ? plan : a.plan.map((p) => ({ stage_id: p.stage_id, method: p.method, model: p.model, tier: p.tier }))
     // On re-grade keep the skills the operator attached but has not saved yet.
     const unsavedSkills = regrade ? new Map(rows.value.map((r) => [r.stage_id, r.skills])) : null
+    const unsavedEvidence = regrade ? new Map(rows.value.map((r) => [r.stage_id, r.evidence])) : null
     rows.value = base.map((s) => {
       const c = current.value[s.stage_id]
       // On re-grade, rows the operator never changed follow the new proposal; changed rows keep their choice.
@@ -63,6 +65,7 @@ async function load(regrade?: Complexity) {
       return { ...s, method: follow ? c.method : s.method, model: follow ? c.model : s.model,
         reasoning: reasoning[s.stage_id] || s.reasoning, overridden: !!s.overridden,
         skills: unsavedSkills?.get(s.stage_id) ?? s.skills ?? [],
+        evidence: unsavedEvidence ? unsavedEvidence.get(s.stage_id) : s.evidence,
         wanted: (follow || (c && c.model === s.model)) ? wanted[s.stage_id] : undefined }
     })
     proposed.value = Object.fromEntries(rows.value.map((r) => [r.stage_id,
@@ -116,6 +119,7 @@ watch(() => props.task.id, () => load(), { immediate: true })
       <ComplexityAssessmentCard :assessment="assessment" :busy="loading" @regrade="load" />
       <RoutingPlanTable :rows="rows" :proposed="proposed" :current="current" :methods="options.methods" :models="options.models"
         :skills="options.skills" :skill-suggestions="options.skill_suggestions"
+        :evidence-skill="options.evidence_skill" :evidence-suggestions="options.evidence_suggestions"
         :disabled="loading || saving" :current-stage="task.current_stage_id" @update:rows="onRows" />
       <div class="sticky bottom-0 -mx-5 px-5 py-3 bg-slate-950/95 border-t border-slate-800 backdrop-blur flex items-center justify-end gap-3">
         <span v-if="dirty" class="text-[11px] text-amber-400 mr-auto">Unsaved changes</span>

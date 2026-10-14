@@ -57,6 +57,14 @@ export interface StageRoute {
   wanted?: string
   // Skills attached to the stage; their instructions go into the stage brief when it runs
   skills?: string[]
+  // Implementation only: test evidence videos (absent = on, with the built-in skill)
+  evidence?: StageEvidence
+}
+
+export interface StageEvidence {
+  disabled?: boolean
+  // Library skill that records the evidence; empty uses the built-in test-evidence-video
+  skill?: string
 }
 
 // A skill that can be attached to a stage (enabled, with SKILL.md instructions)
@@ -104,6 +112,8 @@ export interface TaskAnalysisDTO {
   models: ModelOptionDTO[]
   skills: SkillOptionDTO[]
   skill_suggestions: Record<string, string[]>
+  evidence_skill?: SkillOptionDTO
+  evidence_suggestions?: string[]
 }
 
 export interface TaskRoutingDTO {
@@ -238,6 +248,57 @@ export interface UATGuideSettings {
   ignore_https_errors?: boolean
   save_only?: boolean
   rerender?: boolean
+}
+
+// Test evidence recorded by the Implementation stage (evidence/ in the task's artifacts)
+export interface EvidencePartDTO {
+  action: string
+  caption?: string
+  status?: string
+  error?: string
+  command?: string
+  exit_code?: number
+  seconds?: number
+  log?: string
+  url?: string
+}
+
+export interface EvidenceCaseDTO {
+  id: string
+  title?: string
+  covers?: string[]
+  expected?: string
+  status: string
+  video?: string
+  poster?: string
+  notes?: string
+  parts?: EvidencePartDTO[]
+  recorded_at?: string
+  video_missing?: boolean
+}
+
+export interface EvidenceSuiteDTO {
+  repository: string
+  command?: string
+  status: string
+  passed?: number
+  failed?: number
+  log?: string
+}
+
+export interface TaskEvidenceDTO {
+  task_id: string
+  enabled: boolean
+  skill: string
+  stage_id: string
+  base_path: string
+  report: {
+    manifest?: { title?: string; generated_by?: string; updated_at?: string; cases: EvidenceCaseDTO[]; suites?: EvidenceSuiteDTO[] }
+    manifest_error?: string
+    videos: string[]
+    passed: number
+    failed: number
+  }
 }
 
 export interface TaskArtifactDTO {

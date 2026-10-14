@@ -10,21 +10,23 @@ import TaskWorkspacePanel from '../components/task/TaskWorkspacePanel.vue'
 import TaskPullRequestPanel from '../components/task/TaskPullRequestPanel.vue'
 import TaskUATGuidePanel from '../components/task/TaskUATGuidePanel.vue'
 import TaskRoutingPanel from '../components/task/TaskRoutingPanel.vue'
+import TaskEvidencePanel from '../components/task/TaskEvidencePanel.vue'
 import { taskLifecycle, stagePosition, stageName, STAGES, TONE_BADGE, ACTION_BUTTON } from '../composables/taskLifecycle'
 import type { TaskWorktreeDTO, TaskDependencyInfoDTO } from '../types'
 import { api } from '../services/api'
 import {
   ChevronLeft, Terminal, BrainCircuit, ClipboardList, FileDiff, FolderGit2, Copy, Check, GitBranch,
-  ExternalLink, MoreHorizontal, Play, Pause, RotateCw, RefreshCcw, Eye, Loader2, Link2, ShieldAlert, GitPullRequest, ClipboardCheck, Route,
+  ExternalLink, MoreHorizontal, Play, Pause, RotateCw, RefreshCcw, Eye, Loader2, Link2, ShieldAlert, GitPullRequest, ClipboardCheck, Route, Film,
 } from 'lucide-vue-next'
 
-type Tab = 'console' | 'reasoning' | 'scope' | 'routing' | 'changes' | 'pr' | 'uat' | 'workspace'
+type Tab = 'console' | 'reasoning' | 'scope' | 'routing' | 'changes' | 'evidence' | 'pr' | 'uat' | 'workspace'
 const TABS: { id: Tab; label: string; icon: any }[] = [
   { id: 'console', label: 'Console', icon: Terminal },
   { id: 'reasoning', label: 'AI Reasoning', icon: BrainCircuit },
   { id: 'scope', label: 'Scope & Requirements', icon: ClipboardList },
   { id: 'routing', label: 'Method & Model', icon: Route },
   { id: 'changes', label: 'Changes', icon: FileDiff },
+  { id: 'evidence', label: 'Evidence', icon: Film },
   { id: 'pr', label: 'Pull Request', icon: GitPullRequest },
   { id: 'uat', label: 'UAT Guide', icon: ClipboardCheck },
   { id: 'workspace', label: 'Workspace & Repos', icon: FolderGit2 },
@@ -235,6 +237,7 @@ onMounted(() => {
         <TaskScopePanel v-else-if="activeTab === 'scope'" :task="task" :dependencies="dependencies" @updated="load" />
         <TaskRoutingPanel v-else-if="activeTab === 'routing'" :task="task" @updated="load" />
         <TaskDiffViewer v-else-if="activeTab === 'changes'" :task-id="taskId" :worktree="worktree" />
+        <TaskEvidencePanel v-else-if="activeTab === 'evidence'" :task="task" @open-routing="activeTab = 'routing'" />
         <TaskPullRequestPanel v-else-if="activeTab === 'pr'" :task="task" @refresh="loadContext" />
         <TaskUATGuidePanel v-else-if="activeTab === 'uat'" :task="task" />
         <TaskWorkspacePanel v-else-if="activeTab === 'workspace'" :task="task" :worktree="worktree" :start-editing="route.query.edit === 'repos'"

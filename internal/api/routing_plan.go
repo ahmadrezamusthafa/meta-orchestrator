@@ -66,6 +66,9 @@ type analyzeResponse struct {
 	// Skills are the skills a stage can use; SkillSuggestions proposes some per stage.
 	Skills           []skillOption       `json:"skills"`
 	SkillSuggestions map[string][]string `json:"skill_suggestions"`
+	// EvidenceSkill is the built-in evidence skill; EvidenceSuggestions are library skills that record evidence.
+	EvidenceSkill       skillOption `json:"evidence_skill"`
+	EvidenceSuggestions []string    `json:"evidence_suggestions"`
 }
 
 // planStages is the slice of the pipeline a task runs, from start to halt inclusive.
@@ -150,12 +153,14 @@ func (r *Router) handleTaskAnalyze(w http.ResponseWriter, req *http.Request) {
 	stages := planStages(body.StartStage, body.HaltStage)
 	skills := r.skillOptions()
 	r.writeJSON(w, http.StatusOK, analyzeResponse{
-		Assessment:       a,
-		Plan:             r.strategyRouter.Plan(stages, a.Complexity, a.TaskType, body.AssignedRepos),
-		Methods:          planMethods,
-		Models:           r.strategyRouter.ModelOptions(),
-		Skills:           skills,
-		SkillSuggestions: skillSuggestions(stages, skills),
+		Assessment:          a,
+		Plan:                r.strategyRouter.Plan(stages, a.Complexity, a.TaskType, body.AssignedRepos),
+		Methods:             planMethods,
+		Models:              r.strategyRouter.ModelOptions(),
+		Skills:              skills,
+		SkillSuggestions:    skillSuggestions(stages, skills),
+		EvidenceSkill:       evidenceSkillOption(),
+		EvidenceSuggestions: evidenceSuggestions(skills),
 	})
 }
 
@@ -186,6 +191,9 @@ func (r *Router) validatePlan(plan []types.StageRoute) ([]types.StageRoute, erro
 		}
 		var err error
 		if s.Skills, err = normalizeStageSkills(s.StageID, s.Skills, skills); err != nil {
+			return nil, err
+		}
+		if s.Evidence, err = normalizeStageEvidence(s.StageID, s.Evidence, skills); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -234,6 +242,7 @@ func (r *Router) handleTaskRouting(w http.ResponseWriter, req *http.Request, tas
 			"complexity_rationale": cp.Metadata["complexity_rationale"], "routing_plan": cp.RoutingPlan,
 			"methods": planMethods, "models": r.strategyRouter.ModelOptions(),
 			"skills": skills, "skill_suggestions": skillSuggestions(stages, skills),
+			"evidence_skill": evidenceSkillOption(), "evidence_suggestions": evidenceSuggestions(skills),
 		})
 	case http.MethodPut:
 		var body routingUpdate
@@ -286,6 +295,11 @@ func planSummary(plan []types.StageRoute) string {
 		}
 		if len(s.Skills) > 0 {
 			p += " with skills " + strings.Join(s.Skills, ", ")
+		}
+		if s.Evidence != nil && s.Evidence.Disabled {
+			p += ", no test evidence"
+		} else if s.Evidence != nil && s.Evidence.Skill != "" {
+			p += ", test evidence by " + s.Evidence.Skill
 		}
 		parts = append(parts, p)
 	}

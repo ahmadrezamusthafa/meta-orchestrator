@@ -237,6 +237,15 @@ func skillDirs(skills []*types.UniversalSkillContract) []string {
 	return out
 }
 
+func containsSkill(skills []*types.UniversalSkillContract, name string) bool {
+	for _, s := range skills {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func skillNames(skills []*types.UniversalSkillContract) []string {
 	out := make([]string, 0, len(skills))
 	for _, s := range skills {
