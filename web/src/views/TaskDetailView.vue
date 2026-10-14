@@ -20,7 +20,7 @@ import {
 } from 'lucide-vue-next'
 
 type Tab = 'console' | 'reasoning' | 'scope' | 'routing' | 'changes' | 'evidence' | 'pr' | 'uat' | 'workspace'
-const TABS: { id: Tab; label: string; icon: any }[] = [
+const ALL_TABS: { id: Tab; label: string; icon: any }[] = [
   { id: 'console', label: 'Console', icon: Terminal },
   { id: 'reasoning', label: 'AI Reasoning', icon: BrainCircuit },
   { id: 'scope', label: 'Scope & Requirements', icon: ClipboardList },
@@ -41,7 +41,8 @@ const taskId = computed(() => route.params.id as string)
 const activeTab = computed<Tab>({
   get: () => {
     const q = String(route.query.tab || 'console')
-    return (TABS.some((t) => t.id === q) ? q : LEGACY_TAB[q] || 'console') as Tab
+    // A tab the task does not offer right now (e.g. Evidence on another stage) opens the Console.
+    return (TABS.value.some((t) => t.id === q) ? q : LEGACY_TAB[q] || 'console') as Tab
   },
   set: (tab) => router.replace({ query: { ...route.query, tab } }),
 })
@@ -53,6 +54,13 @@ const copied = ref('')
 const showMenu = ref(false)
 
 const task = computed(() => taskStore.tasks.find((t) => t.id === taskId.value) || null)
+
+// Evidence belongs to the Implementation stage: its tab shows while the task is on that stage, and
+// on later stages only when videos were recorded, so reviewers can still watch them (read-only).
+const EVIDENCE_STAGE = 'task_implementation'
+const onEvidenceStage = computed(() => task.value?.current_stage_id === EVIDENCE_STAGE)
+const hasEvidence = computed(() => Number(task.value?.metadata?.evidence_videos || 0) > 0)
+const TABS = computed(() => ALL_TABS.filter((t) => t.id !== 'evidence' || onEvidenceStage.value || hasEvidence.value))
 const life = computed(() => taskLifecycle(task.value))
 const pending = computed(() => !!taskStore.pendingActions[taskId.value])
 const pos = computed(() => stagePosition(task.value?.current_stage_id))
@@ -237,7 +245,7 @@ onMounted(() => {
         <TaskScopePanel v-else-if="activeTab === 'scope'" :task="task" :dependencies="dependencies" @updated="load" />
         <TaskRoutingPanel v-else-if="activeTab === 'routing'" :task="task" @updated="load" />
         <TaskDiffViewer v-else-if="activeTab === 'changes'" :task-id="taskId" :worktree="worktree" />
-        <TaskEvidencePanel v-else-if="activeTab === 'evidence'" :task="task" @open-routing="activeTab = 'routing'"
+        <TaskEvidencePanel v-else-if="activeTab === 'evidence'" :task="task" :read-only="!onEvidenceStage" @open-routing="activeTab = 'routing'"
           @open-console="activeTab = 'console'" />
         <TaskPullRequestPanel v-else-if="activeTab === 'pr'" :task="task" @refresh="loadContext" />
         <TaskUATGuidePanel v-else-if="activeTab === 'uat'" :task="task" />

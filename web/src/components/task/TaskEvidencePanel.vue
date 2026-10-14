@@ -7,7 +7,8 @@ import { Film, RefreshCw, Loader2, CheckCircle2, XCircle, AlertTriangle, FileTex
 
 // Test evidence of the Implementation stage: a video per test case (recorded by the built-in
 // test-evidence-video skill or a library skill), the full suite runs, and each case's parts.
-const props = defineProps<{ task: Task }>()
+// readOnly: the task has moved past Implementation — its evidence can be watched, not re-recorded.
+const props = defineProps<{ task: Task; readOnly?: boolean }>()
 const emit = defineEmits<{ (e: 'open-routing'): void; (e: 'open-console'): void }>()
 const toast = useToastStore()
 
@@ -105,15 +106,17 @@ watch(selected, () => { log.value = null; logError.value = '' })
               <span class="text-emerald-300 font-semibold">{{ report.passed }}</span> passed ·
               <span :class="report.failed ? 'text-rose-300 font-semibold' : ''">{{ report.failed }}</span> failed or blocked
             </span>
-            <button type="button" @click="emit('open-routing')"
-              class="h-8 px-3 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5">
-              <Route class="w-3.5 h-3.5" /> Evidence settings
-            </button>
-            <button type="button" @click="record" :disabled="!!blocked || recording" :title="blocked || 'Test the implementation and record a video per test case'"
-              class="h-8 px-3 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
-              <Loader2 v-if="recording" class="w-3.5 h-3.5 animate-spin" /><Clapperboard v-else class="w-3.5 h-3.5" />
-              {{ items.length ? 'Record again' : 'Record evidence' }}
-            </button>
+            <template v-if="!readOnly">
+              <button type="button" @click="emit('open-routing')"
+                class="h-8 px-3 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5">
+                <Route class="w-3.5 h-3.5" /> Evidence settings
+              </button>
+              <button type="button" @click="record" :disabled="!!blocked || recording" :title="blocked || 'Test the implementation and record a video per test case'"
+                class="h-8 px-3 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                <Loader2 v-if="recording" class="w-3.5 h-3.5 animate-spin" /><Clapperboard v-else class="w-3.5 h-3.5" />
+                {{ items.length ? 'Record again' : 'Record evidence' }}
+              </button>
+            </template>
             <button type="button" @click="load" :disabled="loading" aria-label="Refresh test evidence"
               class="h-8 px-3 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5 disabled:opacity-50">
               <Loader2 v-if="loading" class="w-3.5 h-3.5 animate-spin" /><RefreshCw v-else class="w-3.5 h-3.5" /> Refresh
@@ -121,7 +124,10 @@ watch(selected, () => { log.value = null; logError.value = '' })
           </div>
         </div>
         <p v-if="error" class="text-xs text-rose-300">{{ error }}</p>
-        <p v-if="data && !data.enabled" class="text-xs text-amber-200 bg-amber-950/40 border border-amber-900 rounded-lg px-3 py-2">
+        <p v-if="readOnly" class="text-xs text-slate-400 bg-slate-800/60 border border-slate-700 rounded-lg px-3 py-2">
+          Recorded during the Implementation stage. The task has moved on, so this evidence is read-only.
+        </p>
+        <p v-if="data && !data.enabled && !readOnly" class="text-xs text-amber-200 bg-amber-950/40 border border-amber-900 rounded-lg px-3 py-2">
           Test evidence is off for this task. Turn it on for the Implementation stage under Evidence settings.
         </p>
         <p v-if="report?.manifest_error" class="text-xs text-amber-200 bg-amber-950/40 border border-amber-900 rounded-lg px-3 py-2">
