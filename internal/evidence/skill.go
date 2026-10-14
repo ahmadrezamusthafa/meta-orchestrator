@@ -21,9 +21,9 @@ var skillFS embed.FS
 const SkillName = "test-evidence-video"
 
 // SkillDescription is the one-line purpose of the built-in skill.
-const SkillDescription = "Built in: runs every affected test suite for real, then records one narrated video per test case — " +
-	"test commands with real output and counts, API calls with their checks, browser walkthroughs of the running app with every " +
-	"action and check annotated — plus a screenshot per step and evidence.json."
+const SkillDescription = "Built in: proves the feature works as specified, end to end — plans the evidence from the spec " +
+	"(user journeys, acceptance test cases), then records a narrated video per end-to-end flow and per acceptance case in the running " +
+	"system (browser walkthroughs and API calls, every action and check annotated), the full test suites as regression, and the spec coverage."
 
 // RecorderScript is the recorder's path inside the installed skill directory.
 const RecorderScript = "scripts/record-evidence.mjs"
@@ -103,9 +103,17 @@ type Environment struct {
 	Repos    []Repo `json:"repos,omitempty"`
 }
 
+// Case kinds: what a case proves.
+const (
+	KindFlow       = "flow"       // a complete user journey of the feature, end to end
+	KindAcceptance = "acceptance" // one acceptance test case from the spec
+	KindSuite      = "suite"      // a full test-suite run, as regression
+)
+
 // Case is one test case and its video.
 type Case struct {
 	ID         string   `json:"id"`
+	Kind       string   `json:"kind,omitempty"`
 	Title      string   `json:"title,omitempty"`
 	Covers     []string `json:"covers,omitempty"`
 	Given      string   `json:"given,omitempty"`
@@ -139,13 +147,21 @@ type Suite struct {
 	Case       string `json:"case,omitempty"` // the case whose video shows this run
 }
 
+// Criterion is an acceptance criterion the evidence must prove, listed in evidence.json when the
+// task has no ATDD cases (the agent derives them from the PRD).
+type Criterion struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
+}
+
 // Manifest is evidence.json: written by the recorder, or by the agent for a library skill.
 type Manifest struct {
-	Title       string  `json:"title,omitempty"`
-	GeneratedBy string  `json:"generated_by,omitempty"`
-	UpdatedAt   string  `json:"updated_at,omitempty"`
-	Cases       []Case  `json:"cases"`
-	Suites      []Suite `json:"suites,omitempty"`
+	Title       string      `json:"title,omitempty"`
+	Criteria    []Criterion `json:"criteria,omitempty"`
+	GeneratedBy string      `json:"generated_by,omitempty"`
+	UpdatedAt   string      `json:"updated_at,omitempty"`
+	Cases       []Case      `json:"cases"`
+	Suites      []Suite     `json:"suites,omitempty"`
 }
 
 // Report is what an evidence directory holds.
@@ -173,6 +189,31 @@ var videoExts = map[string]bool{".mp4": true, ".webm": true, ".mov": true}
 
 // IsVideo reports whether name is a video file the evidence view can play.
 func IsVideo(name string) bool { return videoExts[strings.ToLower(filepath.Ext(name))] }
+
+// KindOf infers a case's kind from its id: SUITE-… is a suite run, FLOW-… a user journey, and
+// anything else an acceptance case.
+func KindOf(id string) string {
+	switch u := strings.ToUpper(id); {
+	case strings.HasPrefix(u, "SUITE"):
+		return KindSuite
+	case strings.HasPrefix(u, "FLOW"):
+		return KindFlow
+	}
+	return KindAcceptance
+}
+
+// Proves reports whether the case is evidence for the spec item id: its own id, or one it covers.
+func (c Case) Proves(id string) bool {
+	if strings.EqualFold(c.ID, id) {
+		return true
+	}
+	for _, v := range c.Covers {
+		if strings.EqualFold(strings.TrimSpace(v), id) {
+			return true
+		}
+	}
+	return false
+}
 
 // cleanRel keeps a manifest path only when it stays inside the evidence directory.
 func cleanRel(p string) string {
@@ -219,6 +260,9 @@ func Collect(dir string) Report {
 	for i := range m.Cases {
 		c := &m.Cases[i]
 		c.Video, c.Poster = cleanRel(c.Video), cleanRel(c.Poster)
+		if c.Kind == "" {
+			c.Kind = KindOf(c.ID)
+		}
 		c.VideoMissing = c.Video != "" && !present[c.Video]
 		for j := range c.Parts {
 			c.Parts[j].Shot, c.Parts[j].Log = cleanRel(c.Parts[j].Shot), cleanRel(c.Parts[j].Log)

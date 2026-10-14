@@ -5,13 +5,14 @@ import { api } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import {
   Film, RefreshCw, Loader2, CheckCircle2, XCircle, AlertTriangle, FileText, Route, Clapperboard, Copy, Download, Play,
-  MinusCircle, Info, ChevronLeft, ChevronRight, X, GitCommit, Bug, Image as ImageIcon,
+  MinusCircle, Info, ChevronLeft, ChevronRight, X, GitCommit, Bug, Image as ImageIcon, ListChecks,
 } from 'lucide-vue-next'
 
-// Test evidence of the Implementation stage: a video per test case (recorded by the built-in
-// test-evidence-video skill or a library skill), the full suite runs, and each case's steps with
-// their screenshots — readable step by step without watching the video, and a click on a step plays
-// the video from there.
+// Test evidence of the Implementation stage, planned from the spec: end-to-end user flows, one
+// case per acceptance case and the full suites as regression (recorded by the built-in
+// test-evidence-video skill or a library skill). The spec coverage shows every acceptance case and
+// the evidence that proves it; each case's steps, with their screenshots, read without the video,
+// and a click on a step plays the video from there.
 // readOnly: the task has moved past Implementation — its evidence can be watched, not re-recorded.
 const props = defineProps<{ task: Task; readOnly?: boolean }>()
 const emit = defineEmits<{ (e: 'open-routing'): void; (e: 'open-console'): void }>()
@@ -54,6 +55,31 @@ const items = computed<EvidenceCaseDTO[]>(() => {
 })
 const failedItems = computed(() => items.value.filter((c) => c.status !== 'passed'))
 const shown = computed(() => (filter.value === 'failed' ? failedItems.value : items.value))
+// The case list in the order a reviewer reads it: the journeys, the acceptance cases, then regression.
+const kindOf = (c: EvidenceCaseDTO) => c.kind || (/^suite/i.test(c.id) ? 'suite' : /^flow/i.test(c.id) ? 'flow' : c.status === 'unknown' ? 'other' : 'acceptance')
+const GROUPS = [
+  { kind: 'flow', label: 'End-to-end flows' }, { kind: 'acceptance', label: 'Acceptance cases' },
+  { kind: 'suite', label: 'Regression suites' }, { kind: 'other', label: 'Other videos' },
+]
+const groups = computed(() => GROUPS.map((g) => ({ ...g, cases: shown.value.filter((c) => kindOf(c) === g.kind) })).filter((g) => g.cases.length))
+
+// ---- spec coverage: every acceptance case and the evidence that proves it ----
+const spec = computed(() => data.value?.spec)
+const specCases = computed(() => spec.value?.cases ?? [])
+const gapsOnly = ref(false)
+const specShown = computed(() => (gapsOnly.value ? specCases.value.filter((c) => c.status !== 'passed') : specCases.value))
+const specGaps = computed(() => specCases.value.filter((c) => c.status !== 'passed').length)
+const COVER: Record<string, { cls: string; label: string }> = {
+  passed: { cls: 'bg-emerald-950 text-emerald-300 border-emerald-800', label: 'Proven' },
+  failed: { cls: 'bg-rose-950 text-rose-300 border-rose-800', label: 'Failed' },
+  blocked: { cls: 'bg-amber-950 text-amber-300 border-amber-800', label: 'Blocked' },
+  missing: { cls: 'bg-slate-800 text-slate-300 border-slate-600 border-dashed', label: 'No evidence' },
+}
+function openCase(id: string) {
+  filter.value = 'all'
+  selected.value = id
+  document.getElementById('evidence-case')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 const current = computed(() => items.value.find((c) => c.id === selected.value) ?? null)
 const base = computed(() => data.value?.base_path ?? 'evidence/')
 const url = (p?: string) => (p ? api.artifactURL(props.task.id, base.value + p) : '')
@@ -67,7 +93,6 @@ const stats = computed(() => {
   return {
     cases: all.length, casesPassed: all.filter((c) => c.status === 'passed').length,
     steps: steps.length, stepsPassed: steps.filter((p) => p.status === 'passed').length,
-    checks: steps.filter((p) => p.verified || ['run', 'api'].includes(p.action)).length,
     suites: suites.length, suitesPassed: suites.filter((s) => s.status === 'passed').length,
     videos: report.value?.videos.length ?? 0,
   }
@@ -189,10 +214,17 @@ async function copyReport() {
   const cell = (t?: string | number) => String(t ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ')
   const lines = [`## Test evidence — ${props.task.id}${manifest.value?.title ? ` · ${manifest.value.title.replace(/^\S+ · /, '')}` : ''}`, '']
   lines.push(`${stats.value.casesPassed} of ${stats.value.cases} cases passed · ${stats.value.stepsPassed} of ${stats.value.steps} steps passed`, '')
-  lines.push('| Case | Title | Result | Steps | Video |', '|---|---|---|---|---|')
+  if (specCases.value.length) {
+    const cov = (s: string) => (s === 'passed' ? '✅ Proven' : s === 'failed' ? '❌ Failed' : s === 'blocked' ? '⚠️ Blocked' : '⬜ No evidence')
+    lines.push(`### Spec coverage — ${specCases.value.length - specGaps.value} of ${specCases.value.length} acceptance cases proven`, '',
+      '| Acceptance case | What it proves | Evidence | Result |', '|---|---|---|---|')
+    for (const c of specCases.value) lines.push(`| ${cell(c.id)} | ${cell(c.title)} | ${c.evidence.map((e) => e.id).join(', ') || '—'} | ${cov(c.status)} |`)
+    lines.push('', '### Evidence')
+  }
+  lines.push('| Case | Kind | Title | Result | Steps | Video |', '|---|---|---|---|---|---|')
   for (const c of items.value) {
     const ps = checked(c)
-    lines.push(`| ${cell(c.id)} | ${cell(c.title)} | ${icon(c.status)} | ${ps.length ? `${ps.filter((p) => p.status === 'passed').length}/${ps.length}` : ''} | ${cell(c.video)} |`)
+    lines.push(`| ${cell(c.id)} | ${kindOf(c)} | ${cell(c.title)} | ${icon(c.status)} | ${ps.length ? `${ps.filter((p) => p.status === 'passed').length}/${ps.length}` : ''} | ${cell(c.video)} |`)
   }
   const suites = manifest.value?.suites ?? []
   if (suites.length) {
@@ -231,8 +263,9 @@ watch(selected, () => { log.value = null; logError.value = ''; now.value = 0; li
               <span v-if="manifest?.updated_at" class="text-[11px] font-normal text-slate-500" :title="manifest.updated_at">· updated {{ ago(manifest.updated_at) }}</span>
             </h3>
             <p class="text-xs text-slate-400 leading-relaxed">
-              The agent runs the test suites completely and records each test case step by step — test runs with real output, API calls,
-              and walkthroughs of the running app with every action and check annotated. Recorded with
+              Proof that the feature works as specified: the agent plans the evidence from the spec and records, in the running system,
+              the end-to-end user flows and every acceptance case step by step — browser walkthroughs and API calls with each action and check
+              annotated — plus the full test suites as regression. Recorded with
               <span class="font-mono text-slate-200">{{ data?.skill || 'test-evidence-video' }}</span>.
             </p>
           </div>
@@ -259,7 +292,13 @@ watch(selected, () => { log.value = null; logError.value = ''; now.value = 0; li
           </div>
         </div>
 
-        <dl v-if="stats.cases" class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <dl v-if="stats.cases || specCases.length" class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div class="rounded-lg border px-3 py-2" :class="!specCases.length ? 'border-slate-800 bg-slate-950/40' : specGaps ? 'border-amber-900 bg-amber-950/30' : 'border-emerald-900 bg-emerald-950/30'">
+            <dt class="text-[10px] uppercase tracking-wider text-slate-500">Spec coverage</dt>
+            <dd class="text-lg font-semibold" :class="!specCases.length ? 'text-slate-500' : specGaps ? 'text-amber-300' : 'text-emerald-300'">
+              <template v-if="specCases.length">{{ specCases.length - specGaps }}<span class="text-sm text-slate-500"> / {{ specCases.length }} proven</span></template>
+              <span v-else class="text-sm">no acceptance cases</span></dd>
+          </div>
           <div class="rounded-lg border px-3 py-2" :class="stats.casesPassed === stats.cases ? 'border-emerald-900 bg-emerald-950/30' : 'border-rose-900 bg-rose-950/30'">
             <dt class="text-[10px] uppercase tracking-wider text-slate-500">Test cases</dt>
             <dd class="text-lg font-semibold" :class="stats.casesPassed === stats.cases ? 'text-emerald-300' : 'text-rose-300'">
@@ -268,10 +307,6 @@ watch(selected, () => { log.value = null; logError.value = ''; now.value = 0; li
           <div class="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2">
             <dt class="text-[10px] uppercase tracking-wider text-slate-500">Steps</dt>
             <dd class="text-lg font-semibold text-slate-100">{{ stats.stepsPassed }}<span class="text-sm text-slate-500"> / {{ stats.steps }} passed</span></dd>
-          </div>
-          <div class="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2">
-            <dt class="text-[10px] uppercase tracking-wider text-slate-500">Checks</dt>
-            <dd class="text-lg font-semibold text-slate-100">{{ stats.checks }}<span class="text-sm text-slate-500"> verified or run</span></dd>
           </div>
           <div class="rounded-lg border px-3 py-2" :class="!stats.suites ? 'border-slate-800 bg-slate-950/40' : stats.suitesPassed === stats.suites ? 'border-emerald-900 bg-emerald-950/30' : 'border-rose-900 bg-rose-950/30'">
             <dt class="text-[10px] uppercase tracking-wider text-slate-500">Full suites</dt>
@@ -293,6 +328,44 @@ watch(selected, () => { log.value = null; logError.value = ''; now.value = 0; li
         </p>
       </section>
 
+      <section v-if="specCases.length" class="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <div class="px-4 py-2.5 border-b border-slate-800 flex flex-wrap items-center gap-2">
+          <h4 class="text-xs font-semibold text-slate-200 flex items-center gap-1.5"><ListChecks class="w-3.5 h-3.5 text-purple-400" /> Spec coverage</h4>
+          <span class="text-[11px] text-slate-500">
+            {{ specCases.length }} acceptance case{{ specCases.length === 1 ? '' : 's' }}<template v-if="spec?.source"> from {{ spec.source }}</template>
+            <template v-if="spec?.docs?.length"> · spec: <span class="font-mono">{{ spec.docs.join(', ') }}</span></template>
+          </span>
+          <span class="flex-1" />
+          <label v-if="specGaps" class="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
+            <input v-model="gapsOnly" type="checkbox" class="accent-purple-500" /> Only not proven ({{ specGaps }})
+          </label>
+        </div>
+        <div class="overflow-x-auto max-h-80 overflow-y-auto">
+          <table class="w-full text-xs">
+            <thead class="text-[10px] uppercase tracking-wider text-slate-500 sticky top-0 bg-slate-900">
+              <tr><th class="text-left px-4 py-2">Case</th><th class="text-left px-4 py-2">What it proves</th>
+                <th class="text-left px-4 py-2">Evidence</th><th class="text-left px-4 py-2">Result</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in specShown" :key="c.id" class="border-t border-slate-800 align-top">
+                <td class="px-4 py-2 whitespace-nowrap">
+                  <span class="font-mono text-slate-200">{{ c.id }}</span>
+                  <span v-for="t in [c.priority, c.platform, c.kind].filter(Boolean)" :key="t" class="ml-1 px-1 rounded bg-slate-800 text-[10px] text-slate-400">{{ t }}</span>
+                </td>
+                <td class="px-4 py-2 text-slate-300">{{ c.title }}</td>
+                <td class="px-4 py-2">
+                  <span v-if="!c.evidence.length" class="text-slate-500">—</span>
+                  <button v-for="e in c.evidence" :key="e.id" type="button" @click="openCase(e.id)"
+                    class="mr-1 mb-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-mono text-[11px] hover:brightness-125" :class="tone(e.status).cls">
+                    <Play class="w-2.5 h-2.5" />{{ e.id }}</button>
+                </td>
+                <td class="px-4 py-2"><span class="px-1.5 py-0.5 rounded border text-[11px] whitespace-nowrap" :class="(COVER[c.status] ?? COVER.missing).cls">{{ (COVER[c.status] ?? COVER.missing).label }}</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section v-if="data && !items.length" class="p-8 rounded-xl bg-slate-900 border border-dashed border-slate-700 text-center space-y-1">
         <Film class="w-6 h-6 text-slate-600 mx-auto" />
         <p class="text-sm text-slate-300">No test evidence yet</p>
@@ -312,7 +385,9 @@ watch(selected, () => { log.value = null; logError.value = ''; now.value = 0; li
               {{ f === 'all' ? `All ${items.length}` : `Not passing ${failedItems.length}` }}
             </button>
           </div>
-          <button v-for="c in shown" :key="c.id" type="button" @click="selected = c.id" :aria-current="selected === c.id"
+          <template v-for="g in groups" :key="g.kind">
+          <div class="px-3 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-800/60">{{ g.label }} · {{ g.cases.length }}</div>
+          <button v-for="c in g.cases" :key="c.id" type="button" @click="selected = c.id" :aria-current="selected === c.id"
             class="w-full text-left px-3 py-2.5 border-b border-slate-800 last:border-b-0 flex items-start gap-2 border-l-2"
             :class="selected === c.id ? 'bg-slate-800 border-l-purple-500' : 'hover:bg-slate-800/50 border-l-transparent'">
             <CheckCircle2 v-if="c.status === 'passed'" class="w-4 h-4 mt-0.5 text-emerald-400 flex-shrink-0" />
@@ -326,13 +401,15 @@ watch(selected, () => { log.value = null; logError.value = ''; now.value = 0; li
               </span>
             </span>
           </button>
+          </template>
         </nav>
 
         <!-- Selected case -->
-        <article v-if="current" class="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden min-w-0">
+        <article v-if="current" id="evidence-case" class="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden min-w-0">
           <header class="px-4 py-3 border-b border-slate-800 space-y-2">
             <div class="flex flex-wrap items-center gap-2">
               <span class="text-xs font-mono text-slate-400">{{ current.id }}</span>
+              <span class="px-1.5 py-px rounded bg-slate-800 text-[10px] text-slate-400">{{ GROUPS.find((g) => g.kind === kindOf(current!))?.label.replace(/s$/, '') }}</span>
               <h4 class="text-sm font-semibold text-slate-100 flex-1 min-w-0">{{ current.title }}</h4>
               <span class="px-2 py-0.5 rounded border text-[11px] font-semibold" :class="tone(current.status).cls">{{ tone(current.status).label }}</span>
             </div>
@@ -390,7 +467,7 @@ watch(selected, () => { log.value = null; logError.value = ''; now.value = 0; li
                     <p v-if="p.note" class="text-slate-400 leading-relaxed">{{ p.note }}</p>
                     <div v-if="p.command" class="font-mono text-[11px] text-slate-500 break-all">$ {{ p.command }}</div>
                     <div v-if="p.method" class="font-mono text-[11px] text-slate-500 break-all">{{ p.method }} {{ p.url }}</div>
-                    <div v-else-if="p.url && !p.command" class="font-mono text-[11px] text-slate-500 break-all">{{ p.url }}</div>
+                    <div v-else-if="p.url && !p.command && p.url !== current.parts?.[i - 1]?.url" class="font-mono text-[11px] text-slate-500 break-all">{{ p.url }}</div>
                     <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
                       <span v-if="p.action === 'run'" class="font-mono" :class="p.exit_code === 0 ? 'text-emerald-300' : 'text-rose-300'">exit {{ p.exit_code ?? '—' }}</span>
                       <span v-if="p.summary" class="text-slate-300">{{ p.summary }}</span>

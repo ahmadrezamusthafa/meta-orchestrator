@@ -280,3 +280,80 @@ func waitIdleTask(t *testing.T, r *Router, taskID string) {
 	}
 	t.Fatal("turn did not finish")
 }
+
+func TestEvidenceIsPlannedFromTheSpecAndReportsCoverage(t *testing.T) {
+	stub := &evidenceStub{}
+	r, _ := evidenceRouter(t, stub)
+	adir := r.artifactDir("TASK-E5")
+	_ = os.MkdirAll(filepath.Join(adir, "stages"), 0o755)
+	_ = os.WriteFile(filepath.Join(adir, "PRD.md"), []byte("# Refunds\nFinance can refund a paid invoice."), 0o644)
+	_ = os.WriteFile(filepath.Join(adir, filepath.FromSlash(stageDocName("atdd_creation"))), []byte("Cases\n\n```atdd-cases\n"+
+		`[{"id":"RF-TC-001","title":"Finance refunds a paid invoice","priority":"P1","platform":"WEB","steps":["Open the invoice","Click Refund"],"expected_results":["The invoice shows Refunded"]},`+
+		`{"id":"RF-TC-002","title":"An unpaid invoice cannot be refunded","priority":"P0","platform":"API","expected_results":["422"]}]`+"\n```\n"), 0o644)
+	dir := r.evidenceDir("TASK-E5")
+	stub.onRun = func() {
+		_ = os.MkdirAll(dir, 0o755)
+		for _, f := range []string{"FLOW-1.mp4", "SUITE-api.mp4"} {
+			_ = os.WriteFile(filepath.Join(dir, f), []byte("v"), 0o644)
+		}
+		m := evidence.Manifest{Cases: []evidence.Case{
+			{ID: "FLOW-1", Title: "Refund journey", Covers: []string{"RF-TC-001"}, Status: "passed", Video: "FLOW-1.mp4"},
+			{ID: "SUITE-api", Status: "passed", Video: "SUITE-api.mp4", Covers: []string{"RF-TC-002"}}, // a suite run proves no acceptance case
+		}}
+		raw, _ := json.Marshal(m)
+		_ = os.WriteFile(filepath.Join(dir, evidence.ManifestFile), raw, 0o644)
+	}
+	r.mu.Lock()
+	r.tasks["TASK-E5"] = &types.Task{ID: "TASK-E5", Title: "Refunds", CurrentStageID: "task_implementation", State: types.TaskStatePending,
+		AssignedRepos: []string{"backend-core"}, Metadata: map[string]string{"complexity": "LOW"}}
+	r.mu.Unlock()
+
+	if w := do(r, "POST", "/api/v1/tasks/TASK-E5/execute", ""); w.Code != 200 {
+		t.Fatalf("execute → %d %s", w.Code, w.Body.String())
+	}
+	waitState(t, r, "TASK-E5", types.TaskStateWaitingGateApproval)
+	stub.mu.Lock()
+	prompt := stub.reqs[len(stub.reqs)-1].Messages[len(stub.reqs[len(stub.reqs)-1].Messages)-1].Content
+	stub.mu.Unlock()
+	for _, want := range []string{"Plan the evidence from the spec, not from the diff", filepath.Join(adir, "PRD.md"),
+		"#### RF-TC-001 — Finance refunds a paid invoice (P1, WEB)", "1. The invoice shows Refunded", "`flow` — FLOW-1", "set \"blocked\""} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("brief is missing %q:\n%s", want, prompt)
+		}
+	}
+	log := consoleText(r, "TASK-E5")
+	for _, want := range []string{"Spec coverage: 1 of 2 acceptance cases have evidence.", "• no evidence for RF-TC-002"} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("console is missing %q:\n%s", want, log)
+		}
+	}
+
+	w := do(r, "GET", "/api/v1/tasks/TASK-E5/evidence", "")
+	var got struct {
+		Spec evidenceSpecView `json:"spec"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	s := got.Spec
+	if s.Covered != 1 || len(s.Cases) != 2 || s.Cases[0].Status != "passed" || len(s.Cases[0].Evidence) != 1 || s.Cases[0].Evidence[0].ID != "FLOW-1" ||
+		s.Cases[1].Status != "missing" || len(s.Docs) != 2 {
+		t.Fatalf("spec = %+v", s)
+	}
+}
+
+func TestCoverageStatus(t *testing.T) {
+	for _, c := range []struct {
+		refs []evidenceRef
+		want string
+	}{
+		{nil, "missing"},
+		{[]evidenceRef{{Status: "blocked"}}, "blocked"},
+		{[]evidenceRef{{Status: "blocked"}, {Status: "passed"}}, "passed"},
+		{[]evidenceRef{{Status: "passed"}, {Status: "failed"}}, "failed"},
+	} {
+		if got := coverageStatus(c.refs); got != c.want {
+			t.Errorf("coverageStatus(%v) = %s, want %s", c.refs, got, c.want)
+		}
+	}
+}

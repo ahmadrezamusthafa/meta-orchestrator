@@ -75,6 +75,9 @@ const usesEnv = (v) => /\$\{[A-Z0-9_]+\}/.test(String(v ?? ''))
 const pathOf = (u) => { try { const x = new URL(u); return x.pathname + (x.search ? '?…' : '') } catch { return String(u).split('?')[0] } }
 const clock = () => new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
 const fmtSecs = (s) => (s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`)
+// What a case proves: a whole user journey, one acceptance case, or a full suite run (regression).
+const kindOf = (sc) => sc.kind || (/^suite/i.test(sc.id) ? 'suite' : /^flow/i.test(sc.id) ? 'flow' : 'acceptance')
+const KIND_LABEL = { flow: 'End-to-end flow', acceptance: 'Acceptance case', suite: 'Regression suite' }
 const stepCaption = (st) => redact(st.caption || st.command || `${st.action} ${st.target || st.value || ''}`.trim())
 
 // ---------------------------------------------------------------------------------------------
@@ -640,9 +643,10 @@ async function recordCase(browser, sc) {
   const agenda = steps.slice(0, 12).map((s, i) => `<div><span>${i + 1}.</span>${esc(stepCaption(s))}</div>`).join('') +
     (steps.length > 12 ? `<div><span></span>… ${steps.length - 12} more steps</div>` : '')
   const usesApp = base && steps.some((s) => !CARD_ACTIONS.includes(s.action))
-  await page.setContent(cardPage(sc, 'running', 'Test case', `<div class="big">${esc(redact(sc.title))}</div>
+  await page.setContent(cardPage(sc, 'running', KIND_LABEL[kindOf(sc)] || 'Test case', `<div class="big">${esc(redact(sc.title))}</div>
     ${gw.length ? `<div class="gw">${gw.map(([k, v]) => `<b>${k}</b><span>${esc(redact(v))}</span>`).join('')}</div>` : ''}
     <div class="chips">${(sc.covers || []).map((c) => `<span class="chip">covers ${esc(c)}</span>`).join('')}
+      ${sc.blocked ? `<span class="chip bad">⚠ partly blocked: ${esc(redact(sc.blocked))}</span>` : ''}
       <span class="chip">${total} step${total === 1 ? '' : 's'}</span>${usesApp ? `<span class="chip">app ${esc(base)}</span>` : ''}</div>
     <div class="kind" style="margin-top:6px">Steps</div><div class="agenda">${agenda}</div>`, 0, total, envLine))
   await page.waitForTimeout(Math.min(HOLD.title + steps.length * 300, 8000))
@@ -751,6 +755,9 @@ async function recordCase(browser, sc) {
     parts.push(part)
   }
 
+  // A case that cannot fully run locally never passes: what is missing is stated on the result.
+  if (sc.blocked && status === 'passed') status = 'blocked'
+
   // Result card: every step with its outcome, then what the browser reported.
   const icon = (p) => (p.status === 'passed' ? ['ok', '✓'] : p.status === 'info' ? ['dim', '•'] : p.status === 'skipped' ? ['dim', '–'] : ['bad', '✗'])
   const rows = parts.slice(0, 14).map((p, i) => {
@@ -762,8 +769,9 @@ async function recordCase(browser, sc) {
   const passedN = checked.filter((p) => p.status === 'passed').length
   await page.setContent(cardPage(sc, status, 'Result', `<div class="big">${esc(redact(sc.title))}</div>
     ${sc.expected ? `<div class="gw"><b>Expected</b><span>${esc(redact(sc.expected))}</span></div>` : ''}
+    ${sc.blocked ? `<div class="gw"><b class="bad">Blocked</b><span>${esc(redact(sc.blocked))}</span></div>` : ''}
     <div class="list">${rows}</div>
-    <div class="chips"><span class="chip ${status === 'passed' ? 'ok' : 'bad'}">${passedN} of ${checked.length} steps passed</span>
+    <div class="chips"><span class="chip ${status === 'passed' ? 'ok' : status === 'blocked' ? '' : 'bad'}">${passedN} of ${checked.length} steps passed</span>
       ${issues.length ? `<span class="chip bad">${issues.length} browser error${issues.length === 1 ? '' : 's'} — listed with the case</span>` : ''}</div>`, 0, total, envLine))
   await page.screenshot({ path: join(outDir, name + '.png') })
   const resultAt = at()
@@ -786,8 +794,8 @@ async function recordCase(browser, sc) {
   }
   rmSync(tmpVideo, { recursive: true, force: true })
   return {
-    id: sc.id, title: redact(sc.title), covers: sc.covers || [], given: redact(sc.given || ''), expected: redact(sc.expected || ''),
-    notes: redact(sc.notes || ''), status, video: file, poster: name + '.png', parts, result_at: resultAt, duration_s: duration,
+    id: sc.id, kind: kindOf(sc), title: redact(sc.title), covers: sc.covers || [], given: redact(sc.given || ''), expected: redact(sc.expected || ''),
+    notes: redact([sc.blocked ? `Blocked: ${sc.blocked}` : '', sc.notes || ''].filter(Boolean).join('\n')), status, video: file, poster: name + '.png', parts, result_at: resultAt, duration_s: duration,
     environment, issues, recorded_at: new Date().toISOString(),
   }
 }
@@ -808,7 +816,7 @@ function writeManifest(results) {
   const suites = new Map()
   for (const s of [...(m.suites || []), ...(board.suites || [])]) if (!suites.get(s.repository)?.case) suites.set(s.repository, s)
   for (const s of suiteRuns.values()) suites.set(s.repository, s)
-  const out = { ...m, title: board.title || m.title || '', generated_by: 'test-evidence-video', updated_at: new Date().toISOString(), cases }
+  const out = { ...m, title: board.title || m.title || '', ...(board.criteria ? { criteria: board.criteria.map((c) => ({ id: c.id, text: redact(c.text) })) } : {}), generated_by: 'test-evidence-video', updated_at: new Date().toISOString(), cases }
   if (suites.size) out.suites = [...suites.values()]
   writeFileSync(path, JSON.stringify(out, null, 2) + '\n')
 }

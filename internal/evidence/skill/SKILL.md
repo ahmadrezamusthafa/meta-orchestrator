@@ -1,52 +1,78 @@
 ---
 name: test-evidence-video
-description: "Test a finished change completely and record the proof: run every affected test suite for real, then record one narrated video per test case — a title card (Given / Expected / steps / commits under test), the test commands with their real output, counts and exit code, API calls with request, response and checks, browser walkthroughs of the running app with each action shown before and after and each check marked Verified, and a result card — plus an annotated screenshot per step and evidence.json. Built into the orchestrator; the default evidence skill of the Implementation stage."
+description: "Prove a finished feature works as specified, end to end: plan the evidence from the spec (user journeys, acceptance test cases, UI and API spec — not the diff), then record one narrated video per case in the running system — end-to-end user flows, one case per acceptance case (browser walkthroughs and API calls, every action and check annotated) and the full test suites as regression — plus a screenshot per step and evidence.json with the spec coverage. Built into the orchestrator; the default evidence skill of the Implementation stage."
 ---
 
-# test-evidence-video — test it completely, prove it step by step
+# test-evidence-video — prove the feature works, end to end, as specified
 
-Evidence is for a reviewer who did not write the change: they must be able to see, step by step,
-what was done and what proves the expected result — without reading the code. It is only worth
-something if it is real: commands run by the recorder (it captures the real exit code and
-output), API calls and screens of the change actually running. Never hand-write a result, never
-fake a passing run, never record against production.
+Evidence is for a reviewer — a product owner, QA, the client — who did not write the change and
+reads no code. It must show them that the feature **works completely, as specified**, in the
+running system, the way its users and clients use it. So the evidence is planned from the
+**spec**, not from the diff, and it is only worth something if it is real: screens and API calls
+of the change actually running, commands actually run by the recorder. Never hand-write a
+result, never fake a passing run, never record against production.
+
+## What to record
+
+Three kinds of case (`"kind"` in the storyboard):
+
+1. **`flow` — end-to-end user journeys** (`FLOW-1`, `FLOW-2`, …). Each main journey of the
+   feature in one continuous video: from where the user starts (sign in, the menu) through every
+   screen of the journey to the final outcome — and what the other side shows of it (the record in
+   the admin screen, the API's response, the notification). This is the demo that the feature
+   works completely; most features have 1–3. Take the journeys from the PRD / user stories.
+2. **`acceptance` — one case per acceptance test case** (its ATDD id), or per acceptance criterion
+   (`AC-1`, … listed in `criteria`) when the task has no ATDD cases. Preconditions become `given`,
+   the steps are driven through the running system, and every expected result gets a check.
+   Include the negative and edge cases: validation errors, empty states, permissions, limits.
+   A WEB case is a browser walkthrough; an API case is `api` steps against the running service, plus
+   the screen that shows the result when there is one.
+3. **`suite` — regression** (`SUITE-<repo>`): the full test suite of each repository you changed.
+
+Unit and integration test runs are regression only. They never prove an acceptance case on their
+own: an acceptance or flow case shows the system doing it. An existing end-to-end or system test
+that drives the real app (Playwright, Cypress, a Capybara feature spec, an API contract test) may
+run inside a case in addition to the walkthrough — never instead of it.
+
+Every acceptance case must be covered (`covers` of a flow may list the cases it walks through, but
+each acceptance case still gets its own case). The Evidence tab shows the coverage of the spec and
+flags any case without evidence.
 
 ## What good evidence looks like
 
-- **One case per acceptance test case**, named by its id, plus one `SUITE-<repo>` case per
-  repository you changed. Cover the negative and edge cases the acceptance criteria name
-  (validation errors, empty states, permissions), not only the happy path.
 - **Given / When / Then.** `given` states the starting data or state, the steps are the When, and
-  `expected` the Then. A reviewer reads the title card and knows what to look for.
+  `expected` the Then — in the spec's words. A reviewer reads the title card and knows what to
+  look for.
 - **Every action is followed by a check.** After a `click`, `fill` or `select` that changes the
   screen, add an `expect_*` step for the result the case is about (the row that appears, the
-  message, the new URL, the count). Checks are what turn a screen recording into proof: the
-  recorder fails the case when one does not hold.
-- **Captions say what happens, notes say why it matters.** `caption`: "Choose Paid in the Status
-  filter". `note` (optional): "The list is filtered server side — the API call below shows it".
-  Write them for a product owner, not a developer.
-- **Point at the proof.** Finish a browser case with `annotate` on the element that proves it
-  ("Status: PAID", the total, the new badge), labelled.
-- **Show every layer the change touches.** A change with any UI gets a browser walkthrough of the
-  screen it changes. A backend change gets `api` steps against the service running locally (the
-  status and the fields that prove the case). Both get a `run` of the narrowest test that covers it.
-- **Show the state before the change acts**, when it matters: e.g. the list with all rows
-  (`expect_count`) before the filter, then the filtered list.
+  message, the new URL, the count). Checks turn a screen recording into proof: the recorder fails
+  the case when one does not hold.
+- **Captions say what happens, notes say why it matters**, for a product owner, not a developer:
+  caption "Choose Paid in the Status filter", note "Only paid invoices are listed — rule FR-2".
+- **Point at the proof.** End a case with `annotate` on what proves it (the status, the total, the
+  new badge), labelled in the spec's terms.
+- **Show the state before the action**, when it matters: the list with all rows (`expect_count`)
+  before the filter, the balance before the refund.
+- **Honest about gaps.** When part of a case cannot run locally (a third-party service, data you
+  cannot create), record what can run, add a `card` saying exactly what is missing and why, and set
+  `"blocked"` on the case to that reason — the case is then reported Blocked, never Passed.
 
 ## Workflow
 
-1. **Find the test commands.** For every repository you changed, find how its tests really run:
-   `Makefile`, `package.json` scripts, `go.mod`, `Gemfile`/`bin/rspec`, CI config
-   (`.github/workflows`, `bitbucket-pipelines.yml`, `.gitlab-ci.yml`). Prefer the CI command.
-2. **Run them completely first** (outside the recorder) — unit, integration and the specs or e2e
-   tests that cover the change. Fix what your change broke and run again until green. A failure
-   that also happens without your change (check the base branch or the CI history) is
-   pre-existing: keep it, and say so in the case `notes` and the Summary.
-3. **Start what the cases need**, from the task worktree, the way the repository documents it (dev
-   server, `docker compose`), against a local or test database seeded with fake data. When the app
-   or service cannot start locally, keep the `run` parts and add a `card` that says why the browser
-   or API part is missing — never skip silently.
-4. **Write the storyboard** to `<evidence dir>/storyboard.json` (format below).
+1. **Read the spec**: the PRD, the user stories and acceptance criteria, the ATDD cases, the UI
+   spec or designs, the API contract, the tech doc. List the user journeys and the acceptance
+   cases to prove. Then read the change, only to know how to run it.
+2. **Run the full test suites** of every repository you changed (outside the recorder) — find how
+   they really run: `Makefile`, `package.json`, `go.mod`, `Gemfile`, CI config. Fix what your change
+   broke and re-run until green. A failure that also happens without your change is pre-existing:
+   keep it and say so.
+3. **Start the system** from the task worktrees, the way the repositories document it (dev server,
+   `docker compose`), every application the journeys pass through, against a local or test
+   database seeded with fake data that matches the cases' preconditions. Sign in with a test user
+   (credentials from the environment, `${NAME}`).
+4. **Write the storyboard** to `<evidence dir>/storyboard.json` (format below): the flows first,
+   then the acceptance cases in the spec's order, then the suites; `criteria` when there are no
+   ATDD cases.
 5. **Record one case per command**, so each call stays well inside the command time limit:
    ```bash
    node <skill dir>/scripts/record-evidence.mjs <evidence dir>/storyboard.json --case <id>
@@ -56,16 +82,18 @@ fake a passing run, never record against production.
    result card), `shots/<id>-NN.png` (step NN, annotated), `logs/` and merges the case into
    `<evidence dir>/evidence.json`. Exit code 1 means a case did not pass.
 6. **Review every take.** Open `<id>.png` and the `shots/` of the case with the Read tool. Each step
-   must show what its caption says, the outlined target must be the right element, and nothing
-   personal may be readable. A step that failed because of the storyboard (wrong selector, page
-   still loading — add a `wait`) → fix the storyboard and re-record the case. A step that failed
-   because of the code → fix the code, re-run the tests, re-record. Browser console errors listed
-   for a case are worth a look: mention any that the change causes. Expect 1–3 takes.
-7. **Clean up**: stop every server you started. Evidence files stay in the evidence dir only —
+   must show what its caption says, the outlined target must be the right element, the case must
+   prove its expected result, and nothing personal may be readable. A step that failed because of
+   the storyboard (wrong selector, page still loading — add a `wait`) → fix the storyboard and
+   re-record. A step that failed because of the code → fix the code, re-run the tests, re-record.
+   Browser console errors listed for a case are worth a look. Expect 1–3 takes.
+7. **Check coverage**: every acceptance case has a case of its own; every journey of the spec has a
+   flow.
+8. **Clean up**: stop every server you started. Evidence files stay in the evidence dir only —
    never add them to the repository.
-8. **Report** a `## Test evidence` section: a table of case id, title, status, steps passed and
-   video file; the full-suite results per repository (counts); and any pre-existing failure,
-   skipped browser or API part, or console error the change causes.
+9. **Report** a `## Test evidence` section: per case its id, kind, title, status and video file; the
+   acceptance cases that are blocked or without evidence, and why; the full-suite results per
+   repository (counts); any pre-existing failure, or console error the change causes.
 
 ## Storyboard
 
@@ -77,15 +105,27 @@ fake a passing run, never record against production.
   "api_base": "http://localhost:8080",
   "repos": ["/abs/worktree/billing", "/abs/worktree/billing-frontend"],
   "cases": [
-    {"id": "SUITE-billing-frontend", "title": "Full unit test suite of billing-frontend",
+    {"id": "FLOW-1", "kind": "flow", "title": "Finance finds the paid proforma invoices of a customer",
+     "covers": ["ABC-TC-001", "ABC-TC-003"], "given": "Signed in as Finance; customer PT Contoh has 2 paid and 1 unpaid invoice",
+     "expected": "The list shows only the customer's paid invoices, and the detail page agrees",
+     "steps": [
+       {"action": "goto", "target": "/login", "caption": "Sign in as Finance"},
+       {"action": "fill", "target": "label=Email", "value": "${TEST_USER}", "caption": "Test user"},
+       {"action": "fill", "target": "label=Password", "value": "${TEST_PASSWORD}", "caption": "Password"},
+       {"action": "click", "target": "role=button[name=\"Sign in\"]", "caption": "Sign in"},
+       {"action": "click", "target": "text=Proforma Invoices", "caption": "Open Proforma Invoices from the menu"},
+       {"action": "select", "target": "label=Status", "value": "Paid", "caption": "Filter by Paid"},
+       {"action": "expect_count", "target": "[data-testid=invoice-row]", "value": "2", "caption": "The two paid invoices remain"},
+       {"action": "click", "target": "text=INV-001", "caption": "Open the first invoice"},
+       {"action": "expect_text", "value": "Paid", "caption": "The detail page shows it as Paid"}
+     ]},
+    {"id": "SUITE-billing-frontend", "kind": "suite", "title": "Full unit test suite of billing-frontend",
      "steps": [{"action": "run", "command": "npm test -- --reporter=dot", "cwd": "/abs/worktree/billing-frontend",
                 "caption": "All unit tests", "suite": "billing-frontend", "timeout_s": 540}]},
-    {"id": "ABC-TC-001", "title": "Finance filters the list by Paid", "covers": ["ABC-TC-001"],
+    {"id": "ABC-TC-001", "kind": "acceptance", "title": "Finance filters the list by Paid", "covers": ["ABC-TC-001"],
      "given": "Three proforma invoices exist: two Paid, one Unpaid",
      "expected": "Only the two paid invoices are listed",
      "steps": [
-       {"action": "run", "command": "npx vitest run src/views/proforma -t 'status filter'", "cwd": "/abs/worktree/billing-frontend",
-        "caption": "Spec for the status filter", "highlight": "status filter"},
        {"action": "api", "method": "GET", "url": "/api/v1/proforma-invoices?status=paid", "headers": {"Authorization": "Bearer ${TEST_API_TOKEN}"},
         "caption": "The API returns only paid invoices", "expect_status": 200, "expect_body": ["\"paid\""], "expect_no_body": ["\"unpaid\""],
         "note": "The filter is applied server side"},
@@ -123,6 +163,11 @@ Steps, played in order (each gets its own screenshot and its time in the video):
 | `expect_count` | `target`, `value` (exact number) | ✓ Verified, every match outlined |
 | `annotate` | `targets: [{target, label}]` (or `target` + `label`) | **Look here**: each outlined, numbered and labelled |
 
+A case takes `id`, `kind` (`flow`, `acceptance`, `suite`; inferred from a `FLOW-`/`SUITE-` id), `title`,
+`covers`, `given`, `expected`, `notes`, `blocked` (why part of it cannot run — the case is then
+Blocked) and `steps`. `criteria` (top level, `[{"id": "AC-1", "text": "…"}]`) lists the acceptance
+criteria when the task has no ATDD cases.
+
 Every step takes `caption`, `note` and `hold_ms` (how long it stays on screen).
 Targets: `label=…`, `placeholder=…`, `testid=…`, `text=…`, `role=button[name="Save"]`, or CSS.
 `${NAME}` in a target, value, URL, header or body is read from the environment — use it for any
@@ -142,5 +187,5 @@ on a case whose browser steps are independent.
   secrets, tokens, emails and long numbers in logs, API responses and captions; still check every
   screenshot, and change fixture data that looks real.
 - Never print environment variables or `.env` files, and never put credentials in commands.
-- One case per recorder call; keep `run` parts to the narrowest command that proves the case,
-  except the `SUITE` cases.
+- One case per recorder call. Unit-test `run` parts belong in the `SUITE` cases, not in flows or
+  acceptance cases.

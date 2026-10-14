@@ -281,6 +281,8 @@ export interface EvidenceEnvironmentDTO {
 
 export interface EvidenceCaseDTO {
   id: string
+  // flow (an end-to-end user journey), acceptance (one acceptance case), suite (a full suite run)
+  kind?: string
   title?: string
   covers?: string[]
   given?: string
@@ -312,6 +314,18 @@ export interface EvidenceSuiteDTO {
   case?: string
 }
 
+// An acceptance case the evidence must prove, and the evidence cases that cover it
+export interface EvidenceSpecCaseDTO {
+  id: string
+  title: string
+  priority?: string
+  platform?: string
+  kind?: string
+  // passed, failed, blocked, missing (no evidence covers it)
+  status: string
+  evidence: { id: string; status: string }[]
+}
+
 export interface TaskEvidenceDTO {
   task_id: string
   enabled: boolean
@@ -321,12 +335,17 @@ export interface TaskEvidenceDTO {
   // Why Record evidence cannot run now ("" when it can)
   record_blocked: string
   report: {
-    manifest?: { title?: string; generated_by?: string; updated_at?: string; cases: EvidenceCaseDTO[]; suites?: EvidenceSuiteDTO[] }
+    manifest?: {
+      title?: string; generated_by?: string; updated_at?: string; cases: EvidenceCaseDTO[]; suites?: EvidenceSuiteDTO[]
+      criteria?: { id: string; text: string }[]
+    }
     manifest_error?: string
     videos: string[]
     passed: number
     failed: number
   }
+  // what the evidence must prove (the task's ATDD cases, or the criteria in evidence.json) and its coverage
+  spec?: { source?: string; docs: string[]; cases: EvidenceSpecCaseDTO[]; covered: number }
 }
 
 export interface TaskArtifactDTO {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/atdd"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/evidence"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/uat"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -143,20 +144,11 @@ func evidenceRunPrompt(t *types.Task, sameSession bool) string {
 func (r *Router) evidenceBrief(task *types.Task, p *evidencePrep) string {
 	var b strings.Builder
 	b.WriteString("\n\n## Test evidence (required before you finish this stage)\n")
-	fmt.Fprintf(&b, "When the implementation is done, test it completely and record video evidence with the skill %q (its instructions are in the Skills section).\n", p.Skill.Name)
+	fmt.Fprintf(&b, "When the implementation is done, prove the feature works as specified — end to end, in the running system — and record the evidence with the skill %q (its instructions are in the Skills section).\n", p.Skill.Name)
 	fmt.Fprintf(&b, "- Evidence directory (absolute, outside the repository): %s — save every evidence file there and nowhere in the repository. "+
 		"It may hold evidence from an earlier run: re-record every case and delete files that no longer apply.\n", p.Dir)
 	b.WriteString("- Run the complete test suites of every repository you changed, for real. Fix what your change broke and re-run until they pass; " +
 		"a failure that also happens without your change is pre-existing — keep it and say so. Never report a result you did not run.\n")
-	b.WriteString("- Make it reviewable step by step by someone who did not write the change: per case the starting state (Given), " +
-		"each action with a caption, a check after every action that proves its result, and the proof pointed out. " +
-		"A change with any UI gets a walkthrough of the screen it changes in the app running locally; a backend change gets calls to its API " +
-		"running locally. Cover the negative and edge cases the acceptance criteria name.\n")
-	if doc, err := r.resolveArtifactPath(task.ID, stageDocName("atdd_creation")); err == nil {
-		if _, err := os.Stat(doc); err == nil {
-			fmt.Fprintf(&b, "- Record one case per acceptance test case in %s (its atdd-cases block), using the case id as the evidence case id, plus one case per full suite run.\n", doc)
-		}
-	}
 	if p.Builtin {
 		fmt.Fprintf(&b, "- Record one case per call (timeout 600000 ms): %s\n", p.Recorder)
 		if !p.RecorderOK {
@@ -167,10 +159,13 @@ func (r *Router) evidenceBrief(task *types.Task, p *evidencePrep) string {
 		fmt.Fprintf(&b, "- The skill may write its videos elsewhere (e.g. tmp/ in the repository): copy each final video into %s, and remove the copies from the repository.\n", p.Dir)
 	}
 	fmt.Fprintf(&b, "- %s/%s lists the evidence (the built-in recorder writes it; otherwise write it yourself):\n", p.Dir, evidence.ManifestFile)
-	b.WriteString(`  {"cases": [{"id": "ABC-TC-001", "title": "…", "covers": ["ABC-TC-001"], "status": "passed|failed|blocked", "video": "ABC-TC-001.mp4", "notes": "…"}],` + "\n" +
+	b.WriteString(`  {"criteria": [{"id": "AC-1", "text": "…"}],` + "\n" +
+		`   "cases": [{"id": "ABC-TC-001", "kind": "flow|acceptance|suite", "title": "…", "covers": ["ABC-TC-001"], "status": "passed|failed|blocked", "video": "ABC-TC-001.mp4", "notes": "…"}],` + "\n" +
 		`   "suites": [{"repository": "…", "command": "…", "status": "passed|failed", "passed": 0, "failed": 0}]}` + "\n")
 	b.WriteString("- Use fake test data only, never a production or shared environment, and never put credentials into commands, storyboards or videos.\n")
-	b.WriteString("- Add a \"## Test evidence\" section to your report: case id, title, status and video file per case, and the suite results per repository.")
+	b.WriteString("- Add a \"## Test evidence\" section to your report: per case its id, kind, title, status and video file; the acceptance cases " +
+		"without evidence and why; and the suite results per repository.")
+	b.WriteString(r.specBrief(task))
 	return b.String()
 }
 
@@ -220,6 +215,21 @@ func (r *Router) reportEvidence(taskID, turnID string, p *evidencePrep) {
 				}
 			}
 		}
+		if t := r.taskSnapshot(taskID); t != nil {
+			spec := r.evidenceSpec(t, rep)
+			var missing []string
+			for _, c := range spec.Cases {
+				if c.Status == "missing" {
+					missing = append(missing, c.ID)
+				}
+			}
+			if len(spec.Cases) > 0 {
+				msg += fmt.Sprintf("\nSpec coverage: %d of %d acceptance case%s have evidence.", spec.Covered, len(spec.Cases), plural(len(spec.Cases)))
+			}
+			if len(missing) > 0 {
+				bad = append(bad, "• no evidence for "+strings.Join(missing, ", "))
+			}
+		}
 		if rep.ManifestError != "" {
 			bad = append(bad, "• "+rep.ManifestError)
 		} else if rep.Manifest == nil {
@@ -263,9 +273,10 @@ func (r *Router) handleTaskEvidence(w http.ResponseWriter, req *http.Request, ta
 	if skill == "" {
 		skill = evidence.SkillName
 	}
+	rep := evidence.Collect(r.evidenceDir(task.ID))
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"task_id": task.ID, "enabled": enabled, "skill": skill, "stage_id": evidenceStage, "record_blocked": evidenceBlocked(task),
-		"base_path": "evidence/", "report": evidence.Collect(r.evidenceDir(task.ID)),
+		"base_path": "evidence/", "report": rep, "spec": r.evidenceSpec(task, rep),
 	})
 }
 
@@ -335,4 +346,174 @@ func normalizeStageEvidence(stage string, e *types.StageEvidence, available map[
 		return nil, nil // the default
 	}
 	return out, nil
+}
+
+// ---------------------------------------------------------------------------------------------
+// The spec the evidence must prove. The evidence is planned from the spec — the acceptance test
+// cases and the documents they come from — not from the diff: it shows the feature working as
+// specified, end to end, in the running system.
+// ---------------------------------------------------------------------------------------------
+
+// specCase is one acceptance test case the evidence must prove, with the evidence that covers it.
+type specCase struct {
+	ID       string        `json:"id"`
+	Title    string        `json:"title"`
+	Priority string        `json:"priority,omitempty"`
+	Platform string        `json:"platform,omitempty"`
+	Kind     string        `json:"kind,omitempty"` // UAT, Sanity
+	Status   string        `json:"status"`         // passed, failed, blocked, missing (no evidence covers it)
+	Evidence []evidenceRef `json:"evidence"`
+	atdd     *atdd.Case
+}
+
+type evidenceRef struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+// evidenceSpecView is the spec and how far the recorded evidence covers it.
+type evidenceSpecView struct {
+	Source  string     `json:"source,omitempty"` // where the cases come from
+	Docs    []string   `json:"docs"`             // spec documents in the task's artifacts
+	Cases   []specCase `json:"cases"`
+	Covered int        `json:"covered"`
+}
+
+// specDocs are the task documents that specify the feature, in reading order.
+func (r *Router) specDocs(taskID string) []string {
+	var out []string
+	for _, name := range []string{"PRD.md", stageDocName("prd_discovery"), stageDocName("atdd_creation"), stageDocName("techdoc_rfc"),
+		stageDocName("task_breakdown"), stageDocName("contract_spec"), stageDocName("hotfix_reproduction")} {
+		if p, err := r.resolveArtifactPath(taskID, name); err == nil && fileExists(p) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// evidenceSpec lists what the evidence must prove: the task's ATDD cases, or else the acceptance
+// criteria the agent listed in evidence.json, each with the evidence cases that cover it.
+func (r *Router) evidenceSpec(t *types.Task, rep evidence.Report) evidenceSpecView {
+	v := evidenceSpecView{Docs: r.specDocs(t.ID), Cases: []specCase{}}
+	if cases, source, err := r.loadATDD(t); err == nil && len(cases) > 0 {
+		v.Source = source
+		for i := range cases {
+			c := &cases[i]
+			v.Cases = append(v.Cases, specCase{ID: c.ID, Title: c.Title, Priority: c.Priority, Platform: c.Platform, Kind: c.Kind(), atdd: c})
+		}
+	} else if rep.Manifest != nil && len(rep.Manifest.Criteria) > 0 {
+		v.Source = "acceptance criteria listed in evidence.json"
+		for _, c := range rep.Manifest.Criteria {
+			v.Cases = append(v.Cases, specCase{ID: c.ID, Title: c.Text})
+		}
+	}
+	for i := range v.Cases {
+		sc := &v.Cases[i]
+		sc.Evidence, sc.Status = []evidenceRef{}, "missing"
+		if rep.Manifest == nil {
+			continue
+		}
+		for _, c := range rep.Manifest.Cases {
+			if c.Kind != evidence.KindSuite && c.Proves(sc.ID) {
+				sc.Evidence = append(sc.Evidence, evidenceRef{ID: c.ID, Status: c.Status})
+			}
+		}
+		sc.Status = coverageStatus(sc.Evidence)
+		if sc.Status != "missing" {
+			v.Covered++
+		}
+	}
+	return v
+}
+
+// coverageStatus: failed when any covering case failed, passed when one passed, else blocked.
+func coverageStatus(refs []evidenceRef) string {
+	if len(refs) == 0 {
+		return "missing"
+	}
+	status := "blocked"
+	for _, e := range refs {
+		switch e.Status {
+		case "failed":
+			return "failed"
+		case "passed":
+			status = "passed"
+		}
+	}
+	return status
+}
+
+// maxBriefedCases bounds how many acceptance cases the brief spells out in full; the rest are
+// listed by id and title (the agent reads them from the source).
+const maxBriefedCases = 30
+
+// specBrief is the part of the evidence brief that says what to prove and against what.
+func (r *Router) specBrief(t *types.Task) string {
+	var b strings.Builder
+	b.WriteString("\n### What to prove: the spec, end to end\n")
+	b.WriteString("Plan the evidence from the spec, not from the diff. It must show a reviewer — who reads no code — that the feature works " +
+		"completely as specified, in the running system, the way its users and clients use it. Unit and integration test runs are regression " +
+		"evidence only (the SUITE cases); they never prove an acceptance case on their own.\n")
+	if docs := r.specDocs(t.ID); len(docs) > 0 {
+		b.WriteString("Spec documents (read them first; take the user journeys, screens, rules, API contracts and acceptance criteria from them):\n")
+		for _, d := range docs {
+			if p, err := r.resolveArtifactPath(t.ID, d); err == nil {
+				fmt.Fprintf(&b, "- %s\n", p)
+			}
+		}
+	}
+
+	if apps := r.taskApps(t); len(apps) > 0 {
+		b.WriteString("Applications of this task (run the changed ones locally from the task worktrees):\n")
+		for _, a := range apps {
+			fmt.Fprintf(&b, "- %s — %s (%s)", a.ID, a.Name, a.Kind)
+			if len(a.Repos) > 0 {
+				fmt.Fprintf(&b, "; repositories: %s", strings.Join(a.Repos, ", "))
+			}
+			if len(a.SignIn) > 0 {
+				fmt.Fprintf(&b, "; sign in: %s", strings.Join(a.SignIn, " → "))
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	cases, source, err := r.loadATDD(t)
+	switch {
+	case err != nil:
+		fmt.Fprintf(&b, "The ATDD sheet could not be read (%v): derive the acceptance criteria from the spec documents instead, as below.\n", err)
+		fallthrough
+	case len(cases) == 0:
+		b.WriteString("There are no ATDD cases for this task. Derive the acceptance criteria from the spec documents, number them AC-1, AC-2, … " +
+			"and list them in the storyboard's \"criteria\" ([{\"id\": \"AC-1\", \"text\": \"…\"}]); record one acceptance case per criterion " +
+			"with that id. The Evidence tab checks every criterion is covered.\n")
+	default:
+		fmt.Fprintf(&b, "Acceptance cases to prove (%d, from %s) — record each as its own case with the same id, its preconditions as `given`, "+
+			"its steps driven through the running system, and a check for every expected result. The Evidence tab shows which cases have no "+
+			"evidence:\n", len(cases), source)
+		for i, c := range cases {
+			if i >= maxBriefedCases {
+				fmt.Fprintf(&b, "- %s — %s\n", c.ID, c.Title)
+				continue
+			}
+			fmt.Fprintf(&b, "\n#### %s — %s (%s)\n", c.ID, c.Title, strings.Join(nonEmpty(c.Priority, c.Platform, c.TestLevel, c.Kind()), ", "))
+			writeList(&b, "Preconditions", c.Preconditions)
+			writeList(&b, "Steps", c.Steps)
+			writeList(&b, "Expected", c.ExpectedResults)
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("Record three kinds of case (\"kind\" in the storyboard):\n" +
+		"1. `flow` — FLOW-1, FLOW-2, …: each main user journey of the feature in one continuous video, from where the user starts " +
+		"(sign in, the menu) through every screen of the journey to the final outcome, including what other applications show of it " +
+		"(the record in the admin screen, the API's response). This is the demo that the feature works completely; most features have 1–3.\n" +
+		"2. `acceptance` — one case per acceptance case or criterion, as above, including the negative and edge cases: validation " +
+		"errors, empty states, permissions. A WEB case is a browser walkthrough; an API case is `api` steps against the running service " +
+		"(and the screen that shows the result, when there is one).\n" +
+		"3. `suite` — SUITE-<repo>: the full test suite of each repository you changed, as regression.\n" +
+		"An existing end-to-end or system test that drives the real app (Playwright, Cypress, a Capybara feature spec, an API contract test) " +
+		"may be run inside a flow or acceptance case in addition to the walkthrough — never instead of it.\n" +
+		"When part of a case cannot run locally (a third-party service, data you cannot create), record what can run, add a `card` saying " +
+		"exactly what is missing and why, and set \"blocked\" on the case to that reason — never let such a case pass.\n")
+	return b.String()
 }
