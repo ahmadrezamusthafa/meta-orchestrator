@@ -57,6 +57,14 @@ export interface StageRoute {
   wanted?: string
   // Skills attached to the stage; their instructions go into the stage brief when it runs
   skills?: string[]
+  // Implementation only: test evidence videos (absent = on, with the built-in skill)
+  evidence?: StageEvidence
+}
+
+export interface StageEvidence {
+  disabled?: boolean
+  // Library skill that records the evidence; empty uses the built-in test-evidence-video
+  skill?: string
 }
 
 // A skill that can be attached to a stage (enabled, with SKILL.md instructions)
@@ -104,6 +112,8 @@ export interface TaskAnalysisDTO {
   models: ModelOptionDTO[]
   skills: SkillOptionDTO[]
   skill_suggestions: Record<string, string[]>
+  evidence_skill?: SkillOptionDTO
+  evidence_suggestions?: string[]
 }
 
 export interface TaskRoutingDTO {
@@ -238,6 +248,109 @@ export interface UATGuideSettings {
   ignore_https_errors?: boolean
   save_only?: boolean
   rerender?: boolean
+}
+
+// Test evidence recorded by the Implementation stage (evidence/ in the task's artifacts)
+export interface EvidencePartDTO {
+  action: string
+  caption?: string
+  note?: string
+  // passed, failed, skipped (not run after a failure), info (a note card)
+  status?: string
+  verified?: boolean
+  error?: string
+  command?: string
+  exit_code?: number
+  seconds?: number
+  summary?: string
+  log?: string
+  url?: string
+  method?: string
+  http_status?: number
+  // seconds into the case's video
+  at?: number
+  shot?: string
+}
+
+export interface EvidenceEnvironmentDTO {
+  base_url?: string
+  browser?: string
+  viewport?: string
+  repos?: { name: string; branch?: string; commit?: string; uncommitted?: boolean }[]
+}
+
+export interface EvidenceCaseDTO {
+  id: string
+  // flow (an end-to-end user journey), acceptance (one acceptance case), suite (a full suite run)
+  kind?: string
+  title?: string
+  covers?: string[]
+  given?: string
+  expected?: string
+  status: string
+  video?: string
+  poster?: string
+  notes?: string
+  parts?: EvidencePartDTO[]
+  recorded_at?: string
+  duration_s?: number
+  result_at?: number
+  environment?: EvidenceEnvironmentDTO
+  // browser console errors and failing requests during the case
+  issues?: string[]
+  video_missing?: boolean
+}
+
+export interface EvidenceSuiteDTO {
+  repository: string
+  command?: string
+  status: string
+  passed?: number
+  failed?: number
+  skipped?: number
+  seconds?: number
+  log?: string
+  // the case whose video shows this run
+  case?: string
+}
+
+// An acceptance case the evidence must prove, and the evidence cases that cover it
+export interface EvidenceSpecCaseDTO {
+  id: string
+  title: string
+  priority?: string
+  platform?: string
+  kind?: string
+  // passed, failed, blocked, missing (no evidence covers it)
+  status: string
+  evidence: { id: string; status: string }[]
+}
+
+export interface TaskEvidenceDTO {
+  task_id: string
+  enabled: boolean
+  skill: string
+  stage_id: string
+  base_path: string
+  // Why Record evidence cannot run now ("" when it can)
+  record_blocked: string
+  report: {
+    manifest?: {
+      title?: string; generated_by?: string; updated_at?: string; cases: EvidenceCaseDTO[]; suites?: EvidenceSuiteDTO[]
+      criteria?: { id: string; text: string }[]
+      // the presentation: the whole evidence in one video, with chapters
+      summary?: {
+        video?: string; poster?: string; duration_s?: number; recorded_at?: string; video_missing?: boolean
+        chapters?: { id: string; title: string; at: number }[]
+      }
+    }
+    manifest_error?: string
+    videos: string[]
+    passed: number
+    failed: number
+  }
+  // what the evidence must prove (the task's ATDD cases, or the criteria in evidence.json) and its coverage
+  spec?: { source?: string; docs: string[]; cases: EvidenceSpecCaseDTO[]; covered: number }
 }
 
 export interface TaskArtifactDTO {

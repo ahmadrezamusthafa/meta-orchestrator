@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
-import type { StageRoute, MethodOptionDTO, ModelOptionDTO, SkillOptionDTO } from '../../types'
+import type { StageRoute, StageEvidence, MethodOptionDTO, ModelOptionDTO, SkillOptionDTO } from '../../types'
 import { stageName } from '../../composables/taskLifecycle'
-import { Plus, RotateCcw, Sparkles, X } from 'lucide-vue-next'
+import { Film, Plus, RotateCcw, Sparkles, X } from 'lucide-vue-next'
 
 // Editable routing plan: one row per stage with the proposed method and model, which the
 // operator can change. A row differing from its proposal is marked overridden.
@@ -18,6 +18,9 @@ const props = defineProps<{
   // Skills that can be attached to a stage, and the ones suggested per stage
   skills?: SkillOptionDTO[]
   skillSuggestions?: Record<string, string[]>
+  // The built-in test evidence skill of the Implementation stage, and library skills that record evidence
+  evidenceSkill?: SkillOptionDTO
+  evidenceSuggestions?: string[]
 }>()
 const emit = defineEmits<{ (e: 'update:rows', rows: StageRoute[]): void }>()
 
@@ -101,6 +104,24 @@ function closePicker() {
   pickerFor.value = null
   query.value = ''
 }
+// Test evidence: the Implementation stage tests the change completely and records a video per test
+// case — with the built-in skill unless the operator picks one from the skill library.
+const EVIDENCE_STAGE = 'task_implementation'
+const evidenceChoices = computed(() => {
+  const suggested = new Set(props.evidenceSuggestions ?? [])
+  const all = props.skills ?? []
+  return { suggested: all.filter((s) => suggested.has(s.name)), other: all.filter((s) => !suggested.has(s.name)) }
+})
+function setEvidence(i: number, patch: StageEvidence) {
+  const next = { ...(props.rows[i].evidence ?? {}), ...patch }
+  const evidence = next.disabled || next.skill ? next : undefined // absent = on, with the built-in skill
+  emit('update:rows', props.rows.map((r, j) => (j === i ? { ...r, evidence } : r)))
+}
+function evidenceSkillMissing(r: StageRoute) {
+  const s = r.evidence?.skill
+  return !!s && !skillByName.value.has(s)
+}
+
 function matches(r: StageRoute) {
   const have = new Set(attached(r))
   const q = query.value.trim().toLowerCase()
@@ -262,6 +283,41 @@ function matches(r: StageRoute) {
                   <li v-if="!matches(r).length" class="px-2.5 py-2 text-[11px] text-slate-500">No skills match “{{ query }}”.</li>
                 </ul>
               </div>
+              <div v-if="evidenceSkill && r.stage_id === EVIDENCE_STAGE" class="mt-1.5 flex flex-wrap items-center gap-2">
+                <span class="inline-flex items-center gap-1 text-[10px] font-mono text-slate-500"><Film class="w-3 h-3" /> Evidence</span>
+                <label class="inline-flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    class="accent-emerald-500"
+                    :checked="!r.evidence?.disabled"
+                    :disabled="disabled"
+                    @change="setEvidence(i, { disabled: !($event.target as HTMLInputElement).checked })"
+                  />
+                  Test completely and record a video per test case
+                </label>
+                <template v-if="!r.evidence?.disabled">
+                  <span class="text-[10px] text-slate-500">with</span>
+                  <select
+                    :value="r.evidence?.skill || ''"
+                    :disabled="disabled"
+                    :aria-label="`Skill that records the test evidence of ${stageName(r.stage_id)}`"
+                    class="h-6 max-w-[16rem] px-1.5 rounded bg-slate-900 border border-slate-700 text-[11px] font-mono text-slate-200 focus:outline-none focus:border-emerald-600"
+                    :title="(r.evidence?.skill ? skillByName.get(r.evidence.skill)?.description : evidenceSkill.description) || ''"
+                    @change="setEvidence(i, { skill: ($event.target as HTMLSelectElement).value })"
+                  >
+                    <option value="">{{ evidenceSkill.name }} (built in)</option>
+                    <option v-if="evidenceSkillMissing(r)" :value="r.evidence?.skill">{{ r.evidence?.skill }} (unavailable)</option>
+                    <optgroup v-if="evidenceChoices.suggested.length" label="Suggested from your skills">
+                      <option v-for="s in evidenceChoices.suggested" :key="s.name" :value="s.name">{{ s.name }}</option>
+                    </optgroup>
+                    <optgroup v-if="evidenceChoices.other.length" label="Other skills">
+                      <option v-for="s in evidenceChoices.other" :key="s.name" :value="s.name">{{ s.name }}</option>
+                    </optgroup>
+                  </select>
+                  <span v-if="evidenceSkillMissing(r)" class="text-[10px] text-rose-300">disabled or no longer installed — pick another</span>
+                </template>
+                <span v-else class="text-[10px] text-slate-600">off — the stage ends without test evidence</span>
+              </div>
             </td>
           </tr>
           </template>
@@ -273,6 +329,10 @@ function matches(r: StageRoute) {
       and their folders become readable to it. The task's Activity log lists the skills loaded and which of their files the agent opened.
       <template v-if="!skills.length">No skills can be attached yet: install or enable one on the <RouterLink to="/skills" class="text-emerald-400 hover:underline">Skills page</RouterLink>.</template>
       <template v-else>Suggestions (dashed) are based on the skill name; nothing is attached until you click it.</template>
+      <template v-if="evidenceSkill">
+        <span class="font-semibold text-slate-400"> Evidence</span> — after implementing, the agent runs the tests completely and records a
+        video per test case; watch them in the task's Evidence tab before approving.
+      </template>
     </p>
     <div class="px-3.5 py-2 border-t border-slate-800 grid gap-1 sm:grid-cols-2">
       <p v-for="m in methods" :key="m.id" class="text-[10px] text-slate-500 leading-snug">

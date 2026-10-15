@@ -141,6 +141,10 @@ func (p *PlaywrightRunner) ensure(ctx context.Context) error {
 	return nil
 }
 
+// Ensure installs playwright-core and Chromium into the tool directory when they are missing, so
+// other recorders can load playwright-core from Dir's node_modules.
+func (p *PlaywrightRunner) Ensure(ctx context.Context) error { return p.ensure(ctx) }
+
 // Capture drives every scenario in a headless browser and returns one result per step.
 func (p *PlaywrightRunner) Capture(ctx context.Context, job CaptureJob) ([]StepResult, error) {
 	timeout := p.Timeout

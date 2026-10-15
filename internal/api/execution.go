@@ -283,13 +283,20 @@ func (r *Router) executeStage(run *stageRun) {
 	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method)}}, history...)
 	message := run.trigger == "message"
 	rejected := run.trigger == "gate_rejected"
-	continuing := (run.trigger == "resume" || message || rejected) && canContinue
+	evidenceOnly := run.trigger == "evidence" // record test evidence for the implementation already done
+	continuing := (run.trigger == "resume" || message || rejected || evidenceOnly) && canContinue
 	feedback := run.feedback
 	if message {
 		feedback = "" // the operator's message is not rejection feedback
 	}
 	prompt := stagePrompt(task, feedback)
-	if message {
+	if evidenceOnly {
+		prompt = evidenceRunPrompt(task, canContinue)
+		if canContinue {
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+				"Continuing session %s on %s to test the change and record evidence.", shortID(sessionID), task.CurrentStageID)})
+		}
+	} else if message {
 		prompt = messagePrompt(task, run.feedback, sessionID != "", canContinue, prompt)
 		if sessionID != "" {
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
@@ -328,14 +335,38 @@ func (r *Router) executeStage(run *stageRun) {
 			"⚠ Skipping skill %s — disabled or no longer installed. Re-enable it on the Skills page, or remove it from this stage in the Routing tab.",
 			strings.Join(missing, ", "))})
 	}
-	if len(skills) > 0 {
-		if !continuing {
-			// A continued session already holds the skills from the stage's first turn.
-			prompt += skillsBrief(skills)
+	if evidenceOnly {
+		skills, missing = nil, nil // the turn only records evidence: just the evidence skill
+	}
+	ev, evNotes := r.prepareEvidence(run.ctx, task)
+	for _, n := range evNotes {
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: n})
+	}
+	addDirs := skillDirs(skills)
+	wasAttached := false // the operator also attached the evidence skill to the stage
+	if ev != nil {
+		if wasAttached = containsSkill(skills, ev.Skill.Name); !wasAttached {
+			skills = append(skills, ev.Skill)
 		}
+		addDirs = append(skillDirs(skills), ev.Dir)
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
-			"Skills for this stage: %s. Their instructions are in the agent's brief and their folders are readable to it; usage is reported when the stage finishes.",
-			strings.Join(skillNames(skills), ", "))})
+			"Test evidence is on for this stage: after implementing, the agent runs the tests completely and records a video per test case with %s into %s. "+
+				"Turn it off or pick another skill in the Routing tab.", ev.Skill.Name, ev.Dir)})
+	}
+	if len(skills) > 0 {
+		// A continued session already holds the skills from the stage's first turn — except an
+		// evidence run, whose session may predate evidence (or this evidence skill).
+		if !continuing || evidenceOnly {
+			prompt += skillsBrief(skills)
+			if ev != nil {
+				prompt += r.evidenceBrief(task, ev)
+			}
+		}
+		if attached := len(skills) - btoi(ev != nil && !wasAttached); attached > 0 {
+			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
+				"Skills for this stage: %s. Their instructions are in the agent's brief and their folders are readable to it; usage is reported when the stage finishes.",
+				strings.Join(skillNames(skills[:attached]), ", "))})
+		}
 	}
 	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: prompt})
 
@@ -358,15 +389,18 @@ func (r *Router) executeStage(run *stageRun) {
 	}
 	msgs[0].Content += "\n" + permissionBrief(permission)
 	resp, used, execErr := r.runAgentTurn(run.ctx, agentTurn{Source: "execute", TurnID: run.turnID, Task: task, Decision: decision,
-		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, AddDirs: skillDirs(skills), MaxTokens: 8192,
+		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, AddDirs: addDirs, MaxTokens: 8192,
 		PermissionMode: permission, Approver: r.approverFor(taskID, run.turnID, planExit)})
 	r.endTurn(taskID, run.turnID, resp, used)
 	r.notePRSync(taskID, run.turnID)
 	if resp != nil && len(skills) > 0 {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: skillUsageReport(skills, resp.ToolCalls)})
 	}
+	if ev != nil && execErr == nil && resp != nil {
+		r.reportEvidence(taskID, run.turnID, ev)
+	}
 
-	r.settleStage(taskID, task.CurrentStageID, resp, used, execErr)
+	r.settleStage(taskID, task.CurrentStageID, resp, used, execErr, !evidenceOnly)
 }
 
 func triggerText(trigger string) string {
@@ -385,9 +419,18 @@ func triggerText(trigger string) string {
 		return "re-running with your guidance"
 	case "message":
 		return "continuing with your message"
+	case "evidence":
+		return "recording test evidence for the implementation"
 	default:
 		return "started by operator"
 	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // stagePrompt is the user turn for a stage, including any operator feedback.
@@ -462,7 +505,8 @@ func sessionStagePrompt(t *types.Task, brief string) string {
 }
 
 // settleStage moves the task to its post-turn state and tells the operator what happens next.
-func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model string, execErr error) {
+// saveDoc is false for an evidence run, so it never replaces the stage's output (the PR description).
+func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model string, execErr error, saveDoc bool) {
 	var runRec telemetry.RunRecord
 	var haveRun bool
 	if r.telemetry != nil {
@@ -470,7 +514,7 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 		go func() { _, _ = r.recalibrate(context.Background()) }()
 	}
 
-	if execErr == nil && resp != nil {
+	if execErr == nil && resp != nil && saveDoc {
 		r.saveStageDocument(taskID, stage, model, resp.Content)
 		if stage == "uat_verification" && strings.TrimSpace(resp.Content) != "" {
 			defer r.startUATGuide(taskID) // after the gate state below is settled

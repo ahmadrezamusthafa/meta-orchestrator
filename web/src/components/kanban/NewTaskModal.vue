@@ -73,13 +73,15 @@ async function analyze(complexity?: Complexity) {
     const kept = new Map(planRows.value.filter((r) => r.overridden).map((r) => [r.stage_id, r]))
     // Attached skills are the operator's choice, so they survive a re-grade on every row.
     const skillsOf = new Map(planRows.value.map((r) => [r.stage_id, r.skills ?? []]))
+    const evidenceOf = new Map(planRows.value.map((r) => [r.stage_id, r.evidence]))
     if (complexity && analysis.value) res.assessment = { ...res.assessment, signals: analysis.value.assessment.signals }
     analysis.value = res
     planRows.value = res.plan.map((p) => {
       const k = kept.get(p.stage_id)
       const skills = skillsOf.get(p.stage_id) ?? []
-      if (k) return { ...k, skills, overridden: k.method !== p.method || k.model !== p.model, reasoning: p.reasoning, wanted: p.wanted }
-      return { stage_id: p.stage_id, method: p.method, model: p.model, tier: p.tier, reasoning: p.reasoning, wanted: p.wanted, overridden: false, skills }
+      const evidence = evidenceOf.get(p.stage_id)
+      if (k) return { ...k, skills, evidence, overridden: k.method !== p.method || k.model !== p.model, reasoning: p.reasoning, wanted: p.wanted }
+      return { stage_id: p.stage_id, method: p.method, model: p.model, tier: p.tier, reasoning: p.reasoning, wanted: p.wanted, overridden: false, skills, evidence }
     })
     step.value = 'review'
   } catch (err: any) {
@@ -298,7 +300,8 @@ async function handleSubmit() {
         </div>
         <ComplexityAssessmentCard :assessment="analysis.assessment" :busy="analyzing" @regrade="analyze" />
         <RoutingPlanTable v-model:rows="planRows" :proposed="proposed" :methods="analysis.methods" :models="analysis.models"
-          :skills="analysis.skills" :skill-suggestions="analysis.skill_suggestions" :disabled="analyzing" />
+          :skills="analysis.skills" :skill-suggestions="analysis.skill_suggestions"
+          :evidence-skill="analysis.evidence_skill" :evidence-suggestions="analysis.evidence_suggestions" :disabled="analyzing" />
         <p v-if="analyzeError" class="flex items-center gap-1.5 text-xs text-rose-400"><AlertOctagon class="w-3.5 h-3.5" />{{ analyzeError }}</p>
         <p class="text-[11px] text-slate-500">You can change the plan later from the task's Method &amp; Model tab; changes apply from the next stage run.</p>
       </div>

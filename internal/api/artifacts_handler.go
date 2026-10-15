@@ -17,7 +17,7 @@ const maxArtifactBytes = 2 << 20
 var safeTaskID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 var artifactContentTypes = map[string]string{
-	".mp4": "video/mp4", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+	".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 	".webp": "image/webp", ".svg": "image/svg+xml",
 }
 

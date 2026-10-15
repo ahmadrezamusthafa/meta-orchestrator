@@ -52,6 +52,16 @@ type StageRoute struct {
 	Overridden bool `json:"overridden,omitempty"`
 	// Skills the operator attached to this stage; their instructions go into the stage brief.
 	Skills []string `json:"skills,omitempty"`
+	// Evidence configures the test evidence videos of the Implementation stage; nil uses the defaults.
+	Evidence *StageEvidence `json:"evidence,omitempty"`
+}
+
+// StageEvidence is how the Implementation stage proves its change: run the tests completely and
+// record a video per test case, with the built-in evidence skill or one from the skill library.
+type StageEvidence struct {
+	Disabled bool `json:"disabled,omitempty"`
+	// Skill records the evidence; empty uses the built-in test-evidence-video skill.
+	Skill string `json:"skill,omitempty"`
 }
 
 // RouteFor returns the confirmed routing of a stage, or nil when the plan has none.
