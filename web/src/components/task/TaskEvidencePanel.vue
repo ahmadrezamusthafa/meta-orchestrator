@@ -5,7 +5,7 @@ import { api } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import {
   Film, RefreshCw, Loader2, CheckCircle2, XCircle, AlertTriangle, FileText, Route, Clapperboard, Copy, Download, Play,
-  MinusCircle, Info, ChevronLeft, ChevronRight, X, GitCommit, Bug, Image as ImageIcon, ListChecks,
+  MinusCircle, Info, ChevronLeft, ChevronRight, X, GitCommit, Bug, Image as ImageIcon, ListChecks, Presentation,
 } from 'lucide-vue-next'
 
 // Test evidence of the Implementation stage, planned from the spec: end-to-end user flows, one
@@ -48,7 +48,7 @@ const manifest = computed(() => report.value?.manifest)
 const cases = computed(() => manifest.value?.cases ?? [])
 // Videos no case names (a library skill without evidence.json, or extra takes) are listed as their own items.
 const items = computed<EvidenceCaseDTO[]>(() => {
-  const named = new Set(cases.value.map((c) => c.video).filter(Boolean))
+  const named = new Set([...cases.value.map((c) => c.video), manifest.value?.summary?.video].filter(Boolean))
   const loose = (report.value?.videos ?? []).filter((v) => !named.has(v))
     .map((v) => ({ id: v, title: 'Video without case results', status: 'unknown', video: v }))
   return [...cases.value, ...loose]
@@ -62,6 +62,30 @@ const GROUPS = [
   { kind: 'suite', label: 'Regression suites' }, { kind: 'other', label: 'Other videos' },
 ]
 const groups = computed(() => GROUPS.map((g) => ({ ...g, cases: shown.value.filter((c) => kindOf(c) === g.kind) })).filter((g) => g.cases.length))
+
+// ---- the presentation: the whole evidence in one video, with chapters ----
+const summary = computed(() => {
+  const sm = manifest.value?.summary
+  return sm?.video && !sm.video_missing ? sm : null
+})
+const summaryEl = ref<HTMLVideoElement | null>(null)
+const summaryNow = ref(0)
+const activeChapter = computed(() => {
+  let idx = -1
+  summary.value?.chapters?.forEach((c, i) => { if (c.at <= summaryNow.value + 0.05) idx = i })
+  return idx
+})
+function playChapter(at: number) {
+  const v = summaryEl.value
+  if (!v) return
+  v.currentTime = at
+  v.play().catch(() => {})
+}
+// The presentation is older than a case recorded after it: say so, so the reviewer re-records it.
+const summaryStale = computed(() => {
+  const at = summary.value?.recorded_at
+  return !!at && cases.value.some((c) => c.recorded_at && c.recorded_at > at)
+})
 
 // ---- spec coverage: every acceptance case and the evidence that proves it ----
 const spec = computed(() => data.value?.spec)
@@ -108,7 +132,9 @@ const tone = (s?: string) => TONE[s || 'unknown'] ?? TONE.unknown
 
 // What kind of step it is, for the badge in the step list.
 function kind(p: EvidencePartDTO): { label: string; cls: string } {
-  if (p.action === 'run') return { label: 'Test run', cls: 'text-sky-300 bg-sky-950/60 border-sky-900' }
+  if (p.action === 'run') return { label: 'Terminal', cls: 'text-sky-300 bg-sky-950/60 border-sky-900' }
+  if (p.action === 'start' || p.action === 'stop') return { label: 'Process', cls: 'text-cyan-300 bg-cyan-950/60 border-cyan-900' }
+  if (p.action === 'watch' || p.action === 'expect_log') return { label: 'Log check', cls: 'text-emerald-300 bg-emerald-950/60 border-emerald-900' }
   if (p.action === 'api') return { label: 'API', cls: 'text-indigo-300 bg-indigo-950/60 border-indigo-900' }
   if (p.action === 'log') return { label: 'Test log', cls: 'text-sky-300 bg-sky-950/60 border-sky-900' }
   if (p.action === 'card') return { label: 'Note', cls: 'text-slate-300 bg-slate-800 border-slate-700' }
@@ -231,6 +257,7 @@ async function copyReport() {
     lines.push('', '### Full test suites', '', '| Repository | Command | Passed | Failed | Result |', '|---|---|---|---|---|')
     for (const s of suites) lines.push(`| ${cell(s.repository)} | \`${cell(s.command)}\` | ${s.passed ?? '—'} | ${s.failed ?? '—'} | ${icon(s.status)} |`)
   }
+  if (summary.value?.video) lines.push('', `▶ Presentation: ${summary.value.video}${summary.value.duration_s ? ` (${clock(summary.value.duration_s)})` : ''}`)
   const bad = cases.value.filter((c) => c.status !== 'passed')
   if (bad.length) {
     lines.push('', '### Not passing')
@@ -263,9 +290,9 @@ watch(selected, () => { log.value = null; logError.value = ''; now.value = 0; li
               <span v-if="manifest?.updated_at" class="text-[11px] font-normal text-slate-500" :title="manifest.updated_at">· updated {{ ago(manifest.updated_at) }}</span>
             </h3>
             <p class="text-xs text-slate-400 leading-relaxed">
-              Proof that the feature works as specified: the agent plans the evidence from the spec and records, in the running system,
-              the end-to-end user flows and every acceptance case step by step — browser walkthroughs and API calls with each action and check
-              annotated — plus the full test suites as regression. Recorded with
+              Proof that every flow the change touches works end to end, as specified: recorded in the running system step by step —
+              the UI, API calls, live terminals, and jobs or workers started with their logs watched — every action and check annotated.
+              Unit-test suites are regression only. Recorded with
               <span class="font-mono text-slate-200">{{ data?.skill || 'test-evidence-video' }}</span>.
             </p>
           </div>
@@ -327,6 +354,36 @@ watch(selected, () => { log.value = null; logError.value = ''; now.value = 0; li
           {{ report.manifest_error }} — the videos are listed without case results.
         </p>
       </section>
+
+      <section v-if="summary" class="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <div class="px-4 py-2.5 border-b border-slate-800 flex flex-wrap items-center gap-2">
+          <h4 class="text-xs font-semibold text-slate-200 flex items-center gap-1.5"><Presentation class="w-3.5 h-3.5 text-purple-400" /> Evidence presentation</h4>
+          <span class="text-[11px] text-slate-500">The whole evidence in one video<template v-if="summary.duration_s"> · {{ clock(summary.duration_s) }}</template>
+            <template v-if="summary.recorded_at"> · recorded {{ ago(summary.recorded_at) }}</template></span>
+          <span v-if="summaryStale" class="text-[11px] text-amber-300">· a case was re-recorded after it — record again to refresh it</span>
+          <span class="flex-1" />
+          <a :href="url(summary.video)" :download="summary.video" class="inline-flex items-center gap-1 text-[11px] text-sky-300 hover:underline"><Download class="w-3 h-3" /> Download</a>
+        </div>
+        <div class="grid lg:grid-cols-[1fr_16rem]">
+          <div class="bg-black">
+            <video ref="summaryEl" :key="summary.video" :src="url(summary.video)" :poster="url(summary.poster)" controls preload="metadata"
+              class="w-full max-h-[62vh] mx-auto" aria-label="Test evidence presentation"
+              @timeupdate="summaryNow = ($event.target as HTMLVideoElement).currentTime" />
+          </div>
+          <nav v-if="summary.chapters?.length" aria-label="Presentation chapters" class="border-t lg:border-t-0 lg:border-l border-slate-800 max-h-[62vh] overflow-y-auto">
+            <button v-for="(c, i) in summary.chapters" :key="c.id + i" type="button" @click="playChapter(c.at)"
+              class="w-full text-left px-3 py-2 border-b border-slate-800/60 flex items-start gap-2 text-xs border-l-2"
+              :class="activeChapter === i ? 'bg-purple-950/30 border-l-purple-500 text-slate-100' : 'border-l-transparent text-slate-300 hover:bg-slate-800/50'">
+              <span class="font-mono text-[11px] text-slate-500 w-9 flex-shrink-0">{{ clock(c.at) }}</span>
+              <span class="min-w-0 leading-snug">{{ c.title }}</span>
+            </button>
+          </nav>
+        </div>
+      </section>
+      <p v-else-if="cases.length && data?.skill === 'test-evidence-video'" class="text-xs text-slate-400 bg-slate-900 border border-dashed border-slate-700 rounded-xl px-4 py-3 flex items-center gap-2">
+        <Presentation class="w-4 h-4 text-slate-500" /> No presentation video yet — it is recorded after the cases.
+        <template v-if="!readOnly">Record again to make it.</template>
+      </p>
 
       <section v-if="specCases.length" class="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden">
         <div class="px-4 py-2.5 border-b border-slate-800 flex flex-wrap items-center gap-2">
@@ -473,7 +530,7 @@ watch(selected, () => { log.value = null; logError.value = ''; now.value = 0; li
                       <span v-if="p.summary" class="text-slate-300">{{ p.summary }}</span>
                       <span v-if="p.seconds" class="text-slate-500">{{ clock(p.seconds) }} run</span>
                       <button v-if="p.log" type="button" @click="openLog(p.log)" class="inline-flex items-center gap-1 text-sky-300 hover:underline">
-                        <FileText class="w-3 h-3" /> {{ p.action === 'api' ? 'request & response' : 'full log' }}</button>
+                        <FileText class="w-3 h-3" /> {{ p.action === 'api' ? 'request & response' : ['start', 'watch', 'expect_log', 'stop'].includes(p.action) ? 'process log' : 'full log' }}</button>
                       <button v-if="p.at != null && current.video && !current.video_missing" type="button" @click="seek(p)"
                         class="inline-flex items-center gap-1 text-purple-300 hover:underline" :aria-label="`Play step ${i + 1} in the video`">
                         <Play class="w-3 h-3" /> {{ clock(p.at) }}</button>

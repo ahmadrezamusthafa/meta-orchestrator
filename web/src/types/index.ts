@@ -338,6 +338,11 @@ export interface TaskEvidenceDTO {
     manifest?: {
       title?: string; generated_by?: string; updated_at?: string; cases: EvidenceCaseDTO[]; suites?: EvidenceSuiteDTO[]
       criteria?: { id: string; text: string }[]
+      // the presentation: the whole evidence in one video, with chapters
+      summary?: {
+        video?: string; poster?: string; duration_s?: number; recorded_at?: string; video_missing?: boolean
+        chapters?: { id: string; title: string; at: number }[]
+      }
     }
     manifest_error?: string
     videos: string[]

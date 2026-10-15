@@ -154,6 +154,29 @@ type Criterion struct {
 	Text string `json:"text"`
 }
 
+// Chapter is where a part of the presentation starts, in seconds.
+type Chapter struct {
+	ID    string  `json:"id"`
+	Title string  `json:"title"`
+	At    float64 `json:"at"`
+}
+
+// Summary is the presentation video: the whole evidence in one video — verdict, spec coverage, a
+// chapter per case with its key steps, and the results.
+type Summary struct {
+	Video      string    `json:"video,omitempty"`
+	Poster     string    `json:"poster,omitempty"`
+	DurationS  int       `json:"duration_s,omitempty"`
+	Chapters   []Chapter `json:"chapters,omitempty"`
+	RecordedAt string    `json:"recorded_at,omitempty"`
+	// VideoMissing is set by Collect when the video is not in the directory.
+	VideoMissing bool `json:"video_missing,omitempty"`
+}
+
+// SpecFile lists the acceptance cases the evidence must prove, written by the orchestrator for
+// the recorder's presentation.
+const SpecFile = "spec.json"
+
 // Manifest is evidence.json: written by the recorder, or by the agent for a library skill.
 type Manifest struct {
 	Title       string      `json:"title,omitempty"`
@@ -162,6 +185,7 @@ type Manifest struct {
 	UpdatedAt   string      `json:"updated_at,omitempty"`
 	Cases       []Case      `json:"cases"`
 	Suites      []Suite     `json:"suites,omitempty"`
+	Summary     *Summary    `json:"summary,omitempty"`
 }
 
 // Report is what an evidence directory holds.
@@ -279,6 +303,10 @@ func Collect(dir string) Report {
 		if s.Status != "passed" {
 			rep.Failed++
 		}
+	}
+	if sm := m.Summary; sm != nil {
+		sm.Video, sm.Poster = cleanRel(sm.Video), cleanRel(sm.Poster)
+		sm.VideoMissing = sm.Video != "" && !present[sm.Video]
 	}
 	rep.Manifest = &m
 	return rep

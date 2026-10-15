@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -62,6 +63,7 @@ type evidencePrep struct {
 	Builtin    bool
 	Dir        string // evidence directory (absolute)
 	Recorder   string // command that records one case, for the built-in skill
+	Presenter  string // command that records the presentation video, for the built-in skill
 	RecorderOK bool   // playwright-core is installed for the built-in recorder
 }
 
@@ -85,6 +87,7 @@ func (r *Router) prepareEvidence(ctx context.Context, task *types.Task) (p *evid
 	}
 	p = &evidencePrep{Dir: r.evidenceDir(task.ID)}
 	_ = os.MkdirAll(p.Dir, 0o755)
+	r.writeEvidenceSpec(task, p.Dir)
 	if name != "" {
 		if s, ok := r.attachableSkills()[name]; ok {
 			p.Skill = s
@@ -102,10 +105,11 @@ func (r *Router) prepareEvidence(ctx context.Context, task *types.Task) (p *evid
 	defer cancel()
 	pwDir, err := ensureEvidencePlaywright(r, installCtx)
 	script := filepath.Join(dir, filepath.FromSlash(evidence.RecorderScript))
-	p.Recorder = fmt.Sprintf("node %s %s --case <id>", shellQuote(script), shellQuote(filepath.Join(p.Dir, "storyboard.json")))
+	base := fmt.Sprintf("node %s %s", shellQuote(script), shellQuote(filepath.Join(p.Dir, "storyboard.json")))
 	if pwDir != "" {
-		p.Recorder = "EVIDENCE_PLAYWRIGHT_DIR=" + shellQuote(pwDir) + " " + p.Recorder
+		base = "EVIDENCE_PLAYWRIGHT_DIR=" + shellQuote(pwDir) + " " + base
 	}
+	p.Recorder, p.Presenter = base+" --case <id>", base+" --summary"
 	p.RecorderOK = err == nil
 	if err != nil {
 		notes = append(notes, fmt.Sprintf("⚠ The evidence recorder could not install Playwright (%v). The agent still runs the tests completely "+
@@ -151,6 +155,8 @@ func (r *Router) evidenceBrief(task *types.Task, p *evidencePrep) string {
 		"a failure that also happens without your change is pre-existing — keep it and say so. Never report a result you did not run.\n")
 	if p.Builtin {
 		fmt.Fprintf(&b, "- Record one case per call (timeout 600000 ms): %s\n", p.Recorder)
+		fmt.Fprintf(&b, "- When every case is recorded, record the presentation — one video that presents the whole evidence to the reviewer "+
+			"(verdict, spec coverage, a chapter per case with its key steps, results) — and again after any re-take (timeout 600000 ms): %s\n", p.Presenter)
 		if !p.RecorderOK {
 			b.WriteString("  The recorder's Playwright is not installed on this machine: if the command fails, record with the repository's own tooling " +
 				"(e.g. Playwright or Capybara video) instead, and write evidence.json yourself.\n")
@@ -229,6 +235,11 @@ func (r *Router) reportEvidence(taskID, turnID string, p *evidencePrep) {
 			if len(missing) > 0 {
 				bad = append(bad, "• no evidence for "+strings.Join(missing, ", "))
 			}
+		}
+		if sm := manifestSummary(rep); sm != nil && sm.Video != "" && !sm.VideoMissing {
+			msg += fmt.Sprintf("\n▶ Presentation: %s (%s, %d chapters) — the whole evidence in one video.", sm.Video, (time.Duration(sm.DurationS) * time.Second).String(), len(sm.Chapters))
+		} else if p.Builtin {
+			bad = append(bad, "• no presentation video (SUMMARY.mp4): ask the agent to record it with --summary")
 		}
 		if rep.ManifestError != "" {
 			bad = append(bad, "• "+rep.ManifestError)
@@ -379,6 +390,40 @@ type evidenceSpecView struct {
 	Covered int        `json:"covered"`
 }
 
+func manifestSummary(rep evidence.Report) *evidence.Summary {
+	if rep.Manifest == nil {
+		return nil
+	}
+	return rep.Manifest.Summary
+}
+
+// writeEvidenceSpec writes the acceptance cases the evidence must prove into the evidence
+// directory, for the recorder's presentation (its coverage slide and verdict).
+func (r *Router) writeEvidenceSpec(t *types.Task, dir string) {
+	path := filepath.Join(dir, evidence.SpecFile)
+	cases, source, err := r.loadATDD(t)
+	if err != nil || len(cases) == 0 {
+		_ = os.Remove(path)
+		return
+	}
+	type item struct {
+		ID       string `json:"id"`
+		Title    string `json:"title"`
+		Priority string `json:"priority,omitempty"`
+		Platform string `json:"platform,omitempty"`
+	}
+	out := struct {
+		Source string `json:"source"`
+		Cases  []item `json:"cases"`
+	}{Source: source}
+	for _, c := range cases {
+		out.Cases = append(out.Cases, item{c.ID, c.Title, c.Priority, c.Platform})
+	}
+	if raw, err := json.MarshalIndent(out, "", "  "); err == nil {
+		_ = os.WriteFile(path, raw, 0o644)
+	}
+}
+
 // specDocs are the task documents that specify the feature, in reading order.
 func (r *Router) specDocs(taskID string) []string {
 	var out []string
@@ -450,10 +495,13 @@ const maxBriefedCases = 30
 // specBrief is the part of the evidence brief that says what to prove and against what.
 func (r *Router) specBrief(t *types.Task) string {
 	var b strings.Builder
-	b.WriteString("\n### What to prove: the spec, end to end\n")
-	b.WriteString("Plan the evidence from the spec, not from the diff. It must show a reviewer — who reads no code — that the feature works " +
-		"completely as specified, in the running system, the way its users and clients use it. Unit and integration test runs are regression " +
-		"evidence only (the SUITE cases); they never prove an acceptance case on their own.\n")
+	b.WriteString("\n### What to prove: the changed flows, end to end\n")
+	b.WriteString("Prove that every flow this change touches works end to end, as specified, in the running system — the way it runs for its users. " +
+		"Read the diff to find each entry point the change affects: screens, API endpoints, scheduled jobs and schedulers, workers and queue " +
+		"consumers, CLI commands, notifications and alerts. Each gets end-to-end evidence through that entry point, and the spec says what it must do. " +
+		"The evidence must show the system working: the UI, the API's responses, the terminal of a command, the live log of a job or worker " +
+		"(start it, trigger it, watch its log for what must — and must not — happen). Unit and integration test runs are regression only " +
+		"(the SUITE cases): the recorder refuses a flow or acceptance case made only of them.\n")
 	if docs := r.specDocs(t.ID); len(docs) > 0 {
 		b.WriteString("Spec documents (read them first; take the user journeys, screens, rules, API contracts and acceptance criteria from them):\n")
 		for _, d := range docs {
@@ -509,7 +557,9 @@ func (r *Router) specBrief(t *types.Task) string {
 		"(the record in the admin screen, the API's response). This is the demo that the feature works completely; most features have 1–3.\n" +
 		"2. `acceptance` — one case per acceptance case or criterion, as above, including the negative and edge cases: validation " +
 		"errors, empty states, permissions. A WEB case is a browser walkthrough; an API case is `api` steps against the running service " +
-		"(and the screen that shows the result, when there is one).\n" +
+		"(and the screen that shows the result, when there is one); a job, scheduler, worker or consumer case starts it (`start`), " +
+		"triggers it, and checks its live log (`watch`, `expect_log`) and the outcome (the API, the database through a `run`, the alert " +
+		"a mock receiver got).\n" +
 		"3. `suite` — SUITE-<repo>: the full test suite of each repository you changed, as regression.\n" +
 		"An existing end-to-end or system test that drives the real app (Playwright, Cypress, a Capybara feature spec, an API contract test) " +
 		"may be run inside a flow or acceptance case in addition to the walkthrough — never instead of it.\n" +

@@ -149,7 +149,8 @@ func TestImplementationStageBriefsBuiltinEvidenceAndReportsIt(t *testing.T) {
 	}
 
 	log := consoleText(r, "TASK-E1")
-	for _, want := range []string{"Test evidence is on for this stage", "🎬 Test evidence: 2 videos — 1 case passed, 1 failed or blocked", "TC-2 failed — Refund rejected"} {
+	for _, want := range []string{"Test evidence is on for this stage", "🎬 Test evidence: 2 videos — 1 case passed, 1 failed or blocked", "TC-2 failed — Refund rejected",
+		"• no presentation video (SUMMARY.mp4)"} {
 		if !strings.Contains(log, want) {
 			t.Fatalf("console is missing %q:\n%s", want, log)
 		}
@@ -293,13 +294,13 @@ func TestEvidenceIsPlannedFromTheSpecAndReportsCoverage(t *testing.T) {
 	dir := r.evidenceDir("TASK-E5")
 	stub.onRun = func() {
 		_ = os.MkdirAll(dir, 0o755)
-		for _, f := range []string{"FLOW-1.mp4", "SUITE-api.mp4"} {
+		for _, f := range []string{"FLOW-1.mp4", "SUITE-api.mp4", "SUMMARY.mp4"} {
 			_ = os.WriteFile(filepath.Join(dir, f), []byte("v"), 0o644)
 		}
 		m := evidence.Manifest{Cases: []evidence.Case{
 			{ID: "FLOW-1", Title: "Refund journey", Covers: []string{"RF-TC-001"}, Status: "passed", Video: "FLOW-1.mp4"},
 			{ID: "SUITE-api", Status: "passed", Video: "SUITE-api.mp4", Covers: []string{"RF-TC-002"}}, // a suite run proves no acceptance case
-		}}
+		}, Summary: &evidence.Summary{Video: "SUMMARY.mp4", DurationS: 96, Chapters: []evidence.Chapter{{ID: "overview", At: 0}, {ID: "FLOW-1", At: 12}}}}
 		raw, _ := json.Marshal(m)
 		_ = os.WriteFile(filepath.Join(dir, evidence.ManifestFile), raw, 0o644)
 	}
@@ -315,14 +316,19 @@ func TestEvidenceIsPlannedFromTheSpecAndReportsCoverage(t *testing.T) {
 	stub.mu.Lock()
 	prompt := stub.reqs[len(stub.reqs)-1].Messages[len(stub.reqs[len(stub.reqs)-1].Messages)-1].Content
 	stub.mu.Unlock()
-	for _, want := range []string{"Plan the evidence from the spec, not from the diff", filepath.Join(adir, "PRD.md"),
-		"#### RF-TC-001 — Finance refunds a paid invoice (P1, WEB)", "1. The invoice shows Refunded", "`flow` — FLOW-1", "set \"blocked\""} {
+	for _, want := range []string{"Prove that every flow this change touches works end to end", "scheduled jobs and schedulers", "`watch`, `expect_log`", filepath.Join(adir, "PRD.md"),
+		"#### RF-TC-001 — Finance refunds a paid invoice (P1, WEB)", "1. The invoice shows Refunded", "`flow` — FLOW-1", "set \"blocked\"",
+		"record the presentation", "--summary"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("brief is missing %q:\n%s", want, prompt)
 		}
 	}
 	log := consoleText(r, "TASK-E5")
-	for _, want := range []string{"Spec coverage: 1 of 2 acceptance cases have evidence.", "• no evidence for RF-TC-002"} {
+	raw, err := os.ReadFile(filepath.Join(dir, evidence.SpecFile))
+	if err != nil || !strings.Contains(string(raw), `"RF-TC-002"`) {
+		t.Fatalf("spec.json for the presentation = %s, %v", raw, err)
+	}
+	for _, want := range []string{"Spec coverage: 1 of 2 acceptance cases have evidence.", "• no evidence for RF-TC-002", "▶ Presentation: SUMMARY.mp4 (1m36s, 2 chapters)"} {
 		if !strings.Contains(log, want) {
 			t.Fatalf("console is missing %q:\n%s", want, log)
 		}
