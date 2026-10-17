@@ -255,11 +255,8 @@ func (r *Router) registerRoutes() {
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// Enable CORS for development frontend
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
-
+	// CORS and the loopback-only Host/Origin checks live in localaccess.Middleware, which wraps
+	// the daemon's whole mux; no wildcard origin is ever sent from here.
 	if req.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return

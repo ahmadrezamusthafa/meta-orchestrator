@@ -17,6 +17,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/hooks"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/localaccess"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
@@ -158,13 +159,15 @@ func main() {
 	})
 	mux.Handle("/api/", apiRouter)
 
+	listenAddr := localaccess.ListenAddr()
 	server := &http.Server{
-		Addr:    ":8080",
-		Handler: mux,
+		Addr:              listenAddr,
+		Handler:           localaccess.FromEnv().Middleware(mux),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {
-		fmt.Println("[HTTP] WebSocket & Health API server listening on :8080")
+		fmt.Printf("[HTTP] WebSocket & Health API server listening on %s\n", listenAddr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("[HTTP] Server error: %v\n", err)
 		}
