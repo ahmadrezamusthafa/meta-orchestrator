@@ -137,7 +137,9 @@ func mergeConfigs(target *OrchestratorConfig, override *OrchestratorConfig) {
 			if v.Model != "" {
 				existing.Model = v.Model
 			}
-			existing.Enabled = v.Enabled
+			if v.enabledSet {
+				existing.Enabled = v.Enabled
+			}
 			target.Providers[k] = existing
 		}
 	}
