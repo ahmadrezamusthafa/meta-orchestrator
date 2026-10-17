@@ -239,6 +239,33 @@ Submit human operator approval or rejection at a gated SDLC boundary (e.g. `tech
 * `POST /api/v1/projects/{id}/suggest-repos` `{"title","description"}`: Ranks the project's repositories by whole-word evidence in the draft task; nothing is selected automatically.
 * `POST /api/v1/projects/scan`: Auto-scan a directory path, discover child repositories, identify language manifests (`package.json`, `go.mod`, `playwright.config.ts`, `openapi.yaml`), and suggest roles (`frontend`, `backend`, `automation-test`, `contracts`, `artifact`).
 
+#### Repository dependencies
+
+Project dependencies (React, Go modules, Flutter packages, …) of each registered repository, per ecosystem. Paths always come from the projects manager (or the task's own worktree), never from the request.
+
+* `GET /api/v1/projects/{id}/dependencies[?task={taskId}][&latest=1]` → `{"project_id","repos":[RepoDeps]}`. With `task`, only the repositories assigned to that task are listed, read from the task's worktree (a repository whose worktree does not exist yet is left out; a task with worktrees disabled uses the source folder). `latest=1` adds `latest` to Node dependencies via `npm view <name> version` (at most 4 at a time, cached 1 h); the default GET never contacts a registry.
+  * `RepoDeps = {"repo","path","ecosystems":[Ecosystem],"job":Job|null}` — `job` is the repository's most recent install.
+  * `Ecosystem = {"ecosystem","manager","manifest","lockfile","installed","drift","install":{"command":[…],"auto","note"},"missing_tool","dependencies":[{"name","wanted","installed","latest","dev","key"}]}`. One entry per ecosystem (the shallowest manifest). `installed`: node — `node_modules` exists and its `.package-lock.json`/`.modules.yaml`/`.yarn-integrity`/`.yarn-state.yml` is not older than the lockfile and no installed version differs from it; go — every required module is in `GOMODCACHE`; flutter/dart — `.dart_tool/package_config.json` is not older than `pubspec.lock`; python — a project `.venv` exists; ruby/jvm — not checked (`false`, said in `install.note`). `drift` is a sentence when what is installed disagrees with the lockfile, else `""`. `missing_tool` is the toolchain id (`node`, `pnpm`, `yarn`, `bun`, `go`, `flutter`, `dart`, `java`, `maven`, `gradle`) to install when the manager binary is missing. `key` flags frameworks (react, vue, next, @angular/core, vite, typescript, jest, vitest, express, gin, echo, fiber, grpc, gorm, pgx, flutter_bloc, riverpod, dio, …).
+
+| Lockfile / manifest | `install.command` | `auto` |
+|---|---|---|
+| `package-lock.json`, `npm-shrinkwrap.json` | `npm ci` | yes |
+| `pnpm-lock.yaml` | `pnpm install --frozen-lockfile` | yes |
+| `yarn.lock` | `yarn install --frozen-lockfile` (Yarn 1) / `yarn install --immutable` (Berry: `.yarnrc.yml`, `packageManager: yarn@2+` or a Berry lockfile) | yes |
+| `bun.lock`, `bun.lockb` | `bun install --frozen-lockfile` | yes |
+| `package.json` only | `npm install` (or the declared manager), note "No lockfile — versions may drift." | yes |
+| `go.mod` | `go mod download` | yes |
+| `pubspec.yaml` | `flutter pub get` / `dart pub get` | yes |
+| `Gemfile(.lock)` | `bundle install` | yes |
+| `uv.lock` / `poetry.lock` / `Pipfile.lock` | `uv sync --frozen` / `poetry install --no-root` / `pipenv sync` | yes |
+| `requirements.txt` | `.venv/bin/python -m pip install -r requirements.txt` when `.venv` exists, else `python3 -m pip …` to copy | only with `.venv` |
+| `pom.xml` / `build.gradle(.kts)` | `./mvnw -q dependency:resolve` / `./gradlew dependencies` with the wrapper, else `mvn …` / `gradle …` to copy | only with the wrapper |
+
+* `POST /api/v1/projects/{id}/dependencies/install` `{"repo","ecosystem","task"?}` → `202 Job`. Runs the frozen install in the repository's registered folder (or the task's worktree; the repository must be assigned to the task and its worktree must exist, else `400`). Running it again is the rollback of local drift: it restores `node_modules` & co. to the lockfile. No shell (argv only), `CI=true`, 20-minute timeout that kills the whole process group, one install per repository at a time, output streamed into `log` with credentials masked. `501 {"error","install","missing_tool"}` when the command is not run automatically or its binary is missing; `409 {"error","job"}` while the repository already has an install running; `404` for an unknown project, repository, task or ecosystem.
+* `POST /api/v1/projects/{id}/dependencies/upgrade` `{"repo","ecosystem","name","target","note"?}` → `201 {"task": Task}`. A version change is a code change, so it becomes a task created through `POST /api/v1/tasks` itself: title `Upgrade <name> to <target> in <repo>`, the repository assigned, starting at `task_implementation` (when the default workflow has it), and a description with the exact steps — update manifest and lockfile together with the repository's manager (e.g. `npm install react@19.1.0`, `pnpm add`, `go get …@… && go mod tidy`, `flutter pub add`), move companion packages, fix breaking changes, run the repository's checks. The agent works in the task worktree, the change is reviewed in a pull request, and rollback is reverting it. `name` must be a dependency of the manifest (`404` otherwise); `name`/`target` are validated (`400`).
+* `GET /api/v1/dependencies/jobs/{id}` → `Job = {"id","package":"repo:<repo>","action":"install","version":"","from_version":"","state":"queued"|"running"|"succeeded"|"failed","log":[…],"message","started","finished"}`.
+* WebSocket `dependency.job` carries the `Job` on every state change and at most every 500 ms while it logs.
+
 ---
 
 ## 3. WebSocket Streaming Protocol
@@ -263,5 +290,6 @@ Submit human operator approval or rejection at a gated SDLC boundary (e.g. `tech
 | `agent.terminal` | Real-time stdout/stderr stream from container sandboxes | `{"stream": "stdout", "chunk": "..."}` |
 | `agent.thought` | Agent reasoning vectors, decisions, and tool calls | `{"profile": "Lead Architect", "model": "claude-3-5-sonnet", "thought": "...", "tool_call": { ... }}` |
 | `task.status` | State machine transition update | Serialized `Task` object |
+| `dependency.job` | Repository dependency install progress (state changes, then at most every 500 ms while logging) | Serialized dependency `Job` |
 | `frustration.halt` | Circuit breaker tripped on $\ge 3$ consecutive errors | `{"consecutive_fails": 3, "failing_trace": "...", "error_hash": "..."}` |
 | `evidence.video.ready` | Playwright `.mp4` test execution recording finalized | `{"video_path": ".sdlc/artifacts/TASK-8942/run_final.mp4", "url": "..."}` |

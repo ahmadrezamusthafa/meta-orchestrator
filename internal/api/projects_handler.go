@@ -59,6 +59,11 @@ func (r *Router) handleProjectItem(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if len(parts) > 1 && parts[1] == "dependencies" {
+		r.handleProjectDependencies(w, req, projectID, parts[2:])
+		return
+	}
+
 	if len(parts) > 1 && parts[1] == "suggest-repos" {
 		r.handleSuggestRepos(w, req, projectID)
 		return
