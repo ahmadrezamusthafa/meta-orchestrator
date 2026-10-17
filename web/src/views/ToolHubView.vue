@@ -5,11 +5,10 @@ import { useToastStore } from '../stores/toast'
 import type { ToolDTO } from '../types'
 import ToolLifecycleCard from '../components/tools/ToolLifecycleCard.vue'
 import InstallWizardModal from '../components/tools/InstallWizardModal.vue'
-import RollbackConfirmModal from '../components/tools/RollbackConfirmModal.vue'
 import BestFitMatrixModal from '../components/tools/BestFitMatrixModal.vue'
 import ToolchainSection from '../components/toolchain/ToolchainSection.vue'
 import ConnectorSuggestions from '../components/toolchain/ConnectorSuggestions.vue'
-import { Search, Sparkles, Wrench, X, RefreshCw } from 'lucide-vue-next'
+import { Search, Sparkles, X, RefreshCw } from 'lucide-vue-next'
 
 const toolsStore = useToolsStore()
 const toastStore = useToastStore()
@@ -17,11 +16,10 @@ const toastStore = useToastStore()
 const searchQuery = ref('')
 const selectedCategory = ref('All')
 const activeInstallTool = ref<ToolDTO | null>(null)
-const activeRollbackTool = ref<ToolDTO | null>(null)
 const showMatrixModal = ref(false)
 const isRefreshing = ref(false)
 
-const categories = ['All', 'Methodologies', 'Parsers', 'Runtimes', 'UI Kits']
+const categories = computed(() => ['All', ...new Set(toolsStore.tools.map((t) => t.category).filter(Boolean))])
 
 onMounted(async () => {
   await toolsStore.fetchTools()
@@ -42,34 +40,28 @@ const filteredTools = computed(() => {
   })
 })
 
-async function handleRollbackConfirm(version: string) {
-  if (activeRollbackTool.value) {
-    const name = activeRollbackTool.value.name
-    try {
-      await toolsStore.rollbackTool(activeRollbackTool.value.id, version)
-      toastStore.warning('Tool Rolled Back', `${name} reverted to version ${version}`)
-    } catch (err: any) {
-      toastStore.error('Rollback Failed', err?.message || `${name} was not rolled back`)
-    }
-    activeRollbackTool.value = null
-  }
-}
-
-function handleInstallCompleted() {
+async function handleInstallCompleted() {
   if (activeInstallTool.value) {
-    toastStore.success('Tool Activated', `${activeInstallTool.value.name} is ready for zero-trust workloads`)
+    toastStore.success('Tool installed', `${activeInstallTool.value.name} passed its health check`)
     activeInstallTool.value = null
   }
+  await toolsStore.fetchTools()
 }
 
+async function closeInstall() {
+  activeInstallTool.value = null
+  await toolsStore.fetchTools()
+}
+
+/** Re-runs every health check (e.g. after installing a tool from your own terminal). */
 async function handleRefresh() {
   isRefreshing.value = true
   try {
-    await toolsStore.fetchTools()
+    await toolsStore.recheckTools()
+  } catch (err: any) {
+    toastStore.error('Re-check failed', err?.message)
   } finally {
-    setTimeout(() => {
-      isRefreshing.value = false
-    }, 400)
+    isRefreshing.value = false
   }
 }
 </script>
@@ -117,7 +109,7 @@ async function handleRefresh() {
         <button
           @click="handleRefresh"
           :disabled="isRefreshing"
-          title="Refresh tools"
+          title="Re-run every health check"
           type="button"
           class="h-9 w-9 flex items-center justify-center rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
         >
@@ -130,7 +122,7 @@ async function handleRefresh() {
           class="h-9 px-3.5 rounded-lg bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-xs font-semibold uppercase tracking-wider flex items-center gap-2 transition-colors shadow-sm"
         >
           <Sparkles class="w-4 h-4 text-emerald-400" />
-          <span>Auto-Resolve Best Fit Matrix</span>
+          <span>Check compatibility</span>
         </button>
       </div>
     </div>
@@ -150,40 +142,27 @@ async function handleRefresh() {
         <ConnectorSuggestions :scope="{}" title="Connectors your repositories use" />
       </div>
 
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 font-semibold">Orchestrator packages</h2>
+      <h2 class="text-xs uppercase tracking-wider text-slate-500 font-semibold">Tools the orchestrator uses</h2>
+      <p v-if="!toolsStore.isLoading && !toolsStore.tools.length" class="text-xs text-slate-500">
+        No tools listed: configs/tools.json is missing or invalid (see the daemon log).
+      </p>
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <ToolLifecycleCard
           v-for="tool in filteredTools"
           :key="tool.id"
           :tool="tool"
           @install="activeInstallTool = tool"
-          @rollback="activeRollbackTool = tool"
         />
       </div>
     </main>
 
-    <!-- Guided Install Wizard Modal -->
     <InstallWizardModal
       v-if="activeInstallTool"
       :tool="activeInstallTool"
-      @close="activeInstallTool = null"
+      @close="closeInstall"
       @completed="handleInstallCompleted"
     />
 
-    <!-- Rollback Confirm Modal -->
-    <RollbackConfirmModal
-      v-if="activeRollbackTool"
-      :tool="activeRollbackTool"
-      @close="activeRollbackTool = null"
-      @confirm="handleRollbackConfirm"
-    />
-
-    <!-- Best Fit Matrix Modal -->
-    <BestFitMatrixModal
-      v-if="showMatrixModal"
-      :tools="toolsStore.tools"
-      @close="showMatrixModal = false"
-      @apply="showMatrixModal = false; toolsStore.fetchTools()"
-    />
+    <BestFitMatrixModal v-if="showMatrixModal" @close="showMatrixModal = false" />
   </div>
 </template>

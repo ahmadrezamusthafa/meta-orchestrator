@@ -86,10 +86,12 @@ func main() {
 	fmt.Printf("[Projects] Loaded %d registered multi-repo workspaces\n", len(projectMgr.List()))
 
 	// 3. Tool Lifecycle Manager
-	toolMgr := tools.NewToolManager("", func(toolID string, stage string, pct int, msg string) {
-		fmt.Printf("[Tool Progress] [%s] %s (%d%%): %s\n", toolID, stage, pct, msg)
-	})
-	fmt.Printf("[Tools] Registered %d installable packages\n", len(toolMgr.ListPackages()))
+	toolchainSvc := toolchain.New()
+	toolMgr, err := tools.Load(filepath.Join(cwd, "configs", "tools.json"), toolchainSvc)
+	if err != nil {
+		fmt.Printf("[Tools] Tool Hub manifest not loaded: %v\n", err)
+	}
+	fmt.Printf("[Tools] Tool Hub tracks %d tools\n", toolMgr.Count())
 
 	// 4. WebSocket Streaming Hub
 	wsHub := ws.NewHub()
@@ -144,6 +146,7 @@ func main() {
 		TaskStore:         taskStore,
 		WorkflowReg:       workflowReg,
 		ToolManager:       toolMgr,
+		Toolchain:         toolchainSvc,
 		ArtifactManager:   artifactMgr,
 		ConfigResolver:    configResolver,
 		ProjectManager:    projectMgr,

@@ -84,6 +84,9 @@ type Router struct {
 	lastPersisted []byte
 	stop          chan struct{}
 	closeOnce     sync.Once
+
+	toolMgrOnce sync.Once
+	toolMgr     *tools.ToolManager // Tool Hub: the tools the orchestrator itself needs
 }
 
 // NewRouter constructs a new REST API router.

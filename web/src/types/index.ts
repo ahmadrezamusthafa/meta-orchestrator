@@ -459,16 +459,59 @@ export interface OrchestratorEvent {
   payload: any
 }
 
+export interface ToolManualInstall {
+  docs: string
+  commands?: string[]
+  note?: string
+}
+
+/** A tool the orchestrator itself relies on (configs/tools.json), as its health check found it here. */
 export interface ToolDTO {
   id: string
   name: string
   category: string
-  current_version: string
-  latest_version: string
-  best_fit_version: string
-  status: 'HEALTHY' | 'UPDATE_AVAILABLE' | 'ERROR' | 'NOT_INSTALLED'
   description: string
-  past_versions: string[]
+  status: 'INSTALLED' | 'NOT_INSTALLED' | 'ERROR'
+  installed_version?: string
+  path?: string
+  problem?: string
+  health_check_cmd: string
+  required_runtimes?: Record<string, string>
+  /** Set when the toolchain catalog can install it (one click where the package manager allows). */
+  toolchain_id?: string
+  install: ToolManualInstall
+  job?: ToolchainJob
+  checked_at: string
+}
+
+/** POST /tools/install answer: a toolchain job (202) or how to install it yourself (501). */
+export type ToolInstallResult =
+  | { kind: 'job'; job: ToolchainJob }
+  | { kind: 'manual'; reason: string; install: ToolManualInstall }
+
+export interface ToolRuntimeCheck {
+  runtime: string
+  constraint: string
+  found?: string
+  satisfied: boolean
+  problem?: string
+}
+
+export interface ToolCompatibility {
+  tool_id: string
+  name: string
+  status: ToolDTO['status']
+  installed_version?: string
+  runtimes: ToolRuntimeCheck[]
+  compatible: boolean
+}
+
+export interface ToolMatrix {
+  host_os: string
+  host_arch: string
+  matrix_status: 'compatible' | 'conflicts'
+  tools: ToolCompatibility[]
+  conflicts: string[]
 }
 
 export interface ProviderDTO {

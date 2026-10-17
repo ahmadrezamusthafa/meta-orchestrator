@@ -1,90 +1,88 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { Sparkles, X, CheckCircle2 } from 'lucide-vue-next'
-import BtnPrimary from '../common/BtnPrimary.vue'
-
-defineProps<{
-  tools: any[]
-}>()
+import { ref, onMounted } from 'vue'
+import type { ToolMatrix } from '../../types'
+import { useToolsStore } from '../../stores/tools'
+import { Sparkles, X, Loader2 } from 'lucide-vue-next'
 
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'apply'): void
 }>()
 
-const isApplying = ref(false)
+const toolsStore = useToolsStore()
+const matrix = ref<ToolMatrix | null>(null)
+const error = ref('')
 
-function onApply() {
-  isApplying.value = true
-  setTimeout(() => {
-    emit('apply')
-  }, 500)
-}
+onMounted(async () => {
+  try {
+    matrix.value = await toolsStore.resolveBestFitMatrix()
+  } catch (err: any) {
+    error.value = err?.message || 'Could not check compatibility'
+  }
+})
 </script>
 
 <template>
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
-    <div class="w-full max-w-xl bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-6 space-y-4">
+    <div class="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-6 space-y-4">
       <div class="flex items-start justify-between">
         <div class="flex items-center gap-3">
           <div class="p-2 rounded bg-emerald-950 border border-emerald-800 text-emerald-400">
             <Sparkles class="w-5 h-5" />
           </div>
           <div>
-            <h3 class="text-sm font-bold text-slate-100">Best-Fit Matrix Evaluator</h3>
-            <span class="text-xs text-slate-400">Host Environment: Darwin ARM64</span>
+            <h3 class="text-sm font-bold text-slate-100">Compatibility with this machine</h3>
+            <span v-if="matrix" class="text-xs text-slate-400 font-mono">{{ matrix.host_os }}/{{ matrix.host_arch }}</span>
           </div>
         </div>
-        <button @click="$emit('close')" class="text-slate-500 hover:text-slate-300">
+        <button @click="emit('close')" class="text-slate-500 hover:text-slate-300">
           <X class="w-5 h-5" />
         </button>
       </div>
 
-      <p class="text-xs text-slate-300 leading-relaxed">
-        The orchestrator analyzed host CPU architecture, Node.js version, Go toolchain, and cross-tool lockfiles to compute the optimal conflict-free version matrix:
-      </p>
-
-      <div class="border border-slate-800 rounded-lg overflow-hidden">
-        <table class="w-full text-left text-xs font-mono">
-          <thead class="bg-slate-950 text-slate-400 border-b border-slate-800 text-[11px]">
-            <tr>
-              <th class="p-2.5">Tool</th>
-              <th class="p-2.5">Installed</th>
-              <th class="p-2.5">Best-Fit</th>
-              <th class="p-2.5">Status</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-slate-800/80 text-slate-300">
-            <tr v-for="t in tools" :key="t.id" class="hover:bg-slate-900/40">
-              <td class="p-2.5 font-sans font-medium text-slate-200">{{ t.name }}</td>
-              <td class="p-2.5 text-slate-400">{{ t.current_version }}</td>
-              <td class="p-2.5 text-emerald-400">{{ t.best_fit_version }}</td>
-              <td class="p-2.5">
-                <span class="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 text-[10px] border border-emerald-800">
-                  Optimal
-                </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <p v-if="error" class="text-xs text-rose-300">{{ error }}</p>
+      <div v-else-if="!matrix" class="flex items-center gap-2 text-xs text-slate-400">
+        <Loader2 class="w-4 h-4 animate-spin" /> Checking installed runtimes…
       </div>
+      <template v-else>
+        <p class="text-xs text-slate-300 leading-relaxed">
+          Each tool's required runtimes, checked against the versions installed here.
+        </p>
+        <div class="border border-slate-800 rounded-lg overflow-hidden">
+          <table class="w-full text-left text-xs">
+            <thead class="bg-slate-950 text-slate-400 border-b border-slate-800 text-[11px]">
+              <tr>
+                <th class="p-2.5">Tool</th>
+                <th class="p-2.5">Installed</th>
+                <th class="p-2.5">Runtimes</th>
+                <th class="p-2.5">Status</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800/80 text-slate-300">
+              <tr v-for="t in matrix.tools" :key="t.tool_id">
+                <td class="p-2.5 font-medium text-slate-200">{{ t.name }}</td>
+                <td class="p-2.5 font-mono text-slate-400">{{ t.installed_version || (t.status === 'INSTALLED' ? 'yes' : '—') }}</td>
+                <td class="p-2.5 font-mono">
+                  <div v-if="!t.runtimes.length" class="text-slate-500">none</div>
+                  <div v-for="r in t.runtimes" :key="r.runtime" :class="r.satisfied ? 'text-slate-300' : 'text-amber-300'">
+                    {{ r.runtime }} {{ r.constraint }} → {{ r.found || r.problem }}
+                  </div>
+                </td>
+                <td class="p-2.5">
+                  <span class="px-1.5 py-0.5 rounded text-[10px] border"
+                    :class="t.compatible ? 'bg-emerald-950 text-emerald-300 border-emerald-800' : 'bg-amber-950 text-amber-300 border-amber-800'">
+                    {{ t.compatible ? 'Compatible' : 'Runtime missing' }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
 
-      <div class="pt-3 border-t border-slate-800 flex items-center justify-end gap-3">
-        <button
-          @click="$emit('close')"
-          type="button"
-          class="h-9 px-4 rounded text-xs text-slate-400 hover:text-slate-200"
-        >
-          Dismiss
+      <div class="pt-3 border-t border-slate-800 flex items-center justify-end">
+        <button @click="emit('close')" type="button" class="h-9 px-4 rounded text-xs text-slate-400 hover:text-slate-200">
+          Close
         </button>
-
-        <BtnPrimary
-          :loading="isApplying"
-          @click="onApply"
-        >
-          <CheckCircle2 class="w-3.5 h-3.5" />
-          <span>Apply Recommended Matrix</span>
-        </BtnPrimary>
       </div>
     </div>
   </div>

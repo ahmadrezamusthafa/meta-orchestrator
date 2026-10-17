@@ -1,39 +1,38 @@
 package registry
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
 
 func TestToolRegistryManifest(t *testing.T) {
 	reg := NewToolRegistry()
-	toolsPath := filepath.Join("..", "..", "configs", "tools.json")
-
-	err := reg.LoadFromFile(toolsPath)
-	if err != nil {
+	if err := reg.LoadFromFile(filepath.Join("..", "..", "configs", "tools.json")); err != nil {
 		t.Fatalf("failed to load tools manifest: %v", err)
 	}
+	pkgs := reg.ListPackages()
+	if len(pkgs) == 0 {
+		t.Fatal("expected tools in the shipped manifest")
+	}
+	for _, p := range pkgs {
+		if p.Install.Docs == "" && p.ToolchainID == "" {
+			t.Errorf("%s: a tool without a toolchain installer needs install docs", p.ID)
+		}
+	}
+	pw, err := reg.GetPackage("playwright")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if argv := pw.HealthCheckArgv(); len(argv) != 4 || argv[0] != "npx" || argv[1] != "--no-install" {
+		t.Errorf("playwright health check argv = %v", argv)
+	}
+}
 
-	packages := reg.ListPackages()
-	if len(packages) < 5 {
-		t.Fatalf("expected at least 5 tools registered, got %d", len(packages))
-	}
-
-	// Verify Playwright package
-	pw, err := reg.GetPackage("playwright-engine")
-	if err != nil || pw == nil {
-		t.Fatalf("expected playwright-engine to exist: %v", err)
-	}
-	if pw.Category != "runtime" {
-		t.Errorf("expected runtime category, got %s", pw.Category)
-	}
-	if pw.HealthCheckCmd != "npx playwright --version" {
-		t.Errorf("unexpected health check cmd: %s", pw.HealthCheckCmd)
-	}
-
-	// Verify Tree-sitter package
-	ts, err := reg.GetPackage("treesitter-parsers")
-	if err != nil || ts.Category != "parser" {
-		t.Errorf("expected parser category for treesitter")
+func TestToolRegistryRejectsShellSyntax(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tools.json")
+	_ = os.WriteFile(path, []byte(`[{"id":"x","name":"X","health_check_cmd":"x --version && rm -rf /"}]`), 0o644)
+	if err := NewToolRegistry().LoadFromFile(path); err == nil {
+		t.Fatal("a health check with shell syntax must be rejected")
 	}
 }

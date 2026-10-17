@@ -1,84 +1,127 @@
 package tools
 
 import (
+	"fmt"
 	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/toolchain"
 )
 
-// BestFitResolution encapsulates resolved optimal tool version and rationale.
-type BestFitResolution struct {
-	ToolID          string `json:"tool_id"`
-	ResolvedVersion string `json:"resolved_version"`
-	HostOS          string `json:"host_os"`
-	HostArch        string `json:"host_arch"`
-	Rationale       string `json:"rationale"`
-	IsCompatible    bool   `json:"is_compatible"`
+// RuntimeCheck is one required runtime of a tool, as found on this machine.
+type RuntimeCheck struct {
+	Runtime    string `json:"runtime"`
+	Constraint string `json:"constraint"`
+	Found      string `json:"found,omitempty"` // detected version
+	Satisfied  bool   `json:"satisfied"`
+	Problem    string `json:"problem,omitempty"`
 }
 
-// ResolveBestFit inspects runtime architecture and OS to determine best compatible version.
-func (tm *ToolManager) ResolveBestFit(toolID string) (*BestFitResolution, error) {
-	pkg, err := tm.GetPackage(toolID)
-	if err != nil {
-		return nil, err
-	}
-
-	hostOS := runtime.GOOS
-	hostArch := runtime.GOARCH
-
-	var resolvedVer string
-	var rationale string
-
-	switch toolID {
-	case "treesitter-parsers":
-		if hostArch == "arm64" && hostOS == "darwin" {
-			resolvedVer = "0.22.6"
-			rationale = "Optimized Apple Silicon ARM64 prebuilt native Tree-sitter binaries"
-		} else {
-			resolvedVer = "0.22.6"
-			rationale = "Standard POSIX compatible Tree-sitter release"
-		}
-
-	case "playwright-engine":
-		resolvedVer = "1.48.0"
-		rationale = "Latest stable Chromium/WebKit headless engine with WebM and MP4 recording support"
-
-	case "bmad-methodology":
-		resolvedVer = "1.4.2"
-		rationale = "Stable BMAD multi-agent sequential handoff protocol release"
-
-	case "superpower-runtime":
-		resolvedVer = "2.1.0"
-		rationale = "Containerized and host-level execution harness with atomic worktree support"
-
-	default:
-		if len(pkg.AvailableVersions) > 0 {
-			resolvedVer = pkg.AvailableVersions[len(pkg.AvailableVersions)-1]
-			rationale = "Resolved latest available version"
-		} else {
-			resolvedVer = pkg.ActiveVersion
-			rationale = "Resolved active installed version"
-		}
-	}
-
-	return &BestFitResolution{
-		ToolID:          toolID,
-		ResolvedVersion: resolvedVer,
-		HostOS:          hostOS,
-		HostArch:        hostArch,
-		Rationale:       rationale,
-		IsCompatible:    true,
-	}, nil
+// Compatibility is whether a tool can run on this machine.
+type Compatibility struct {
+	ToolID           string         `json:"tool_id"`
+	Name             string         `json:"name"`
+	Status           string         `json:"status"`
+	InstalledVersion string         `json:"installed_version,omitempty"`
+	Runtimes         []RuntimeCheck `json:"runtimes"`
+	Compatible       bool           `json:"compatible"`
 }
 
-// ResolveAllBestFit calculates the optimal matrix for all registered tools.
-func (tm *ToolManager) ResolveAllBestFit() ([]*BestFitResolution, error) {
-	packages := tm.ListPackages()
-	var results []*BestFitResolution
+// Matrix is the compatibility of every manifest tool with this host.
+type Matrix struct {
+	HostOS    string          `json:"host_os"`
+	HostArch  string          `json:"host_arch"`
+	Status    string          `json:"matrix_status"` // "compatible" or "conflicts"
+	Tools     []Compatibility `json:"tools"`
+	Conflicts []string        `json:"conflicts"`
+}
 
-	for _, p := range packages {
-		res, err := tm.ResolveBestFit(p.ID)
-		if err == nil {
-			results = append(results, res)
+// runtimeCatalog maps a required_runtimes key to the toolchain catalog entry that detects it.
+var runtimeCatalog = map[string]string{"node": "node", "docker": "docker", "go": "go", "java": "java"}
+
+// ResolveMatrix checks every tool's required runtimes against the versions detected here.
+func (tm *ToolManager) ResolveMatrix() Matrix {
+	m := Matrix{HostOS: runtime.GOOS, HostArch: runtime.GOARCH, Status: "compatible", Tools: []Compatibility{}, Conflicts: []string{}}
+	for _, ts := range tm.List() {
+		c := Compatibility{ToolID: ts.ID, Name: ts.Name, Status: ts.Status, InstalledVersion: ts.InstalledVersion,
+			Runtimes: []RuntimeCheck{}, Compatible: true}
+		for _, name := range sortedKeys(ts.RequiredRuntimes) {
+			rc := tm.checkRuntime(name, ts.RequiredRuntimes[name])
+			if !rc.Satisfied {
+				c.Compatible = false
+				m.Conflicts = append(m.Conflicts, fmt.Sprintf("%s needs %s %s: %s", ts.Name, name, rc.Constraint, rc.Problem))
+			}
+			c.Runtimes = append(c.Runtimes, rc)
+		}
+		m.Tools = append(m.Tools, c)
+	}
+	if len(m.Conflicts) > 0 {
+		m.Status = "conflicts"
+	}
+	return m
+}
+
+func (tm *ToolManager) checkRuntime(name, constraint string) RuntimeCheck {
+	rc := RuntimeCheck{Runtime: name, Constraint: constraint}
+	id, ok := runtimeCatalog[name]
+	t, known := toolchain.Lookup(id)
+	if !ok || !known {
+		rc.Problem = "the orchestrator cannot detect this runtime"
+		return rc
+	}
+	s := tm.tc.Checker.Check(t)
+	if !s.Installed {
+		rc.Problem = "not installed"
+		if s.Problem != "" {
+			rc.Problem = s.Problem
+		}
+		return rc
+	}
+	rc.Found = ParseVersion(s.Version)
+	min, ok := strings.CutPrefix(strings.TrimSpace(constraint), ">=")
+	if !ok {
+		rc.Problem = "unsupported constraint (only >=X.Y.Z)"
+		return rc
+	}
+	if rc.Found == "" {
+		rc.Problem = "could not read its version from " + s.Version
+		return rc
+	}
+	rc.Satisfied = compareVersions(rc.Found, strings.TrimSpace(min)) >= 0
+	if !rc.Satisfied {
+		rc.Problem = "found " + rc.Found
+	}
+	return rc
+}
+
+// compareVersions compares dotted numeric versions; missing parts count as zero.
+func compareVersions(a, b string) int {
+	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		var x, y int
+		if i < len(pa) {
+			x, _ = strconv.Atoi(pa[i])
+		}
+		if i < len(pb) {
+			y, _ = strconv.Atoi(pb[i])
+		}
+		if x != y {
+			if x < y {
+				return -1
+			}
+			return 1
 		}
 	}
-	return results, nil
+	return 0
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
