@@ -115,6 +115,10 @@ func (r *Router) persistConsoles() error {
 	if dir == "" {
 		return nil
 	}
+	// Snapshot and write under one persistMu hold (see persistBoard), so an older transcript never
+	// overwrites a newer one. Lock order: persistMu, then h.mu.
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
 	h := r.console
 	h.mu.Lock()
 	if len(h.dirty) == 0 {
@@ -133,8 +137,6 @@ func (r *Router) persistConsoles() error {
 	h.dirty = nil
 	h.mu.Unlock()
 
-	r.persistMu.Lock()
-	defer r.persistMu.Unlock()
 	var firstErr error
 	for _, cf := range pending {
 		if err := writeConsoleFile(dir, cf); err != nil {
@@ -181,6 +183,10 @@ func (r *Router) removeConsoleFile(taskID string) {
 	if dir == "" {
 		return
 	}
+	// Waits for an in-flight persist that snapshotted the transcript before the delete, so it
+	// cannot write the file back afterwards.
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
 	if err := os.Remove(consolePath(dir, taskID)); err != nil && !os.IsNotExist(err) {
 		fmt.Printf("[Console] Failed to remove transcript of %s: %v\n", taskID, err)
 	}

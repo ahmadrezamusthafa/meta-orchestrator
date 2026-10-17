@@ -102,6 +102,10 @@ func (r *Router) persistBoard() error {
 	if path == "" {
 		return nil
 	}
+	// Snapshot and write under one persistMu hold, so a slower save of an older snapshot can never
+	// land on disk after a newer one. Lock order: persistMu, then r.mu.
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
 	r.mu.RLock()
 	bf := boardFile{Version: taskStoreVersion, NextTaskSeq: r.taskSeq + 1, Tasks: make([]*types.Task, 0, len(r.tasks))}
 	for _, t := range r.tasks {
@@ -123,8 +127,6 @@ func (r *Router) persistBoard() error {
 		return fmt.Errorf("encode board: %w", err)
 	}
 
-	r.persistMu.Lock()
-	defer r.persistMu.Unlock()
 	if bytes.Equal(data, r.lastPersisted) {
 		return nil
 	}
