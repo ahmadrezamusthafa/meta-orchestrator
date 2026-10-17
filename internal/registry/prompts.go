@@ -437,6 +437,11 @@ func (r *PromptRegistry) LoadAndRender(templateName string, slots *PromptSlots) 
 // 4. User System: ~/.config/meta-orchestrator/prompts/{templateName}
 // 5. Built-in: prompts/{templateName}
 func (r *PromptRegistry) ResolveTemplate(templateName string) (string, error) {
+	// The name comes from API callers: it must stay inside the prompt folders (".." would reach
+	// e.g. .sdlc/connectors.json from .sdlc/prompts).
+	if !filepath.IsLocal(templateName) {
+		return "", fmt.Errorf("invalid prompt template name %q", templateName)
+	}
 	candidates := []string{templateName}
 	if !strings.HasSuffix(templateName, ".md") {
 		candidates = append(candidates, templateName+".prompt.md", templateName+".md")

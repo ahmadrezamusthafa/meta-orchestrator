@@ -52,6 +52,24 @@ func TestPromptRegistryResolutionAndSlotFilling(t *testing.T) {
 	}
 }
 
+func TestResolveTemplateStaysInsideThePromptFolders(t *testing.T) {
+	root := t.TempDir()
+	reg := NewPromptRegistry(root)
+	reg.builtinsDir = filepath.Join("..", "..", "prompts")
+	_ = os.MkdirAll(filepath.Join(root, ".sdlc", "prompts", "team"), 0o755)
+	_ = os.WriteFile(filepath.Join(root, ".sdlc", "connectors.json"), []byte(`{"api_token":"not-a-prompt"}`), 0o600)
+	_ = os.WriteFile(filepath.Join(root, ".sdlc", "prompts", "team", "review.md"), []byte("team review"), 0o644)
+
+	for _, name := range []string{"../connectors.json", "../../.sdlc/connectors.json", filepath.Join(root, ".sdlc", "connectors.json"), ""} {
+		if got, err := reg.ResolveTemplate(name); err == nil {
+			t.Errorf("ResolveTemplate(%q) read a file outside the prompt folders: %q", name, got)
+		}
+	}
+	if got, err := reg.ResolveTemplate("team/review"); err != nil || got != "team review" {
+		t.Fatalf("a template in a subfolder still resolves: %q %v", got, err)
+	}
+}
+
 func TestBillingPromptsRealDirectory(t *testing.T) {
 	billingPromptsDir := "/Users/rezamekari/Projects/go/src/bitbucket.org/mid-kelola-indonesia/billing/.github/prompts"
 	if _, err := os.Stat(billingPromptsDir); os.IsNotExist(err) {
@@ -59,6 +77,7 @@ func TestBillingPromptsRealDirectory(t *testing.T) {
 	}
 
 	reg := NewPromptRegistry("")
+	reg.configPath = filepath.Join(t.TempDir(), "prompts_config.json") // never the operator's own config
 	templates, err := reg.CheckDirectoryCompatibility(billingPromptsDir)
 	if err != nil {
 		t.Fatalf("Failed to check compatibility of billing prompts: %v", err)
