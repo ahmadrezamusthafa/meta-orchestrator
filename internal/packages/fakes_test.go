@@ -92,8 +92,11 @@ esac
 const fakeBrew = `#!/bin/sh
 echo "brew $*" >> "$FAKE_LOG"
 case "$1" in
-install) printf '#!/bin/sh\necho "%s version 1.0"\n' "$2" > "$FAKE_BIN/$2"; chmod +x "$FAKE_BIN/$2" ;;
-upgrade) printf '#!/bin/sh\necho "%s version 1.1"\n' "$2" > "$FAKE_BIN/$2"; chmod +x "$FAKE_BIN/$2" ;;
+install|upgrade)
+  v=1.0; [ "$1" = upgrade ] && v=1.1
+  cellar="$FAKE_BIN/../Cellar/$2/$v/bin"; mkdir -p "$cellar"
+  printf '#!/bin/sh\necho "%s version %s"\n' "$2" "$v" > "$cellar/$2"; chmod +x "$cellar/$2"
+  ln -sf "$cellar/$2" "$FAKE_BIN/$2" ;;
 uninstall) rm -f "$FAKE_BIN/$2" ;;
 info) echo '{"formulae":[{"versions":{"stable":"1.1"}}]}' ;;
 esac

@@ -692,3 +692,18 @@ func TestFootprintFromInstallerManifest(t *testing.T) {
 		t.Fatalf("footprint = %s, want %s (gsd-plan and unsafe names must be left out)", got, want)
 	}
 }
+
+func TestSystemUpdateRefusesCopiesHomebrewDoesNotOwn(t *testing.T) {
+	e := newEnv(t, testManifest)
+	e.writeScript("brew", fakeBrew)
+	e.writeScript("fakeff", "#!/bin/sh\necho 'fakeff version 0.9'\n") // e.g. a vendor installer's copy
+	e.m.Invalidate()
+	p := e.pkg("ff")
+	if p.Status != StatusInstalled || p.Actions.Update || p.Actions.Uninstall || !strings.Contains(p.ActionNotes.Update, "not installed by Homebrew") {
+		t.Fatalf("a non-Homebrew copy must not be offered brew upgrade: %+v", p)
+	}
+	var me *ManualError
+	if _, err := e.m.Update("ff"); !errors.As(err, &me) {
+		t.Fatalf("update of a non-Homebrew copy = %v", err)
+	}
+}

@@ -3,6 +3,7 @@ package packages
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -121,6 +122,21 @@ func (m *Manager) systemManualError(s *Spec, what string) *ManualError {
 		}
 	}
 	return &ManualError{Reason: reason, Manual: man}
+}
+
+// brewOwned reports whether the binary at path is a Homebrew install (it resolves into a
+// Cellar or Caskroom). A copy from nvm, gvm, Docker Desktop or an installer must not be
+// "updated" with brew: that would change a different copy than the one in use.
+func brewOwned(path string) bool {
+	if path == "" {
+		return false
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	real = filepath.ToSlash(real)
+	return strings.Contains(real, "/Cellar/") || strings.Contains(real, "/Caskroom/")
 }
 
 func (m *Manager) brewCommand(r *jobRun, verb, formula string) error {

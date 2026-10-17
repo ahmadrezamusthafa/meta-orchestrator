@@ -81,7 +81,7 @@ func (m *Manager) planUpdate(s *Spec) (func(*jobRun) error, error) {
 		}, nil
 	}
 	f := m.brewFormula(s)
-	if f == "" || !brewAvailable() {
+	if f == "" || !brewAvailable() || !brewOwned(m.detectSystem(s).location) {
 		return nil, m.systemManualError(s, "update")
 	}
 	return func(r *jobRun) error { return m.brewCommand(r, "upgrade", f) }, nil
@@ -166,7 +166,7 @@ func (m *Manager) planUninstall(s *Spec) (func(*jobRun) error, error) {
 		return nil, ErrNotInstalled
 	}
 	f := m.brewFormula(s)
-	if f == "" || !brewAvailable() {
+	if f == "" || !brewAvailable() || !brewOwned(m.detectSystem(s).location) {
 		return nil, m.systemManualError(s, "uninstall")
 	}
 	return func(r *jobRun) error { return m.brewCommand(r, "uninstall", f) }, nil
@@ -236,9 +236,10 @@ func (m *Manager) actions(s *Spec, st PackageState, d detection) (Actions, Actio
 		p := m.systemInstallPlan(s)
 		formula := m.brewFormula(s)
 		brew := formula != "" && brewAvailable()
+		owned := brew && brewOwned(d.location)
 		a.Install = p.argv != nil && !installed
-		a.Update = installed && brew
-		a.Uninstall = installed && brew
+		a.Update = installed && owned
+		a.Uninstall = installed && owned
 		n.Rollback = systemRollbackNote
 		if p.argv != nil {
 			n.Install = "Runs `" + joinArgv(p.argv) + "`."
@@ -249,9 +250,12 @@ func (m *Manager) actions(s *Spec, st PackageState, d detection) (Actions, Actio
 				manual = &mm
 			}
 		}
-		if brew {
+		if owned {
 			n.Update = "Runs `brew upgrade " + formula + "`."
-			n.Uninstall = "Runs `brew uninstall " + formula + "`; it fails if this copy was not installed by Homebrew."
+			n.Uninstall = "Runs `brew uninstall " + formula + "`."
+		} else if installed {
+			n.Update = "The copy in use (" + d.location + ") was not installed by Homebrew; update it with the tool that installed it (e.g. nvm, gvm or the vendor's installer)."
+			n.Uninstall = "Uninstall it with the tool that installed it; the orchestrator only removes Homebrew copies."
 		} else {
 			n.Update = "Update it with the package manager that installed it."
 			n.Uninstall = "Uninstall it with the package manager that installed it."
