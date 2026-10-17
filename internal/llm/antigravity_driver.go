@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -133,13 +134,16 @@ func (d *AntigravityDriver) Complete(ctx context.Context, req *LLMRequest) (*LLM
 		return nil, fmt.Errorf("failed to marshal gemini request: %w", err)
 	}
 
-	targetURL := fmt.Sprintf("%s/models/%s:generateContent?key=%s", d.baseURL, model, d.apiKey)
+	// The key goes in a header, never the URL: transport errors quote the URL, and those errors
+	// reach the task console, WebSocket clients and the persisted transcript.
+	targetURL := fmt.Sprintf("%s/models/%s:generateContent", d.baseURL, url.PathEscape(model))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create http request: %w", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-goog-api-key", d.apiKey)
 
 	httpResp, err := d.httpClient.Do(httpReq)
 	if err != nil {
