@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -140,10 +141,31 @@ func TestApprovalRulePrefixes(t *testing.T) {
 		}
 	}
 	rule := approvalRule{Tool: "Bash", Prefix: "go test"}
-	for cmd, want := range map[string]bool{"go test ./...": true, "go testify": false, "go test ./... | tee x": false, "go vet": false} {
+	for cmd, want := range map[string]bool{"go test ./...": true, "go testify": false, "go test ./... | tee x": false, "go vet": false,
+		"go test ./... & rm -rf ~": false, "go test ./... &": false} {
 		if rule.matches("Bash", map[string]interface{}{"command": cmd}) != want {
 			t.Errorf("rule matches %q = %v, want %v", cmd, !want, want)
 		}
+	}
+}
+
+func TestConcurrentAlwaysAllowKeepsEveryRule(t *testing.T) {
+	r := hermeticRouter(t)
+	r.mu.Lock()
+	r.tasks["TASK-R"] = &types.Task{ID: "TASK-R", Title: "x", State: types.TaskStatePending, Metadata: map[string]string{}}
+	r.mu.Unlock()
+	const n = 50
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r.addApprovalRule("TASK-R", approvalRule{Tool: "Bash", Prefix: fmt.Sprintf("cmd%d", i)})
+		}(i)
+	}
+	wg.Wait()
+	if got := len(r.taskApprovalRules("TASK-R")); got != n {
+		t.Fatalf("saved %d of %d concurrently added rules", got, n)
 	}
 }
 

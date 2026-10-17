@@ -20,7 +20,7 @@ type ProviderDTO struct {
 	BaseURL       string   `json:"base_url,omitempty"`
 	DefaultModel  string   `json:"default_model"`
 	Models        []string `json:"models"`
-	AuthMethod    string   `json:"auth_method"`     // "api_key", "oauth", or "session_token"
+	AuthMethod    string   `json:"auth_method"` // "api_key", "oauth", or "session_token"
 	SupportsOAuth bool     `json:"supports_oauth"`
 	HasAPIKey     bool     `json:"has_api_key"`
 }
@@ -42,10 +42,10 @@ type ProviderTestRequest struct {
 
 // ProviderAuthState stores the persisted auth configuration for a single provider.
 type ProviderAuthState struct {
-	AuthMethod   string    `json:"auth_method"`              // "api_key", "oauth", "session_token"
-	APIKey       string    `json:"-"`                        // never exposed via API
-	SessionToken string    `json:"-"`                        // never exposed via API
-	MaskedKey    string    `json:"masked_key,omitempty"`     // masked display value
+	AuthMethod   string    `json:"auth_method"`          // "api_key", "oauth", "session_token"
+	APIKey       string    `json:"-"`                    // never exposed via API
+	SessionToken string    `json:"-"`                    // never exposed via API
+	MaskedKey    string    `json:"masked_key,omitempty"` // masked display value
 	SavedAt      time.Time `json:"saved_at"`
 }
 
@@ -285,10 +285,10 @@ func (r *Router) handleProviders(w http.ResponseWriter, req *http.Request) {
 }
 
 type AvailableModelDTO struct {
-	ProviderID   string  `json:"provider_id"`
-	ProviderName string  `json:"provider_name"`
-	ModelID      string  `json:"model_id"`
-	ModelName    string  `json:"model_name"`
+	ProviderID   string   `json:"provider_id"`
+	ProviderName string   `json:"provider_name"`
+	ModelID      string   `json:"model_id"`
+	ModelName    string   `json:"model_name"`
 	CostPer1k    float64  `json:"cost_per_1k"`
 	LatencyMs    int      `json:"latency_ms"`
 	Tiers        []string `json:"tiers"` // inferred tier tags, the default when added to the chain
@@ -363,13 +363,13 @@ var modelMetaMap = map[string]struct {
 	"claude-3-haiku-20240307":    {Name: "Claude 3 Haiku", CostPer1k: 0.00025, LatencyMs: 80},
 
 	// Gemini / Antigravity
-	"gemini-2.5-pro":               {Name: "Gemini 2.5 Pro (Ultra Reasoning)", CostPer1k: 0.00125, LatencyMs: 120},
-	"gemini-2.5-flash":             {Name: "Gemini 2.5 Flash", CostPer1k: 0.0001, LatencyMs: 60},
-	"gemini-2.0-flash":             {Name: "Gemini 2.0 Flash (Fast & Capable)", CostPer1k: 0.0001, LatencyMs: 65},
+	"gemini-2.5-pro":                {Name: "Gemini 2.5 Pro (Ultra Reasoning)", CostPer1k: 0.00125, LatencyMs: 120},
+	"gemini-2.5-flash":              {Name: "Gemini 2.5 Flash", CostPer1k: 0.0001, LatencyMs: 60},
+	"gemini-2.0-flash":              {Name: "Gemini 2.0 Flash (Fast & Capable)", CostPer1k: 0.0001, LatencyMs: 65},
 	"gemini-2.0-flash-thinking-exp": {Name: "Gemini 2.0 Flash Thinking", CostPer1k: 0.0001, LatencyMs: 95},
-	"gemini-1.5-pro":               {Name: "Gemini 1.5 Pro (2M Context)", CostPer1k: 0.00125, LatencyMs: 130},
-	"gemini-1.5-flash":             {Name: "Gemini 1.5 Flash", CostPer1k: 0.000075, LatencyMs: 70},
-	"gemini-1.5-flash-8b":          {Name: "Gemini 1.5 Flash 8B", CostPer1k: 0.0000375, LatencyMs: 50},
+	"gemini-1.5-pro":                {Name: "Gemini 1.5 Pro (2M Context)", CostPer1k: 0.00125, LatencyMs: 130},
+	"gemini-1.5-flash":              {Name: "Gemini 1.5 Flash", CostPer1k: 0.000075, LatencyMs: 70},
+	"gemini-1.5-flash-8b":           {Name: "Gemini 1.5 Flash 8B", CostPer1k: 0.0000375, LatencyMs: 50},
 
 	// OpenAI
 	"gpt-4.5-preview": {Name: "OpenAI GPT-4.5 Preview (Orion)", CostPer1k: 0.075, LatencyMs: 320},
@@ -384,13 +384,13 @@ var modelMetaMap = map[string]struct {
 	"gpt-4-turbo":     {Name: "OpenAI GPT-4 Turbo", CostPer1k: 0.010, LatencyMs: 290},
 
 	// OpenCode / Local
-	"deepseek-coder-v2":  {Name: "DeepSeek Coder V2 (Local MoE)", CostPer1k: 0.0, LatencyMs: 12},
-	"deepseek-r1":        {Name: "DeepSeek R1 (Open Reasoning)", CostPer1k: 0.0, LatencyMs: 25},
-	"qwen2.5-coder-32b":  {Name: "Qwen 2.5 Coder 32B (Local)", CostPer1k: 0.0, LatencyMs: 15},
-	"qwen2.5-coder-7b":   {Name: "Qwen 2.5 Coder 7B (Fast)", CostPer1k: 0.0, LatencyMs: 8},
-	"llama3.3-70b":       {Name: "Llama 3.3 70B Instruct (Local)", CostPer1k: 0.0, LatencyMs: 18},
-	"codellama-70b":      {Name: "CodeLlama 70B (Local)", CostPer1k: 0.0, LatencyMs: 22},
-	"starcoder2-15b":     {Name: "StarCoder2 15B (Local)", CostPer1k: 0.0, LatencyMs: 10},
+	"deepseek-coder-v2": {Name: "DeepSeek Coder V2 (Local MoE)", CostPer1k: 0.0, LatencyMs: 12},
+	"deepseek-r1":       {Name: "DeepSeek R1 (Open Reasoning)", CostPer1k: 0.0, LatencyMs: 25},
+	"qwen2.5-coder-32b": {Name: "Qwen 2.5 Coder 32B (Local)", CostPer1k: 0.0, LatencyMs: 15},
+	"qwen2.5-coder-7b":  {Name: "Qwen 2.5 Coder 7B (Fast)", CostPer1k: 0.0, LatencyMs: 8},
+	"llama3.3-70b":      {Name: "Llama 3.3 70B Instruct (Local)", CostPer1k: 0.0, LatencyMs: 18},
+	"codellama-70b":     {Name: "CodeLlama 70B (Local)", CostPer1k: 0.0, LatencyMs: 22},
+	"starcoder2-15b":    {Name: "StarCoder2 15B (Local)", CostPer1k: 0.0, LatencyMs: 10},
 }
 
 // builtinModelMeta is the shipped catalog. It is the source of truth for the name, price and
@@ -455,6 +455,9 @@ func registerCustomModel(providerID, modelID, modelName string, costPer1k float6
 		LatencyMs: latencyMs,
 	}
 
+	// defaultProviders is guarded by providerAuthStore.mu (lock order: modelMetaMu, then it).
+	providerAuthStore.mu.Lock()
+	defer providerAuthStore.mu.Unlock()
 	foundProvider := false
 	for i := range defaultProviders {
 		if defaultProviders[i].ID == providerID {
@@ -487,6 +490,8 @@ func registerChainModels(chain []router.PriorityModelItem) {
 func getAllAvailableModels() []AvailableModelDTO {
 	modelMetaMu.RLock()
 	defer modelMetaMu.RUnlock()
+	providerAuthStore.mu.RLock()
+	defer providerAuthStore.mu.RUnlock()
 
 	var list []AvailableModelDTO
 	seen := make(map[string]bool)
@@ -692,11 +697,14 @@ func applyProviderAuthUpdate(prev *ProviderAuthState, authMethod, apiKey string,
 	return state
 }
 
-// maskToken masks a token for safe display, showing first 6 and last 4 chars.
+// maskToken masks a token for safe display: first 6 and last 4 chars of long keys (their
+// non-secret prefix identifies the key type), only the last 4 of shorter ones.
 func maskToken(token string) string {
-	if len(token) <= 12 {
+	switch {
+	case len(token) <= 12:
 		return strings.Repeat("•", len(token))
+	case len(token) < 24:
+		return strings.Repeat("•", 16) + token[len(token)-4:]
 	}
 	return token[:6] + strings.Repeat("•", 16) + token[len(token)-4:]
 }
-

@@ -9,6 +9,15 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
 )
 
+// cannedForTests lets this package's tests use the "test-key"/"mock-" keys, which answer with
+// canned responses instead of calling a provider. It is never set outside tests, so a key that
+// merely looks like a test key can never produce a fabricated answer in the daemon.
+var cannedForTests bool
+
+func cannedKey(apiKey string) bool {
+	return cannedForTests && (apiKey == "test-key" || strings.HasPrefix(apiKey, "mock-"))
+}
+
 // CredentialResolver resolves live auth credentials for a given provider.
 type CredentialResolver func(providerID string) (apiKey string, sessionToken string, authMethod string)
 
@@ -66,6 +75,9 @@ func (f *ClientFactory) SetUsageObserver(obs UsageObserver) {
 
 func (f *ClientFactory) initializeDrivers() {
 	for name, provCfg := range f.cfg.Providers {
+		if !provCfg.Enabled {
+			continue
+		}
 		switch name {
 		case "claude":
 			f.providers["claude"] = NewAnthropicDriver(provCfg.APIKey, provCfg.BaseURL)
@@ -106,17 +118,28 @@ func (f *ClientFactory) GetClient(modelStr string) (ProviderClient, string, erro
 	}
 
 	// If credential resolver is provided, update client with latest credentials
+	// The configured base URL (a proxy or gateway) is kept, and the configured key is used when the
+	// runtime store has none.
 	if f.credResolver != nil {
 		apiKey, sessionToken, _ := f.credResolver(providerName)
+		provCfg := f.cfg.Providers[providerName]
+		if providerName == "openai" {
+			if c, ok := f.cfg.Providers["chatgpt"]; ok && provCfg == (config.AIProviderConfig{}) {
+				provCfg = c
+			}
+		}
+		if apiKey == "" {
+			apiKey = provCfg.APIKey
+		}
 		switch providerName {
 		case "claude":
-			d := NewAnthropicDriver(apiKey, "")
+			d := NewAnthropicDriver(apiKey, provCfg.BaseURL)
 			d.SetSessionToken(sessionToken)
 			f.providers["claude"] = d
 		case "antigravity":
-			f.providers["antigravity"] = NewAntigravityDriver(apiKey, "")
+			f.providers["antigravity"] = NewAntigravityDriver(apiKey, provCfg.BaseURL)
 		case "openai":
-			f.providers["openai"] = NewOpenAIDriver(apiKey, "")
+			f.providers["openai"] = NewOpenAIDriver(apiKey, provCfg.BaseURL)
 		}
 	}
 
@@ -185,4 +208,3 @@ func (f *ClientFactory) ExecuteWithFallback(ctx context.Context, primaryModel st
 	resp, _, err := f.ExecuteWithFallbackChain(ctx, chain, req, nil)
 	return resp, err
 }
-

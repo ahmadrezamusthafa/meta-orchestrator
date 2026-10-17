@@ -9,13 +9,55 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
+// transitions is the task lifecycle: the states a task may move to from each state. It is the single
+// source of truth for both the live stage controller (internal/api) and StateMachine.
+//
+//	PENDING / SUSPENDED / FAILED / WAITING_GATE_APPROVAL(reject) --run--> RUNNING
+//	RUNNING --success--> WAITING_GATE_APPROVAL --approve--> next stage PENDING … last stage → COMPLETED
+//	RUNNING --error--> FAILED        any active state --pause--> SUSPENDED
+//	any active state --unmet deps--> WAITING_DEPENDENCY
+//
+// Operators may also close an idle task (→ COMPLETED) or reopen a completed one (→ PENDING).
+var transitions = map[types.TaskState][]types.TaskState{
+	types.TaskStatePending: {types.TaskStateRunning, types.TaskStateWaitingDependency, types.TaskStateSuspended,
+		types.TaskStateCompleted, types.TaskStateFailed},
+	types.TaskStateRunning: {types.TaskStateWaitingGateApproval, types.TaskStateFailed, types.TaskStateSuspended,
+		types.TaskStateBlockedFrustration},
+	types.TaskStateWaitingGateApproval: {types.TaskStateRunning, types.TaskStatePending, types.TaskStateCompleted,
+		types.TaskStateSuspended, types.TaskStateFailed, types.TaskStateWaitingDependency},
+	types.TaskStateFailed: {types.TaskStateRunning, types.TaskStatePending, types.TaskStateSuspended,
+		types.TaskStateWaitingDependency, types.TaskStateCompleted},
+	types.TaskStateSuspended: {types.TaskStateRunning, types.TaskStatePending, types.TaskStateWaitingDependency,
+		types.TaskStateCompleted, types.TaskStateFailed},
+	types.TaskStateWaitingDependency: {types.TaskStateRunning, types.TaskStatePending, types.TaskStateSuspended,
+		types.TaskStateCompleted},
+	types.TaskStateBlockedFrustration: {types.TaskStateRunning, types.TaskStatePending, types.TaskStateSuspended,
+		types.TaskStateFailed, types.TaskStateCompleted},
+	types.TaskStateCompleted: {types.TaskStatePending},
+}
+
+// CanTransition reports whether a task may move from one state to another. Staying in the same
+// state is always allowed.
+func CanTransition(from, to types.TaskState) bool {
+	if from == to {
+		return true
+	}
+	for _, s := range transitions[from] {
+		if s == to {
+			return true
+		}
+	}
+	return false
+}
+
 // StatePersistenceCallback is called whenever task state updates.
 type StatePersistenceCallback func(task *types.Task) error
 
 // StateTransitionHook is invoked before/after stage changes.
 type StateTransitionHook func(task *types.Task, fromStage string, toStage string) error
 
-// StateMachine manages runtime execution of an orchestrated task across SDLC stages.
+// StateMachine manages runtime execution of an orchestrated task across SDLC stages, following the
+// same lifecycle as the live stage controller: every stage ends in operator review.
 type StateMachine struct {
 	mu           sync.RWMutex
 	workflow     *types.WorkflowDefinition
@@ -82,13 +124,7 @@ func NewStateMachine(
 func (f *StateMachine) CurrentStage() *types.WorkflowStage {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-
-	for i := range f.workflow.Stages {
-		if f.workflow.Stages[i].ID == f.task.CurrentStageID {
-			return &f.workflow.Stages[i]
-		}
-	}
-	return nil
+	return f.CurrentStageUnlocked()
 }
 
 // Start begins execution of the current stage.
@@ -96,22 +132,31 @@ func (f *StateMachine) Start(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	stage := f.CurrentStageUnlocked()
-	if stage == nil {
+	if f.CurrentStageUnlocked() == nil {
 		return fmt.Errorf("current stage '%s' not found in workflow", f.task.CurrentStageID)
 	}
-
-	if stage.Type == types.StageTypeReview && stage.RequiresGate {
-		f.task.State = types.TaskStateWaitingGateApproval
-	} else {
-		f.task.State = types.TaskStateRunning
+	if err := f.setStateUnlocked(types.TaskStateRunning); err != nil {
+		return err
 	}
-	f.task.UpdatedAt = time.Now()
-
 	return f.persist()
 }
 
-// ApproveGate releases an execution blocked on human approval.
+// CompleteCurrentStage records that the current stage's turn finished; its output now awaits review.
+func (f *StateMachine) CompleteCurrentStage() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.task.State != types.TaskStateRunning {
+		return fmt.Errorf("cannot complete stage %s: task is %s, not running", f.task.CurrentStageID, f.task.State)
+	}
+	if err := f.setStateUnlocked(types.TaskStateWaitingGateApproval); err != nil {
+		return err
+	}
+	return f.persist()
+}
+
+// ApproveGate approves the reviewed stage: the task moves to the next stage (pending until it runs)
+// or completes after the slice's last stage.
 func (f *StateMachine) ApproveGate(approver string, notes string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -127,19 +172,6 @@ func (f *StateMachine) ApproveGate(approver string, notes string) error {
 	f.task.Metadata["gate_approval_notes"] = notes
 	f.task.Metadata["gate_approved_at"] = time.Now().Format(time.RFC3339)
 
-	// Gate approved, advance to next stage
-	return f.advanceToNextStageUnlocked()
-}
-
-// CompleteCurrentStage marks current stage finished and advances or halts.
-func (f *StateMachine) CompleteCurrentStage() error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.task.State == types.TaskStateWaitingGateApproval {
-		return fmt.Errorf("cannot complete stage %s: waiting for human gate approval", f.task.CurrentStageID)
-	}
-
 	return f.advanceToNextStageUnlocked()
 }
 
@@ -148,13 +180,13 @@ func (f *StateMachine) FailCurrentStage(reason string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.task.State = types.TaskStateFailed
+	if err := f.setStateUnlocked(types.TaskStateFailed); err != nil {
+		return err
+	}
 	if f.task.Metadata == nil {
 		f.task.Metadata = make(map[string]string)
 	}
 	f.task.Metadata["failure_reason"] = reason
-	f.task.UpdatedAt = time.Now()
-
 	return f.persist()
 }
 
@@ -163,14 +195,14 @@ func (f *StateMachine) BlockFrustration(signature string, consecutive int) error
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.task.State = types.TaskStateBlockedFrustration
+	if err := f.setStateUnlocked(types.TaskStateBlockedFrustration); err != nil {
+		return err
+	}
 	if f.task.Metadata == nil {
 		f.task.Metadata = make(map[string]string)
 	}
 	f.task.Metadata["frustration_signature"] = signature
 	f.task.Metadata["consecutive_failures"] = fmt.Sprintf("%d", consecutive)
-	f.task.UpdatedAt = time.Now()
-
 	return f.persist()
 }
 
@@ -182,9 +214,9 @@ func (f *StateMachine) ResumeFromFrustration() error {
 	if f.task.State != types.TaskStateBlockedFrustration {
 		return fmt.Errorf("task %s is not blocked in frustration", f.task.ID)
 	}
-
-	f.task.State = types.TaskStateRunning
-	f.task.UpdatedAt = time.Now()
+	if err := f.setStateUnlocked(types.TaskStateRunning); err != nil {
+		return err
+	}
 	return f.persist()
 }
 
@@ -204,44 +236,37 @@ func (f *StateMachine) CurrentStageUnlocked() *types.WorkflowStage {
 	return nil
 }
 
+func (f *StateMachine) setStateUnlocked(to types.TaskState) error {
+	if !CanTransition(f.task.State, to) {
+		return fmt.Errorf("task %s cannot move from %s to %s", f.task.ID, f.task.State, to)
+	}
+	f.task.State = to
+	f.task.UpdatedAt = time.Now()
+	return nil
+}
+
 func (f *StateMachine) advanceToNextStageUnlocked() error {
 	prevStageID := f.task.CurrentStageID
-
-	// Check if this was the halt stage for the active slice
-	if f.task.CurrentStageIndex >= f.slicePlan.HaltIndex {
-		f.task.State = types.TaskStateCompleted
-		f.task.UpdatedAt = time.Now()
-		if f.onTransition != nil {
-			_ = f.onTransition(f.task, prevStageID, "COMPLETED")
-		}
-		return f.persist()
-	}
-
 	nextIdx := f.task.CurrentStageIndex + 1
-	if nextIdx >= len(f.workflow.Stages) {
-		f.task.State = types.TaskStateCompleted
-		f.task.UpdatedAt = time.Now()
+
+	if f.task.CurrentStageIndex >= f.slicePlan.HaltIndex || nextIdx >= len(f.workflow.Stages) {
+		if err := f.setStateUnlocked(types.TaskStateCompleted); err != nil {
+			return err
+		}
 		if f.onTransition != nil {
 			_ = f.onTransition(f.task, prevStageID, "COMPLETED")
 		}
 		return f.persist()
 	}
 
-	nextStage := f.workflow.Stages[nextIdx]
+	if err := f.setStateUnlocked(types.TaskStatePending); err != nil {
+		return err
+	}
 	f.task.CurrentStageIndex = nextIdx
-	f.task.CurrentStageID = nextStage.ID
-
-	if nextStage.Type == types.StageTypeReview && nextStage.RequiresGate {
-		f.task.State = types.TaskStateWaitingGateApproval
-	} else {
-		f.task.State = types.TaskStateRunning
-	}
-	f.task.UpdatedAt = time.Now()
-
+	f.task.CurrentStageID = f.workflow.Stages[nextIdx].ID
 	if f.onTransition != nil {
-		_ = f.onTransition(f.task, prevStageID, nextStage.ID)
+		_ = f.onTransition(f.task, prevStageID, f.task.CurrentStageID)
 	}
-
 	return f.persist()
 }
 

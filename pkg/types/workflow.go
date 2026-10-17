@@ -34,6 +34,8 @@ type WorkflowDefinition struct {
 	Version     string          `json:"version" yaml:"version"`
 	Stages      []WorkflowStage `json:"stages" yaml:"stages"`
 	DefaultRole string          `json:"default_role" yaml:"default_role"`
+	// Builtin marks a workflow that ships with the orchestrator; it cannot be replaced.
+	Builtin bool `json:"builtin,omitempty" yaml:"-"`
 }
 
 // StageSlice defines a bounded execution window across stages.

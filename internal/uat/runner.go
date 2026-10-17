@@ -98,6 +98,10 @@ func command(ctx context.Context, dir string, name string, args ...string) error
 	cmd.Dir = dir
 	var stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stderr, &stderr
+	// On a timeout stop the whole tree, and never wait on a child that still holds the output pipe.
+	ownProcessGroup(cmd)
+	cmd.Cancel = func() error { return killGroup(cmd) }
+	cmd.WaitDelay = 3 * time.Second
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if len(msg) > 600 {

@@ -1,17 +1,33 @@
 package fsm
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"time"
+	"sync"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 	"gopkg.in/yaml.v3"
 )
 
-// WorkflowRegistry manages built-in and user-defined custom workflows.
+// DefaultWorkflowID is the workflow a task runs when it names none.
+const DefaultWorkflowID = "general_ai_sdlc"
+
+// legacyWorkflowIDs maps the IDs older builds (and the task profiler) used to the built-in workflows.
+var legacyWorkflowIDs = map[string]string{
+	"general-ai-sdlc":   "general_ai_sdlc",
+	"hotfix-fast-track": "fast_hotfix_sdlc",
+	"microservice-api":  "microservice_api",
+}
+
+// ErrWorkflowExists reports a workflow ID that is already taken or belongs to a built-in workflow.
+var ErrWorkflowExists = errors.New("workflow already exists")
+
+// WorkflowRegistry manages built-in and user-defined custom workflows. It is safe for concurrent use.
 type WorkflowRegistry struct {
+	mu        sync.RWMutex
 	workflows map[string]*types.WorkflowDefinition
+	order     []string
 }
 
 // NewWorkflowRegistry initializes a registry with standard built-in workflows.
@@ -19,175 +35,182 @@ func NewWorkflowRegistry() *WorkflowRegistry {
 	reg := &WorkflowRegistry{
 		workflows: make(map[string]*types.WorkflowDefinition),
 	}
-	reg.Register(GetGeneralAISDLCWorkflow())
-	reg.Register(GetHotfixFastTrackWorkflow())
-	reg.Register(GetMicroserviceAPIWorkflow())
+	for _, def := range []*types.WorkflowDefinition{GetGeneralAISDLCWorkflow(), GetHotfixFastTrackWorkflow(), GetMicroserviceAPIWorkflow()} {
+		def.Builtin = true
+		reg.Register(def)
+	}
 	return reg
 }
 
-// Register registers a workflow definition.
+// Register registers (or replaces) a workflow definition.
 func (r *WorkflowRegistry) Register(def *types.WorkflowDefinition) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.workflows[def.ID]; !exists {
+		r.order = append(r.order, def.ID)
+	}
 	r.workflows[def.ID] = def
 }
 
-// Get retrieves a workflow by ID.
+// Add registers a custom workflow after validating its structure. With replace false an existing ID
+// is a conflict; built-in workflows (and their legacy IDs) can never be replaced.
+func (r *WorkflowRegistry) Add(def *types.WorkflowDefinition, replace bool) error {
+	if err := ValidateWorkflow(def); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, legacy := legacyWorkflowIDs[def.ID]; legacy {
+		return fmt.Errorf("%w: '%s' is a built-in workflow", ErrWorkflowExists, def.ID)
+	}
+	if existing, ok := r.workflows[def.ID]; ok {
+		if existing.Builtin {
+			return fmt.Errorf("%w: '%s' is a built-in workflow", ErrWorkflowExists, def.ID)
+		}
+		if !replace {
+			return fmt.Errorf("%w: '%s'", ErrWorkflowExists, def.ID)
+		}
+	} else {
+		r.order = append(r.order, def.ID)
+	}
+	cp := *def
+	cp.Builtin = false
+	cp.Stages = append([]types.WorkflowStage(nil), def.Stages...)
+	r.workflows[def.ID] = &cp
+	return nil
+}
+
+func (r *WorkflowRegistry) resolveLocked(id string) string {
+	if _, ok := r.workflows[id]; ok {
+		return id
+	}
+	if canonical, ok := legacyWorkflowIDs[id]; ok {
+		return canonical
+	}
+	return id
+}
+
+// Get retrieves a workflow by ID; legacy built-in IDs resolve to their current workflow.
 func (r *WorkflowRegistry) Get(id string) (*types.WorkflowDefinition, error) {
-	def, exists := r.workflows[id]
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	def, exists := r.workflows[r.resolveLocked(id)]
 	if !exists {
 		return nil, fmt.Errorf("workflow '%s' not registered", id)
 	}
 	return def, nil
 }
 
-// List returns all registered workflows.
+// List returns all registered workflows: built-ins first, then custom ones in registration order.
 func (r *WorkflowRegistry) List() []*types.WorkflowDefinition {
-	list := make([]*types.WorkflowDefinition, 0, len(r.workflows))
-	for _, w := range r.workflows {
-		list = append(list, w)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	list := make([]*types.WorkflowDefinition, 0, len(r.order))
+	for _, id := range r.order {
+		list = append(list, r.workflows[id])
 	}
 	return list
 }
 
-// LoadFromYAMLFile parses a custom workflow from a YAML file.
-func (r *WorkflowRegistry) LoadFromYAMLFile(filePath string) (*types.WorkflowDefinition, error) {
+// Custom returns copies of the workflows that are not built in, for persistence.
+func (r *WorkflowRegistry) Custom() []types.WorkflowDefinition {
+	out := []types.WorkflowDefinition{}
+	for _, def := range r.List() {
+		if !def.Builtin {
+			out = append(out, *def)
+		}
+	}
+	return out
+}
+
+// StageIDs returns the workflow's stage IDs in order.
+func StageIDs(def *types.WorkflowDefinition) []string {
+	ids := make([]string, len(def.Stages))
+	for i, s := range def.Stages {
+		ids[i] = s.ID
+	}
+	return ids
+}
+
+// ValidateWorkflow checks the structural rules every workflow must meet: an ID, at least one stage
+// and unique, non-empty stage IDs.
+func ValidateWorkflow(def *types.WorkflowDefinition) error {
+	if def == nil || def.ID == "" {
+		return fmt.Errorf("workflow is missing its mandatory 'id' field")
+	}
+	if len(def.Stages) == 0 {
+		return fmt.Errorf("workflow '%s' contains no stages", def.ID)
+	}
+	stageIDs := make(map[string]bool)
+	for i, stage := range def.Stages {
+		if stage.ID == "" {
+			return fmt.Errorf("stage at index %d missing 'id'", i)
+		}
+		if stageIDs[stage.ID] {
+			return fmt.Errorf("duplicate stage ID '%s' in workflow '%s'", stage.ID, def.ID)
+		}
+		stageIDs[stage.ID] = true
+	}
+	return nil
+}
+
+// ParseWorkflowYAML reads a workflow from a YAML file without registering it. The definition may
+// sit at the top level or under a "workflow:" key (the Custom SDLC Builder's export format).
+func ParseWorkflowYAML(filePath string) (*types.WorkflowDefinition, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read workflow file: %w", err)
 	}
-
-	var def types.WorkflowDefinition
-	if err := yaml.Unmarshal(data, &def); err != nil {
-		return nil, fmt.Errorf("failed to parse workflow YAML: %w", err)
+	var wrapped struct {
+		Workflow *types.WorkflowDefinition `yaml:"workflow"`
 	}
-
-	if def.ID == "" {
-		return nil, fmt.Errorf("workflow YAML missing mandatory 'id' field")
-	}
-	if len(def.Stages) == 0 {
-		return nil, fmt.Errorf("workflow '%s' contains no stages", def.ID)
-	}
-
-	// Validate stage IDs are unique
-	stageIDs := make(map[string]bool)
-	for i, stage := range def.Stages {
-		if stage.ID == "" {
-			return nil, fmt.Errorf("stage at index %d missing 'id'", i)
+	var def *types.WorkflowDefinition
+	if err := yaml.Unmarshal(data, &wrapped); err == nil && wrapped.Workflow != nil {
+		def = wrapped.Workflow
+	} else {
+		def = &types.WorkflowDefinition{}
+		if err := yaml.Unmarshal(data, def); err != nil {
+			return nil, fmt.Errorf("failed to parse workflow YAML: %w", err)
 		}
-		if stageIDs[stage.ID] {
-			return nil, fmt.Errorf("duplicate stage ID '%s' in workflow '%s'", stage.ID, def.ID)
-		}
-		stageIDs[stage.ID] = true
 	}
-
-	r.Register(&def)
-	return &def, nil
+	if err := ValidateWorkflow(def); err != nil {
+		return nil, err
+	}
+	return def, nil
 }
 
-// GetGeneralAISDLCWorkflow returns the canonical 9-stage General AI SDLC pipeline.
+// LoadFromYAMLFile parses a custom workflow from a YAML file and registers it.
+func (r *WorkflowRegistry) LoadFromYAMLFile(filePath string) (*types.WorkflowDefinition, error) {
+	def, err := ParseWorkflowYAML(filePath)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.Add(def, true); err != nil {
+		return nil, err
+	}
+	return r.Get(def.ID)
+}
+
+// The built-in workflows use only stages the orchestrator can run (stageInstructions in
+// internal/api). Every stage ends in operator review before the next one starts.
+
+// GetGeneralAISDLCWorkflow returns the canonical 8-stage General AI SDLC pipeline.
 func GetGeneralAISDLCWorkflow() *types.WorkflowDefinition {
 	return &types.WorkflowDefinition{
-		ID:          "general-ai-sdlc",
-		Name:        "General AI SDLC",
-		Description: "Comprehensive 9-stage lifecycle with AST-informed ATDD, HITL approval gate, and Playwright evidence",
+		ID:          DefaultWorkflowID,
+		Name:        "General AI SDLC (8-Stage)",
+		Description: "Standard zero-trust software factory workflow with ATDD write-locking and rich evidence.",
 		Version:     "1.0.0",
-		DefaultRole: "product_manager",
+		DefaultRole: "orchestrator_agent",
 		Stages: []types.WorkflowStage{
-			{
-				ID:                 "INTAKE_PRD",
-				Name:               "Product Requirements Synthesis",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "product_manager",
-				AllowedMethods:     []string{"bmad", "react"},
-				WriteLockWorkspace: true,
-				RequiresGate:       false,
-				Timeout:            15 * time.Minute,
-				RequiredArtifacts:  []string{"PRD.md"},
-			},
-			{
-				ID:                 "REPO_DISCOVERY",
-				Name:               "Dynamic Repository Discovery",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "system_architect",
-				AllowedMethods:     []string{"supervisor", "react"},
-				WriteLockWorkspace: true,
-				RequiresGate:       false,
-				Timeout:            10 * time.Minute,
-			},
-			{
-				ID:                 "ATDD_RED_PHASE",
-				Name:               "AST-Informed ATDD Generation",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "atdd_qa_engineer",
-				AllowedMethods:     []string{"bmad"},
-				WriteLockWorkspace: false, // Can write test files only
-				RequiresGate:       false,
-				Timeout:            25 * time.Minute,
-				RequiredArtifacts:  []string{"ATDD_SUITE.md"},
-			},
-			{
-				ID:                 "TECH_DOC_RFC",
-				Name:               "Tech Doc & RFC Architecture",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "system_architect",
-				AllowedMethods:     []string{"bmad", "supervisor"},
-				WriteLockWorkspace: true,
-				RequiresGate:       false,
-				Timeout:            20 * time.Minute,
-				RequiredArtifacts:  []string{"TECH_DOC_RFC.md"},
-			},
-			{
-				ID:                 "GATE_TECH_DOC_REVIEW",
-				Name:               "HITL Tech Doc Review Gate",
-				Type:               types.StageTypeReview,
-				AssignedRole:       "human_reviewer",
-				AllowedMethods:     []string{"hitl"},
-				WriteLockWorkspace: true,
-				RequiresGate:       true,
-				GateCriteria:       "Review and approve TECH_DOC_RFC.md architecture and schema decisions",
-				Timeout:            72 * time.Hour,
-			},
-			{
-				ID:                 "TASK_BREAKDOWN",
-				Name:               "Atomic Task Breakdown",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "system_architect",
-				AllowedMethods:     []string{"bmad", "supervisor"},
-				WriteLockWorkspace: true,
-				RequiresGate:       false,
-				Timeout:            15 * time.Minute,
-				RequiredArtifacts:  []string{"TASK_PLAN.md"},
-			},
-			{
-				ID:                 "IMPLEMENTATION_GREEN",
-				Name:               "Implementation (Green Phase)",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "lead_developer",
-				AllowedMethods:     []string{"bmad", "supervisor", "react", "superpower"},
-				WriteLockWorkspace: false, // Write unlocked after ATDD Red verified
-				RequiresGate:       false,
-				Timeout:            60 * time.Minute,
-			},
-			{
-				ID:                 "E2E_AUTOMATION",
-				Name:               "E2E Automation & Regression",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "atdd_qa_engineer",
-				AllowedMethods:     []string{"bmad", "supervisor"},
-				WriteLockWorkspace: true,
-				RequiresGate:       false,
-				Timeout:            30 * time.Minute,
-			},
-			{
-				ID:                 "UAT_EVIDENCE",
-				Name:               "UAT Manual & Video Evidence",
-				Type:               types.StageTypeManual,
-				AssignedRole:       "atdd_qa_engineer",
-				AllowedMethods:     []string{"bmad", "superpower"},
-				WriteLockWorkspace: true,
-				RequiresGate:       false,
-				Timeout:            30 * time.Minute,
-				RequiredArtifacts:  []string{"UAT_PREPARATION.md", "EVIDENCE.md"},
-			},
+			{ID: "prd_discovery", Name: "PRD & Dynamic Repo Discovery", Type: types.StageTypeAutomated, AssignedRole: "product_manager", AllowedMethods: []string{"BMAD", "Supervisor"}, WriteLockWorkspace: true},
+			{ID: "atdd_creation", Name: "ATDD Creation (Red Phase)", Type: types.StageTypeAutomated, AssignedRole: "qa_engineer", AllowedMethods: []string{"Supervisor", "BMAD"}, WriteLockWorkspace: true},
+			{ID: "techdoc_rfc", Name: "Tech Doc / RFC Review (Gate)", Type: types.StageTypeReview, AssignedRole: "architect", AllowedMethods: []string{"BMAD"}, WriteLockWorkspace: true, RequiresGate: true},
+			{ID: "task_breakdown", Name: "Task Breakdown & Planning", Type: types.StageTypeAutomated, AssignedRole: "planner", AllowedMethods: []string{"Supervisor"}, WriteLockWorkspace: true},
+			{ID: "task_implementation", Name: "Implementation (Write-Unlocked)", Type: types.StageTypeAutomated, AssignedRole: "developer", AllowedMethods: []string{"BMAD", "ReAct", "Supervisor", "Superpower"}, WriteLockWorkspace: false},
+			{ID: "e2e_validation", Name: "Automation & E2E Validation", Type: types.StageTypeAutomated, AssignedRole: "qa_engineer", AllowedMethods: []string{"Supervisor", "Superpower"}, WriteLockWorkspace: false},
+			{ID: "uat_verification", Name: "Manual & UAT Verification", Type: types.StageTypeManual, AssignedRole: "product_manager", AllowedMethods: []string{"Supervisor"}, WriteLockWorkspace: false},
+			{ID: "signoff_merge", Name: "Ready for Sign-Off & Merge", Type: types.StageTypeReview, AssignedRole: "release_manager", AllowedMethods: []string{"BMAD"}, WriteLockWorkspace: false, RequiresGate: true},
 		},
 	}
 }
@@ -195,44 +218,15 @@ func GetGeneralAISDLCWorkflow() *types.WorkflowDefinition {
 // GetHotfixFastTrackWorkflow returns a lightweight 3-stage hotfix pipeline.
 func GetHotfixFastTrackWorkflow() *types.WorkflowDefinition {
 	return &types.WorkflowDefinition{
-		ID:          "hotfix-fast-track",
-		Name:        "Hotfix Fast-Track",
-		Description: "Rapid 3-stage pipeline for emergency fixes with instant regression verification",
+		ID:          "fast_hotfix_sdlc",
+		Name:        "Fast Hotfix SDLC (3-Stage)",
+		Description: "Abbreviated lifecycle for high-priority bug fixes: reproduce with a failing test, fix, then run the regression suite.",
 		Version:     "1.0.0",
-		DefaultRole: "lead_developer",
+		DefaultRole: "senior_dev",
 		Stages: []types.WorkflowStage{
-			{
-				ID:                 "DIAGNOSE_BUG",
-				Name:               "Diagnose & Reproduce",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "lead_developer",
-				AllowedMethods:     []string{"react", "superpower"},
-				WriteLockWorkspace: true,
-				RequiresGate:       false,
-				Timeout:            15 * time.Minute,
-				RequiredArtifacts:  []string{"BUG_DIAGNOSIS.md"},
-			},
-			{
-				ID:                 "PATCH_IMPLEMENTATION",
-				Name:               "Apply Hotfix Patch",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "lead_developer",
-				AllowedMethods:     []string{"react", "superpower"},
-				WriteLockWorkspace: false,
-				RequiresGate:       false,
-				Timeout:            20 * time.Minute,
-			},
-			{
-				ID:                 "VERIFY_REGRESSION",
-				Name:               "Verify Hotfix & Regression Tests",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "atdd_qa_engineer",
-				AllowedMethods:     []string{"react"},
-				WriteLockWorkspace: true,
-				RequiresGate:       false,
-				Timeout:            15 * time.Minute,
-				RequiredArtifacts:  []string{"EVIDENCE.md"},
-			},
+			{ID: "atdd_creation", Name: "Bug Reproduction & ATDD Spec", Type: types.StageTypeAutomated, AssignedRole: "qa_engineer", AllowedMethods: []string{"Supervisor"}, WriteLockWorkspace: true},
+			{ID: "task_implementation", Name: "Targeted Code Fix", Type: types.StageTypeAutomated, AssignedRole: "developer", AllowedMethods: []string{"ReAct", "Superpower"}, WriteLockWorkspace: false},
+			{ID: "e2e_validation", Name: "Regression Suite & Fast Merge", Type: types.StageTypeReview, AssignedRole: "release_manager", AllowedMethods: []string{"Supervisor"}, WriteLockWorkspace: false, RequiresGate: true},
 		},
 	}
 }
@@ -240,55 +234,16 @@ func GetHotfixFastTrackWorkflow() *types.WorkflowDefinition {
 // GetMicroserviceAPIWorkflow returns a contract-first 4-stage pipeline.
 func GetMicroserviceAPIWorkflow() *types.WorkflowDefinition {
 	return &types.WorkflowDefinition{
-		ID:          "microservice-api",
-		Name:        "Microservice API Contract Workflow",
-		Description: "OpenAPI/gRPC contract-first pipeline with mock testing and code generation",
+		ID:          "microservice_api",
+		Name:        "Microservice API & Contract Pipeline (4-Stage)",
+		Description: "Contract-first pipeline: schema design, consumer contract tests, implementation and cross-repo verification.",
 		Version:     "1.0.0",
-		DefaultRole: "system_architect",
+		DefaultRole: "architect",
 		Stages: []types.WorkflowStage{
-			{
-				ID:                 "CONTRACT_SPEC",
-				Name:               "API Contract Specification",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "system_architect",
-				AllowedMethods:     []string{"react", "supervisor"},
-				WriteLockWorkspace: true,
-				RequiresGate:       false,
-				Timeout:            20 * time.Minute,
-				RequiredArtifacts:  []string{"API_SPEC.yaml"},
-			},
-			{
-				ID:                 "MOCK_ATDD",
-				Name:               "Mock ATDD Test Suite",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "atdd_qa_engineer",
-				AllowedMethods:     []string{"bmad"},
-				WriteLockWorkspace: false,
-				RequiresGate:       false,
-				Timeout:            25 * time.Minute,
-				RequiredArtifacts:  []string{"ATDD_SUITE.md"},
-			},
-			{
-				ID:                 "CODEGEN_IMPLEMENT",
-				Name:               "API Implementation",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "lead_developer",
-				AllowedMethods:     []string{"bmad", "supervisor"},
-				WriteLockWorkspace: false,
-				RequiresGate:       false,
-				Timeout:            45 * time.Minute,
-			},
-			{
-				ID:                 "CONTRACT_VERIFY",
-				Name:               "Contract Compliance Verification",
-				Type:               types.StageTypeAutomated,
-				AssignedRole:       "atdd_qa_engineer",
-				AllowedMethods:     []string{"react"},
-				WriteLockWorkspace: true,
-				RequiresGate:       false,
-				Timeout:            20 * time.Minute,
-				RequiredArtifacts:  []string{"EVIDENCE.md"},
-			},
+			{ID: "techdoc_rfc", Name: "OpenAPI & Protobuf Schema Spec", Type: types.StageTypeAutomated, AssignedRole: "architect", AllowedMethods: []string{"BMAD"}, WriteLockWorkspace: true},
+			{ID: "atdd_creation", Name: "Consumer-Driven Contract Tests", Type: types.StageTypeAutomated, AssignedRole: "qa_engineer", AllowedMethods: []string{"Supervisor"}, WriteLockWorkspace: true},
+			{ID: "task_implementation", Name: "Service Implementation", Type: types.StageTypeAutomated, AssignedRole: "developer", AllowedMethods: []string{"ReAct", "BMAD"}, WriteLockWorkspace: false},
+			{ID: "e2e_validation", Name: "Cross-Repo Consumer Verification", Type: types.StageTypeReview, AssignedRole: "release_manager", AllowedMethods: []string{"Supervisor"}, WriteLockWorkspace: false, RequiresGate: true},
 		},
 	}
 }

@@ -5,66 +5,66 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
-	"time"
 
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
-// VideoRecordConfig details capture dimensions and destination.
-type VideoRecordConfig struct {
-	Width       int
-	Height      int
-	OutputDir   string
-	ProduceMP4  bool
-}
+// EventVideoReady is broadcast when a recorded video has been finalized as MP4.
+const EventVideoReady types.EventType = "evidence.video.ready"
 
-// VideoRecorder manages execution video recording and WebSocket notification.
+// Broadcaster publishes an event for a task (the API router's WebSocket broadcast).
+type Broadcaster func(taskID string, typ types.EventType, payload interface{})
+
+// VideoRecorder finalizes recorded videos as MP4, one at a time, and announces each one.
 type VideoRecorder struct {
 	mu         sync.Mutex
 	transcoder *Transcoder
-	wsHub      *ws.Hub
+	broadcast  Broadcaster
 }
 
-// NewVideoRecorder creates a recorder.
-func NewVideoRecorder(wsHub *ws.Hub) *VideoRecorder {
-	return &VideoRecorder{
-		transcoder: NewTranscoder(),
-		wsHub:      wsHub,
+// NewVideoRecorder creates a recorder; broadcast may be nil.
+func NewVideoRecorder(broadcast Broadcaster) *VideoRecorder {
+	return &VideoRecorder{transcoder: NewTranscoder(), broadcast: broadcast}
+}
+
+// FinalizeRecording transcodes rawVideoPath to an MP4 next to it, named after it (case-1.webm →
+// case-1.mp4), and broadcasts EventVideoReady with the MP4's path relative to the evidence
+// directory. Without ffmpeg it returns an error wrapping ErrNoFFmpeg and writes nothing.
+func (r *VideoRecorder) FinalizeRecording(ctx context.Context, taskID, evidenceDir, rawVideoPath string) (string, error) {
+	if strings.EqualFold(filepath.Ext(rawVideoPath), ".mp4") {
+		return "", fmt.Errorf("%s is already an MP4", filepath.Base(rawVideoPath))
 	}
-}
-
-// FinalizeRecording processes captured raw recording into final MP4 artifact.
-func (r *VideoRecorder) FinalizeRecording(ctx context.Context, taskID string, rawVideoPath string, outputDir string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	if outputDir == "" {
-		outputDir = filepath.Join(".sdlc", "artifacts", taskID, "videos")
+	out := MP4Path(rawVideoPath)
+	if err := r.transcoder.TranscodeToMP4(ctx, rawVideoPath, out); err != nil {
+		return "", fmt.Errorf("failed to finalize %s: %w", filepath.Base(rawVideoPath), err)
 	}
-	_ = os.MkdirAll(outputDir, 0755)
-
-	finalMP4Path := filepath.Join(outputDir, "run_final.mp4")
-
-	// Transcode to standard web MP4
-	if err := r.transcoder.TranscodeToMP4(ctx, rawVideoPath, finalMP4Path); err != nil {
-		return "", fmt.Errorf("failed to finalize video recording: %w", err)
+	if r.broadcast != nil {
+		rel, err := filepath.Rel(evidenceDir, out)
+		if err != nil {
+			rel = filepath.Base(out)
+		}
+		rel = filepath.ToSlash(rel)
+		r.broadcast(taskID, EventVideoReady, map[string]string{"video": rel, "source": filepath.Base(rawVideoPath),
+			"video_url": fmt.Sprintf("/api/v1/artifacts/%s/evidence/%s", taskID, rel)})
 	}
+	return out, nil
+}
 
-	// Emit WebSocket event for frontend Evidence Vault
-	if r.wsHub != nil {
-		videoURL := fmt.Sprintf("/api/v1/artifacts/%s/video", taskID)
-		r.wsHub.BroadcastEvent(&types.OrchestratorEvent{
-			Type:      types.EventType("evidence.video.ready"),
-			TaskID:    taskID,
-			Timestamp: time.Now(),
-			Payload: map[string]string{
-				"video_url":  videoURL,
-				"local_path": finalMP4Path,
-			},
-		})
+// PendingMP4 lists the videos in the evidence directory (relative paths) that are not MP4 and have
+// no MP4 sibling yet.
+func PendingMP4(dir string) []string {
+	var out []string
+	for _, v := range listVideos(dir) {
+		if strings.EqualFold(filepath.Ext(v), ".mp4") {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(MP4Path(v)))); err != nil {
+			out = append(out, v)
+		}
 	}
-
-	return finalMP4Path, nil
+	return out
 }

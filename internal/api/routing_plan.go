@@ -56,6 +56,8 @@ type analyzeRequest struct {
 	TaskType   string `json:"task_type,omitempty"`
 	StartStage string `json:"start_stage,omitempty"`
 	HaltStage  string `json:"halt_stage,omitempty"`
+	// WorkflowID plans the stages of that workflow; empty plans the default pipeline.
+	WorkflowID string `json:"workflow_id,omitempty"`
 }
 
 type analyzeResponse struct {
@@ -149,8 +151,18 @@ func (r *Router) handleTaskAnalyze(w http.ResponseWriter, req *http.Request) {
 		r.writeError(w, http.StatusBadRequest, "title is required")
 		return
 	}
-	a := r.assess(req.Context(), body.Title, body.Description, body.Complexity, body.TaskType, body.AssignedRepos)
 	stages := planStages(body.StartStage, body.HaltStage)
+	if body.WorkflowID != "" {
+		wf, err := r.workflowForNewTask(body.WorkflowID)
+		if err == nil {
+			stages, err = workflowSlice(wf, &types.StageSlice{StartStageID: body.StartStage, HaltStageID: body.HaltStage})
+		}
+		if err != nil {
+			r.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	a := r.assess(req.Context(), body.Title, body.Description, body.Complexity, body.TaskType, body.AssignedRepos)
 	skills := r.skillOptions()
 	r.writeJSON(w, http.StatusOK, analyzeResponse{
 		Assessment:          a,
@@ -174,7 +186,7 @@ func (r *Router) validatePlan(plan []types.StageRoute) ([]types.StageRoute, erro
 	seen := map[string]bool{}
 	out := make([]types.StageRoute, 0, len(plan))
 	for _, s := range plan {
-		if stageIndexOf(s.StageID) < 0 {
+		if _, runnable := stageInstructions[s.StageID]; !runnable {
 			return nil, fmt.Errorf("unknown stage %q", s.StageID)
 		}
 		if seen[s.StageID] {
@@ -190,7 +202,7 @@ func (r *Router) validatePlan(plan []types.StageRoute) ([]types.StageRoute, erro
 			return nil, fmt.Errorf("model %q for %s is not enabled in your router chain", s.Model, s.StageID)
 		}
 		var err error
-		if s.Skills, err = normalizeStageSkills(s.StageID, s.Skills, skills); err != nil {
+		if s.Skills, err = r.normalizeStageSkills(s.StageID, s.Skills, skills); err != nil {
 			return nil, err
 		}
 		if s.Evidence, err = normalizeStageEvidence(s.StageID, s.Evidence, skills); err != nil {

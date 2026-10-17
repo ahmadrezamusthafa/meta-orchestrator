@@ -12,8 +12,9 @@ import (
 func TestHeavyDockerCommand(t *testing.T) {
 	heavy := []string{"docker build -t app .", "docker compose up -d", "docker-compose -f e2e.yml up --build",
 		"cd web && docker compose -p e2e build api", "sudo docker run --rm node:20 npm test", "DOCKER_BUILDKIT=1 docker build .",
-		"docker pull postgres:16", "docker exec app rails db:migrate", "podman run alpine", "docker logs -f app"}
-	light := []string{"docker ps", "docker compose ps", "docker compose -f x.yml config", "docker images | grep app",
+		"docker pull postgres:16", "docker exec app rails db:migrate", "podman run alpine", "docker logs -f app",
+		"sleep 1 & docker build .", "docker ps & docker compose up"}
+	light := []string{"docker ps", "docker ps 2>&1", "docker compose ps", "docker compose -f x.yml config", "docker images | grep app",
 		"docker inspect app", "git status", "echo docker build", "grep -r docker ."}
 	for _, c := range heavy {
 		if !heavyDockerCommand(c) {
@@ -28,13 +29,13 @@ func TestHeavyDockerCommand(t *testing.T) {
 }
 
 func TestLimitContainers(t *testing.T) {
-	if got := limitContainers("docker run --rm node:20 npm test", "2"); got != "docker run --cpus=2 --rm node:20 npm test" {
+	if got := limitContainers("docker run --rm node:20 npm test", "2", ""); got != "docker run --cpus=2 --rm node:20 npm test" {
 		t.Fatalf("got %q", got)
 	}
-	if got := limitContainers("docker run --cpus=4 app", "2"); got != "docker run --cpus=4 app" {
+	if got := limitContainers("docker run --cpus=4 app", "2", ""); got != "docker run --cpus=4 app" {
 		t.Fatalf("an explicit limit must be kept: %q", got)
 	}
-	if got := limitContainers("docker run app", "0"); got != "docker run app" {
+	if got := limitContainers("docker run app", "0", ""); got != "docker run app" {
 		t.Fatalf("\"0\" disables the limit: %q", got)
 	}
 }
@@ -53,7 +54,7 @@ func TestDockerGateLimitsConcurrentCommands(t *testing.T) {
 	}
 
 	d := run("t1", "docker run app")
-	if !d.Allow || d.UpdatedInput["command"] != "docker run --cpus=1 app" || d.UpdatedInput["run_in_background"] != false {
+	if !d.Allow || d.UpdatedInput["command"] != "docker run --cpus=1 --label meta-orchestrator.task=TASK-1 app" || d.UpdatedInput["run_in_background"] != false {
 		t.Fatalf("first command: %+v", d)
 	}
 	if d := run("t2", "docker ps"); !d.Allow {

@@ -7,6 +7,7 @@ import { useToastStore } from '../../stores/toast'
 import type { Task, TaskWorktreeDTO, RepoDiffDTO } from '../../types'
 import ToolchainSection from '../toolchain/ToolchainSection.vue'
 import ConnectorSuggestions from '../toolchain/ConnectorSuggestions.vue'
+import RepoDependenciesPanel from '../dependencies/RepoDependenciesPanel.vue'
 import {
   FolderGit2, GitBranch, Copy, Check, AlertCircle, FileDiff, RefreshCw, Pencil, ShieldCheck, CircleDashed,
 } from 'lucide-vue-next'
@@ -42,6 +43,12 @@ const catalog = computed(() => {
   return list
 })
 const repoInfo = (name: string) => catalog.value.find((r) => r.name === name)
+
+/** Projects that own at least one of the task's repositories (a task carries no project id). */
+const taskProjects = computed(() => {
+  const assigned = new Set(props.task.assigned_repos || [])
+  return projectStore.projects.filter((p) => (p.repos || []).some((r) => assigned.has(r.name)))
+})
 
 async function loadDiffs() {
   if (!repos.value.some((r) => r.exists)) {
@@ -259,6 +266,16 @@ onMounted(async () => {
         :key="'conn-' + task.assigned_repos.join(',')"
         class="pt-2 border-t border-slate-800"
         :scope="{ task: task.id }"
+      />
+      <!-- The assigned repositories' own dependencies, read from the task's worktrees -->
+      <RepoDependenciesPanel
+        v-for="p in task.assigned_repos?.length ? taskProjects : []"
+        :key="'deps-' + p.id + '-' + task.assigned_repos.join(',')"
+        class="pt-2 border-t border-slate-800"
+        :project-id="p.id"
+        :task-id="task.id"
+        :title="taskProjects.length > 1 ? `Dependencies · ${p.name}` : 'Dependencies'"
+        compact
       />
     </div>
   </div>

@@ -15,6 +15,24 @@ import (
 
 const goodAnthropicKey = "sk-ant-api03-good-key-000000000000"
 
+// Masked credentials appear in API responses and connection details; a short secret must not be
+// mostly revealed by the 6+4 display form.
+func TestMaskTokenRevealsLittleOfShortSecrets(t *testing.T) {
+	for _, tok := range []string{"abcdefghijklm", "abcdefghijklmnop", "abcdefghijklmnopqrstuvw"} {
+		m := maskToken(tok)
+		shown := len(strings.ReplaceAll(m, "•", ""))
+		if shown > 4 {
+			t.Errorf("maskToken(%d chars) shows %d characters: %q", len(tok), shown, m)
+		}
+	}
+	if m := maskToken(goodAnthropicKey); !strings.HasPrefix(m, "sk-ant") || !strings.HasSuffix(m, "0000") {
+		t.Errorf("long keys keep their recognisable prefix and suffix, got %q", m)
+	}
+	if m := maskToken("short"); strings.Trim(m, "•") != "" {
+		t.Errorf("short tokens are fully masked, got %q", m)
+	}
+}
+
 // fakeProviders answers model-list calls: only the "good" keys are accepted.
 func fakeProviders(t *testing.T) *httptest.Server {
 	t.Helper()

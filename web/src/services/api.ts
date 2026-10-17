@@ -1,22 +1,66 @@
 import { useToolchainStore } from '../stores/toolchain'
 import type { 
-  Task, TaskProcessDTO, ToolDTO, ProviderDTO, ProviderUsage, ProviderUsageWindow, ProviderQuota, ProviderConnection, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
+  Task, TaskProcessDTO, ProviderDTO, ProviderUsage, ProviderUsageWindow, ProviderQuota, ProviderConnection, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
   Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse,
   ConnectorsConfig, JiraConfig, ConfluenceConfig, JiraIssueDTO, ImportJiraIssueRequest,
   JiraSyncConfig, JiraSyncSettings,
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
-  UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse,
+  UniversalSkillDTO, SkillSourceDTO, SkillRunResult, RepoSuggestion, CheckPathCompatibilityResponse,
   PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
   OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO, RoutePreviewDTO, TierAssignmentDTO,
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
   TaskActivityResponse, TaskChatResponse, TaskDiffDTO, DiffAgainst, TaskArtifactDTO,
   PullRequestDraftDTO, PullRequestOpenedDTO, UATGuideStatusDTO, UATGuideSettings,
-  TaskAnalysisDTO, TaskRoutingDTO, StageRoute, RouteMatrixCellDTO, TaskEvidenceDTO
+  TaskAnalysisDTO, TaskRoutingDTO, StageRoute, RouteMatrixCellDTO, TaskEvidenceDTO, EvidenceVerifyDTO,
+  PackagesResponse, PackageVersions, PackageJob, PackageManual, PackageSetupResult,
+  ProjectDependencies, DependencyInstallCommand
 } from '../types'
 
 
 const BASE_URL = '/api/v1'
+
+/** Reads a JSON answer, throwing the server's `error` text when the request failed. */
+async function readJSON<T>(res: Response, what: string): Promise<T> {
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.error || `${what} failed (HTTP ${res.status})`)
+  }
+  return res.json()
+}
+
+function postJSON(url: string, body?: unknown): Promise<Response> {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+}
+
+/**
+ * Starts a background job. 409 (one already running for the same target) is not an error: the
+ * caller follows that job instead. Other non-2xx answers throw with the server's message.
+ */
+async function startJob(res: Response, what: string): Promise<PackageJob> {
+  if (res.status === 409) {
+    const body = await res.json().catch(() => null)
+    if (body?.job) return body.job
+    throw new Error(body?.error || `${what}: another job is already running`)
+  }
+  return readJSON<PackageJob>(res, what)
+}
+
+/** POST /packages/{id}/install: a job (202/409), or how to install it by hand (501). */
+export type PackageInstallResult =
+  | { kind: 'job'; job: PackageJob }
+  | { kind: 'manual'; error: string; manual: PackageManual | null }
+
+/** POST /projects/{id}/dependencies/install: a job (202/409), or the command to run yourself (501). */
+export type DependencyInstallResult =
+  | { kind: 'job'; job: PackageJob }
+  | { kind: 'manual'; error: string; install: DependencyInstallCommand | null; missing_tool: string }
+
+const enc = encodeURIComponent
 
 /**
  * A stage that needs tools this machine lacks is not an error: open the install prompt (which
@@ -50,24 +94,6 @@ export const api = {
   async getTaskProcess(taskId: string): Promise<TaskProcessDTO> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/process`)
     if (!res.ok) throw new Error(`Failed to fetch background process for task ${taskId}`)
-    return res.json()
-  },
-
-  async executeTaskProcessCommand(taskId: string, command: string): Promise<any> {
-    const res = await fetch(`${BASE_URL}/tasks/${taskId}/process/execute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command })
-    })
-    if (!res.ok) throw new Error('Failed to execute command in background process')
-    return res.json()
-  },
-
-  async clearTaskProcessLogs(taskId: string): Promise<any> {
-    const res = await fetch(`${BASE_URL}/tasks/${taskId}/process/clear`, {
-      method: 'POST'
-    })
-    if (!res.ok) throw new Error('Failed to clear process logs')
     return res.json()
   },
 
@@ -151,7 +177,7 @@ export const api = {
   // Passing complexity re-plans with the operator's grade instead of asking the AI.
   async analyzeTask(payload: {
     title: string; description?: string; assigned_repos?: string[]; complexity?: string; task_type?: string
-    start_stage?: string; halt_stage?: string
+    start_stage?: string; halt_stage?: string; workflow_id?: string
   }): Promise<TaskAnalysisDTO> {
     const res = await fetch(`${BASE_URL}/tasks/analyze`, {
       method: 'POST',
@@ -233,6 +259,12 @@ export const api = {
   },
 
   // Runs an evidence turn on the Implementation stage: test the change and record the videos
+  async verifyTaskEvidence(taskId: string): Promise<EvidenceVerifyDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/evidence/verify`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Could not verify test evidence')
+    return (await res.json()).verify
+  },
+
   async recordTaskEvidence(taskId: string): Promise<void> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/evidence`, { method: 'POST' })
     if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Could not start recording test evidence')
@@ -332,7 +364,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     })
-    if (!res.ok) throw new Error('Failed to create task')
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to create task')
     return res.json()
   },
 
@@ -343,7 +375,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ instruction })
     })
-    if (!res.ok) throw new Error('Failed to inject context')
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to inject context')
     return res.json()
   },
 
@@ -351,7 +383,11 @@ export const api = {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/reset`, {
       method: 'POST'
     })
-    if (!res.ok) throw new Error('Failed to reset workspace')
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      if (askForTools(taskId, errData, 'run')) return errData
+      throw new Error(errData?.error || 'Failed to reset workspace')
+    }
     return res.json()
   },
 
@@ -361,46 +397,94 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ approved, feedback })
     })
-    if (!res.ok) throw new Error('Failed to update gate')
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to update gate')
     return res.json()
   },
 
-  // Tools
-  async getTools(category?: string, search?: string): Promise<ToolDTO[]> {
-    const query = new URLSearchParams()
-    if (category) query.set('category', category)
-    if (search) query.set('search', search)
-    const res = await fetch(`${BASE_URL}/tools?${query.toString()}`)
-    if (!res.ok) throw new Error('Failed to fetch tools')
-    return res.json()
+  // Packages: the tools the orchestrator itself uses
+  async getPackages(): Promise<PackagesResponse> {
+    return readJSON(await fetch(`${BASE_URL}/packages`), 'Loading packages')
   },
 
-  async installTool(toolId: string, version: string): Promise<any> {
-    const res = await fetch(`${BASE_URL}/tools/install`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tool_id: toolId, version })
-    })
-    return res.json()
+  /** Forgets cached checks (e.g. after installing from your own terminal) and lists again. */
+  async recheckPackages(): Promise<PackagesResponse> {
+    return readJSON(await postJSON(`${BASE_URL}/packages/recheck`), 'Re-checking packages')
   },
 
-  async rollbackTool(toolId: string, targetVersion: string): Promise<any> {
-    const res = await fetch(`${BASE_URL}/tools/rollback`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tool_id: toolId, target_version: targetVersion })
-    })
-    return res.json()
+  async getPackageVersions(id: string, prerelease = false): Promise<PackageVersions> {
+    const q = prerelease ? '?prerelease=1' : ''
+    return readJSON(await fetch(`${BASE_URL}/packages/${enc(id)}/versions${q}`), 'Loading versions')
   },
 
-  async resolveBestFitMatrix(): Promise<any> {
-    const res = await fetch(`${BASE_URL}/tools/resolve-matrix`, { method: 'POST' })
-    return res.json()
+  async installPackage(id: string, version?: string): Promise<PackageInstallResult> {
+    const res = await postJSON(`${BASE_URL}/packages/${enc(id)}/install`, version ? { version } : {})
+    if (res.status === 501) {
+      const body = await res.json().catch(() => null)
+      return { kind: 'manual', error: body?.error || 'This package cannot be installed automatically', manual: body?.manual || null }
+    }
+    return { kind: 'job', job: await startJob(res, 'Starting the install') }
+  },
+
+  async updatePackage(id: string): Promise<PackageJob> {
+    return startJob(await postJSON(`${BASE_URL}/packages/${enc(id)}/update`), 'Starting the update')
+  },
+
+  async rollbackPackage(id: string, version?: string): Promise<PackageJob> {
+    return startJob(await postJSON(`${BASE_URL}/packages/${enc(id)}/rollback`, version ? { version } : {}), 'Starting the rollback')
+  },
+
+  async uninstallPackage(id: string): Promise<PackageJob> {
+    return startJob(await postJSON(`${BASE_URL}/packages/${enc(id)}/uninstall`), 'Starting the uninstall')
+  },
+
+  /** Installs every required package that is missing, in dependency order. */
+  async setupPackages(): Promise<PackageSetupResult> {
+    return readJSON(await postJSON(`${BASE_URL}/packages/setup`), 'Starting the setup')
+  },
+
+  async getPackageJob(jobId: string): Promise<PackageJob> {
+    return readJSON(await fetch(`${BASE_URL}/packages/jobs/${enc(jobId)}`), 'Reading the job')
+  },
+
+  // Repository dependencies (npm, Go modules, …) of a project's repositories
+  async getProjectDependencies(projectId: string, opts: { task?: string; latest?: boolean } = {}): Promise<ProjectDependencies> {
+    const q = new URLSearchParams()
+    if (opts.task) q.set('task', opts.task)
+    if (opts.latest) q.set('latest', '1')
+    const qs = q.toString()
+    return readJSON(await fetch(`${BASE_URL}/projects/${enc(projectId)}/dependencies${qs ? `?${qs}` : ''}`), 'Loading dependencies')
+  },
+
+  async installProjectDependencies(projectId: string, body: { repo: string; ecosystem: string; task?: string }): Promise<DependencyInstallResult> {
+    const res = await postJSON(`${BASE_URL}/projects/${enc(projectId)}/dependencies/install`, body)
+    if (res.status === 501) {
+      const data = await res.json().catch(() => null)
+      return {
+        kind: 'manual',
+        error: data?.error || 'These dependencies cannot be installed automatically',
+        install: data?.install || null,
+        missing_tool: data?.missing_tool || '',
+      }
+    }
+    return { kind: 'job', job: await startJob(res, 'Starting the dependency install') }
+  },
+
+  /** Creates a task that upgrades one dependency (the agents do the change, tests and PR). */
+  async upgradeProjectDependency(
+    projectId: string,
+    body: { repo: string; ecosystem: string; name: string; target: string; note?: string },
+  ): Promise<{ task: Task }> {
+    return readJSON(await postJSON(`${BASE_URL}/projects/${enc(projectId)}/dependencies/upgrade`, body), 'Creating the upgrade task')
+  },
+
+  async getDependencyJob(jobId: string): Promise<PackageJob> {
+    return readJSON(await fetch(`${BASE_URL}/dependencies/jobs/${enc(jobId)}`), 'Reading the job')
   },
 
   // Providers & Benchmarks
   async getProviders(): Promise<{ providers: ProviderDTO[]; tier_mapping: any; is_override: boolean }> {
     const res = await fetch(`${BASE_URL}/providers`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to fetch providers')
     return res.json()
   },
 
@@ -416,6 +500,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider_id: providerId })
     })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to check provider')
     return res.json()
   },
 
@@ -523,6 +608,7 @@ export const api = {
   // Workflows & Registries
   async getWorkflows(): Promise<WorkflowDefinition[]> {
     const res = await fetch(`${BASE_URL}/workflows`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to fetch workflows')
     return res.json()
   },
 
@@ -532,11 +618,54 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(workflow)
     })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to save workflow')
     return res.json()
+  },
+
+  /** Runs a command-based skill once in the project root as a stage role. */
+  async runSkill(name: string, role: string): Promise<SkillRunResult> {
+    const res = await fetch(`${BASE_URL}/skills/${encodeURIComponent(name)}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role })
+    })
+    const body = await res.json().catch(() => null)
+    if (res.status === 403 && body?.skill) return body // refused for the role: show why
+    if (!res.ok) throw new Error(body?.error || `Skill run failed (HTTP ${res.status})`)
+    return body
+  },
+
+  /** Ranks the project's repositories by how strongly a draft task points at them. */
+  async suggestRepos(projectId: string, title: string, description: string): Promise<RepoSuggestion[]> {
+    const res = await fetch(`${BASE_URL}/projects/${encodeURIComponent(projectId)}/suggest-repos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, description })
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to suggest repositories')
+    return (await res.json()).suggested_repos
+  },
+
+  async updateWorkflow(workflow: WorkflowDefinition): Promise<any> {
+    const res = await fetch(`${BASE_URL}/workflows/${encodeURIComponent(workflow.id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(workflow)
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to save workflow')
+    return res.json()
+  },
+
+  // Stage IDs a workflow may use: the stages the orchestrator can run.
+  async getWorkflowStages(): Promise<string[]> {
+    const res = await fetch(`${BASE_URL}/workflows/stages`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to fetch workflow stages')
+    return (await res.json()).stages ?? []
   },
 
   async getRegistries(): Promise<RegistryDTO> {
     const res = await fetch(`${BASE_URL}/registries`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to fetch registries')
     return res.json()
   },
 
@@ -583,7 +712,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(project)
     })
-    if (!res.ok) throw new Error(`Failed to update project ${id}`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `Failed to update project ${id}`)
     return res.json()
   },
 

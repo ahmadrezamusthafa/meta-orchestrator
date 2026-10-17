@@ -20,14 +20,16 @@ class WebSocketService {
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
-    const url = taskId 
-      ? `${protocol}//${host}/ws?task_id=${taskId}`
+    const url = taskId
+      ? `${protocol}//${host}/ws?task_id=${encodeURIComponent(taskId)}`
       : `${protocol}//${host}/ws`
 
     try {
-      this.ws = new WebSocket(url)
+      const ws = new WebSocket(url)
+      this.ws = ws
 
-      this.ws.onopen = () => {
+      ws.onopen = () => {
+        if (this.ws !== ws) return
         this.isConnected.value = true
         this.isReconnecting.value = false
         this.reconnectCount.value = 0
@@ -37,27 +39,30 @@ class WebSocketService {
         }
       }
 
-      this.ws.onmessage = (event) => {
-        try {
-          const lines = event.data.split('\n')
-          for (const line of lines) {
-            if (!line.trim()) continue
-            const parsed = JSON.parse(line) as OrchestratorEvent
-            this.emit(parsed)
+      ws.onmessage = (event) => {
+        const lines = String(event.data).split('\n')
+        for (const line of lines) {
+          if (!line.trim()) continue
+          let parsed: OrchestratorEvent
+          try {
+            parsed = JSON.parse(line) as OrchestratorEvent
+          } catch {
+            continue // skip a malformed frame without dropping the rest of the batch
           }
-        } catch (e) {
-          // ignore parsing error
+          this.emit(parsed)
         }
       }
 
-      this.ws.onclose = () => {
+      ws.onclose = () => {
+        // A socket replaced or closed by disconnect() must not schedule a reconnect.
+        if (this.ws !== ws) return
+        this.ws = null
         this.isConnected.value = false
         this.scheduleReconnect(taskId)
       }
 
-      this.ws.onerror = () => {
-        this.isConnected.value = false
-        this.ws?.close()
+      ws.onerror = () => {
+        ws.close()
       }
     } catch (err) {
       this.scheduleReconnect(taskId)
@@ -68,10 +73,12 @@ class WebSocketService {
     if (this.reconnectTimer) return
     this.isReconnecting.value = true
     this.reconnectCount.value++
+    // Exponential backoff from reconnectInterval, capped at 30s, with jitter.
+    const base = Math.min(this.reconnectInterval * 2 ** Math.min(this.reconnectCount.value - 1, 4), 30000)
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       this.connect(taskId)
-    }, this.reconnectInterval)
+    }, base * (0.8 + Math.random() * 0.4))
   }
 
   subscribe(callback: EventCallback) {

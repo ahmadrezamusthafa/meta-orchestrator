@@ -141,4 +141,3 @@ func TestWorkspaceProvisionerWorktree(t *testing.T) {
 		t.Fatalf("Teardown failed: %v", err)
 	}
 }
-

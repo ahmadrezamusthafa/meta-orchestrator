@@ -27,7 +27,7 @@ From the repository root:
 make dev
 ```
 This automatically starts:
-* **Go Daemon:** Listening on `http://localhost:8080` (REST API & WebSockets)
+* **Go Daemon:** Listening on `http://127.0.0.1:8080` (REST API & WebSockets)
 * **Vite Dev Server:** Listening on `http://localhost:5173` (Frontend Mission Control)
 
 ### Method B: Separate Terminals
@@ -120,11 +120,11 @@ Click on any task card on the Kanban board to enter the **Active Task Detail Vie
 
 ---
 
-### 3.3 Tool Hub & Dependency Management (`/tools`)
+### 3.3 Tool Hub & Dependency Management
 
-* **Guided Install:** Click **`Guided Install`** on any uninstalled or outdated tool (`Playwright`, `BMAD`, `Tree-sitter`) to launch the 4-step wizard with a live terminal stream.
-* **1-Click Rollback:** Click **`Rollback`** on any tool to select a previous stable release; symlinks swap atomically in &lt;1 second.
-* **Best-Fit Matrix:** Click **`Auto-Resolve Best Fit Matrix`** to analyze host CPU architecture and Node/Go versions and compute conflict-free version pairings.
+* **First run:** `make setup` installs every required package that is missing (Node.js, Git, Claude Code CLI), dependencies first.
+* **Install / update / pick a version / roll back / uninstall** any package from the Tool Hub or with `go run ./cmd/daemon packages <command> [id] [version]`. Managed CLIs (Claude Code, Playwright, MCP servers) switch versions with an atomic symlink swap in `$MO_HOME/bin`; BMAD and GSD roll back by restoring a snapshot taken before every change; Superpowers rollback is best effort and needs a Claude Code restart; system packages (Node, Git, ffmpeg, Docker) cannot be rolled back.
+* See README §10 and `docs/API.md` §2.3 for details.
 
 ---
 
@@ -162,8 +162,8 @@ Click on any task card on the Kanban board to enter the **Active Task Detail Vie
 
 ### Q2: Frontend shows "Daemon Offline" or "Reconnecting..."
 * Ensure the Go daemon is running (`go run cmd/daemon/main.go`).
-* Verify health check responds: `curl http://localhost:8080/healthz`. Should return `{"status":"healthy","version":"1.0.0"}`.
-* In browser DevTools, verify the WebSocket connection to `ws://localhost:8080/ws` or `ws://localhost:5173/ws` is open.
+* Verify health check responds: `curl http://127.0.0.1:8080/healthz`. Should return `{"status":"healthy","version":"1.0.0"}`.
+* In browser DevTools, verify the WebSocket connection to `ws://127.0.0.1:8080/ws` or `ws://localhost:5173/ws` is open.
 
 ### Q3: Terminal Canvas does not resize properly
 * Click the "Resume Scroll" button or resize your browser window; `@xterm/addon-fit` automatically recalculates column and row geometries on window resize events.

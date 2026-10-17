@@ -3,6 +3,8 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -53,5 +55,41 @@ func TestFinishedStageIsSavedAsAReviewableDocument(t *testing.T) {
 	}
 	if w := do(r, http.MethodGet, "/api/v1/artifacts/"+task.ID+"/"+list.Artifacts[0].Path, ""); w.Code != http.StatusOK {
 		t.Fatalf("stage document not readable: %d", w.Code)
+	}
+}
+
+// An agent writes into the artifact directory (evidence/ is handed to it as an absolute path), so a
+// symlink planted there must not let the artifacts endpoint read files outside it.
+func TestArtifactsRefuseSymlinksLeavingTheTaskDir(t *testing.T) {
+	r := hermeticRouter(t)
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(outside, []byte("OUTSIDE-CONTENT"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(r.artifactDir("TASK-1"), "evidence")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "leak.md")); err != nil {
+		t.Skip("symlinks unsupported:", err)
+	}
+	if err := os.Symlink(filepath.Dir(outside), filepath.Join(dir, "linkdir")); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"evidence/leak.md", "evidence/linkdir/outside.md"} {
+		w := do(r, http.MethodGet, "/api/v1/artifacts/TASK-1/"+p, "")
+		if w.Code == http.StatusOK || strings.Contains(w.Body.String(), "OUTSIDE-CONTENT") {
+			t.Fatalf("%s followed a symlink out of the artifact dir: %d %s", p, w.Code, w.Body.String())
+		}
+	}
+	// A symlink that stays inside the task's directory is still served.
+	if err := os.WriteFile(filepath.Join(dir, "real.md"), []byte("inside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.md", filepath.Join(dir, "alias.md")); err != nil {
+		t.Fatal(err)
+	}
+	if w := do(r, http.MethodGet, "/api/v1/artifacts/TASK-1/evidence/alias.md", ""); w.Code != http.StatusOK {
+		t.Fatalf("in-dir symlink should be served: %d %s", w.Code, w.Body.String())
 	}
 }

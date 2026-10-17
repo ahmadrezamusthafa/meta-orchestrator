@@ -9,60 +9,56 @@ import (
 
 func TestCircuitBreakerThreshold(t *testing.T) {
 	var tripCount int32
+	cb := NewCircuitBreaker(3, func(p *types.FrustrationHaltPayload) { atomic.AddInt32(&tripCount, 1) })
 
-	cb := NewCircuitBreaker(3, func(p *types.FrustrationHaltPayload) {
-		atomic.AddInt32(&tripCount, 1)
-	})
-
-	sig := ComputeSignature("playwright_test", "--spec=order.spec.ts", "Error: Element not found: #checkout-btn", 1)
-
-	// Attempt 1: Should not trip
-	tripped, p := cb.RecordFailure("task-loop-1", "IMPLEMENTATION_GREEN", sig, "stacktrace at line 42")
-	if tripped || p != nil {
-		t.Fatalf("expected not tripped on attempt 1")
+	sig := ComputeSignature("task_implementation", "Error: Element not found: #checkout-btn")
+	for i := 1; i <= 2; i++ {
+		if tripped, p := cb.RecordFailure("task-loop-1", "task_implementation", sig, "trace", 0); tripped || p != nil {
+			t.Fatalf("tripped on attempt %d", i)
+		}
 	}
-
-	// Attempt 2: Should not trip
-	tripped, p = cb.RecordFailure("task-loop-1", "IMPLEMENTATION_GREEN", sig, "stacktrace at line 42")
-	if tripped || p != nil {
-		t.Fatalf("expected not tripped on attempt 2")
-	}
-
-	// Attempt 3: MUST trip
-	tripped, p = cb.RecordFailure("task-loop-1", "IMPLEMENTATION_GREEN", sig, "stacktrace at line 42")
-	if !tripped || p == nil {
-		t.Fatalf("expected circuit breaker to trip on attempt 3")
-	}
-	if p.ConsecutiveFails != 3 {
-		t.Errorf("expected 3 consecutive fails, got %d", p.ConsecutiveFails)
-	}
-	if p.ErrorSignature != sig {
-		t.Errorf("expected matching signature, got %s", p.ErrorSignature)
+	tripped, p := cb.RecordFailure("task-loop-1", "task_implementation", sig, "trace", 0)
+	if !tripped || p == nil || p.ConsecutiveFails != 3 || p.ErrorSignature != sig || p.LastStackTrace != "trace" {
+		t.Fatalf("expected trip on attempt 3, got %v %+v", tripped, p)
 	}
 	if atomic.LoadInt32(&tripCount) != 1 {
-		t.Errorf("expected listener called once, got %d", tripCount)
+		t.Errorf("listener called %d times", tripCount)
+	}
+	if cb.Count("task-loop-1") != 0 {
+		t.Errorf("a trip should restart the count")
 	}
 
-	// Reset via RecordSuccess
-	cb.RecordSuccess("task-loop-1")
-	tripped, _ = cb.RecordFailure("task-loop-1", "IMPLEMENTATION_GREEN", sig, "stacktrace")
-	if tripped {
-		t.Fatalf("expected breaker reset after RecordSuccess")
+	cb.RecordFailure("task-loop-1", "task_implementation", sig, "trace", 0)
+	cb.Reset("task-loop-1")
+	if tripped, _ := cb.RecordFailure("task-loop-1", "task_implementation", sig, "trace", 2); tripped {
+		t.Fatalf("expected count cleared after Reset")
+	}
+	if tripped, _ := cb.RecordFailure("task-loop-1", "task_implementation", sig, "trace", 2); !tripped {
+		t.Fatalf("expected per-call threshold 2 to trip")
 	}
 }
 
-func TestCircuitBreakerNonConsecutiveDifferentErrors(t *testing.T) {
+func TestCircuitBreakerDifferentErrorsRestartCount(t *testing.T) {
 	cb := NewCircuitBreaker(3, nil)
-
-	sig1 := ComputeSignature("go_test", "./...", "cannot find package", 1)
-	sig2 := ComputeSignature("go_test", "./...", "syntax error", 2)
-
-	cb.RecordFailure("task-diff", "IMPLEMENTATION_GREEN", sig1, "trace 1")
-	cb.RecordFailure("task-diff", "IMPLEMENTATION_GREEN", sig1, "trace 1")
-
-	// Interrupted by different error signature
-	tripped, _ := cb.RecordFailure("task-diff", "IMPLEMENTATION_GREEN", sig2, "trace 2")
-	if tripped {
+	sig1 := ComputeSignature("task_implementation", "cannot find package")
+	sig2 := ComputeSignature("task_implementation", "syntax error")
+	cb.RecordFailure("task-diff", "task_implementation", sig1, "", 0)
+	cb.RecordFailure("task-diff", "task_implementation", sig1, "", 0)
+	if tripped, _ := cb.RecordFailure("task-diff", "task_implementation", sig2, "", 0); tripped {
 		t.Fatalf("expected no trip when signature changes")
+	}
+}
+
+func TestSignatureIgnoresVolatileDetails(t *testing.T) {
+	a := ComputeSignature("e2e_validation", "request 3f2b1c9a-1111-2222-3333-444455556666 failed after 1.52s at 2026-10-17T10:00:01Z (line 42)")
+	b := ComputeSignature("e2e_validation", "request 9a9a9a9a-aaaa-bbbb-cccc-ddddeeeeffff failed after 300ms at 2026-10-18 11:22:33 (line 7)")
+	if a != b {
+		t.Fatalf("signatures differ for the same failure:\n%s\n%s", NormalizeError("request 3f2b1c9a-1111-2222-3333-444455556666 failed after 1.52s"), NormalizeError("request 9a9a9a9a-aaaa-bbbb-cccc-ddddeeeeffff failed after 300ms"))
+	}
+	if a == ComputeSignature("task_implementation", "request 3f2b1c9a-1111-2222-3333-444455556666 failed after 1.52s at 2026-10-17T10:00:01Z (line 42)") {
+		t.Fatalf("the stage must be part of the signature")
+	}
+	if ComputeSignature("x", "permission denied") == ComputeSignature("x", "provider unavailable") {
+		t.Fatalf("different errors must differ")
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
@@ -27,6 +28,7 @@ type CreateTaskRequest struct {
 	SourceBranch     string            `json:"source_branch,omitempty"`
 	ExternalTaskPlan string            `json:"external_task_plan,omitempty"`
 	ExternalPRD      string            `json:"external_prd,omitempty"`
+	ExternalDocs     map[string]string `json:"external_docs,omitempty"` // file name → markdown, for the stages a slice skips
 	MaxTokenBudget   int64             `json:"max_token_budget,omitempty"`
 	Complexity       string            `json:"complexity,omitempty"`
 	// ComplexitySource/Rationale/TaskType carry the analysis the operator reviewed (POST /tasks/analyze).
@@ -72,12 +74,21 @@ func cloneTask(t *types.Task) *types.Task {
 	return &cp
 }
 
+// maxTaskBodyBytes caps task request bodies (imported PRDs and task plans included).
+const maxTaskBodyBytes = 10 << 20
+
+// knownTaskStates are the states an operator may set directly.
+var knownTaskStates = map[types.TaskState]bool{
+	types.TaskStatePending: true, types.TaskStateRunning: true, types.TaskStateWaitingGateApproval: true,
+	types.TaskStateBlockedFrustration: true, types.TaskStateWaitingDependency: true, types.TaskStateCompleted: true,
+	types.TaskStateFailed: true, types.TaskStateSuspended: true,
+}
+
 func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
+	req.Body = http.MaxBytesReader(w, req.Body, maxTaskBodyBytes)
 	switch req.Method {
 	case http.MethodGet:
 		r.mu.RLock()
-		defer r.mu.RUnlock()
-
 		search := strings.ToLower(req.URL.Query().Get("search"))
 		method := req.URL.Query().Get("method")
 		repo := req.URL.Query().Get("repo")
@@ -102,8 +113,10 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 					continue
 				}
 			}
-			result = append(result, t)
+			result = append(result, cloneTask(t))
 		}
+		// Encode copies after unlocking: a slow client must not hold r.mu against every writer.
+		r.mu.RUnlock()
 		if result == nil {
 			result = []*types.Task{}
 		}
@@ -141,42 +154,26 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 				assessment.Source, assessment.Rationale = body.ComplexitySource, body.ComplexityRationale
 			}
 		}
+		workflow, err := r.workflowForNewTask(body.WorkflowID)
+		if err != nil {
+			r.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		sliceStages, err := workflowSlice(workflow, body.ActiveSlice)
+		if err != nil {
+			r.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if !confirmed {
-			start, halt := "", ""
-			if body.ActiveSlice != nil {
-				start, halt = body.ActiveSlice.StartStageID, body.ActiveSlice.HaltStageID
-			}
-			plan = proposedPlan(r.strategyRouter.Plan(planStages(start, halt), assessment.Complexity, assessment.TaskType, body.AssignedRepos))
+			plan = proposedPlan(r.strategyRouter.Plan(sliceStages, assessment.Complexity, assessment.TaskType, body.AssignedRepos))
 		}
 
 		r.mu.Lock()
 		taskID := r.nextTaskIDLocked()
 
 		now := time.Now()
-		startStage := "prd_discovery"
-		startIndex := 0
-
-		// Handle Mid-Process Slicing
-		if body.ActiveSlice != nil && body.ActiveSlice.StartStageID != "" {
-			startStage = body.ActiveSlice.StartStageID
-			// Set stage index based on starting stage
-			switch startStage {
-			case "atdd_creation":
-				startIndex = 1
-			case "techdoc_rfc":
-				startIndex = 2
-			case "task_breakdown":
-				startIndex = 3
-			case "task_implementation":
-				startIndex = 4
-			case "e2e_validation":
-				startIndex = 5
-			case "uat_verification":
-				startIndex = 6
-			case "signoff_merge":
-				startIndex = 7
-			}
-		}
+		startStage := sliceStages[0]
+		startIndex := indexIn(fsm.StageIDs(workflow), startStage)
 
 		selectedMethod := body.SelectedMethod
 		if selectedMethod == "" || selectedMethod == "Auto" {
@@ -188,10 +185,7 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 
-		workflowID := body.WorkflowID
-		if workflowID == "" {
-			workflowID = "general_ai_sdlc"
-		}
+		workflowID := workflow.ID
 
 		maxBudget := body.MaxTokenBudget
 		if maxBudget == 0 {
@@ -276,6 +270,7 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 		createdCopy := cloneTask(newTask)
 		r.mu.Unlock()
 		r.saveBoardNow()
+		r.ingestSliceDocuments(createdCopy, body.ExternalDocs, body.ExternalPRD, body.ExternalTaskPlan)
 
 		if len(unmetDeps) > 0 {
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
@@ -311,6 +306,7 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
+	req.Body = http.MaxBytesReader(w, req.Body, maxTaskBodyBytes)
 	path := strings.TrimPrefix(req.URL.Path, "/api/v1/tasks/")
 	parts := strings.Split(path, "/")
 	taskID := parts[0]
@@ -514,7 +510,8 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 				CurrentStageID string          `json:"current_stage_id"`
 			}
 			var details []depDetail
-			for _, depID := range task.Dependencies {
+			deps := append([]string(nil), task.Dependencies...) // deleteTask rewrites the live slice in place
+			for _, depID := range deps {
 				dep, exists := r.tasks[depID]
 				if exists {
 					details = append(details, depDetail{
@@ -534,7 +531,7 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 
 			r.writeJSON(w, http.StatusOK, map[string]interface{}{
 				"task_id":            taskID,
-				"dependencies":       task.Dependencies,
+				"dependencies":       deps,
 				"all_satisfied":      len(unmet) == 0,
 				"unmet_dependencies": unmet,
 				"details":            details,
@@ -566,6 +563,10 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 		}
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			r.writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+			return
+		}
+		if body.State != "" && !knownTaskStates[body.State] {
+			r.writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown task state %q", body.State))
 			return
 		}
 		if body.AssignedRepos != nil {
@@ -602,12 +603,26 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 		stageChanged := body.CurrentStageID != "" && body.CurrentStageID != task.CurrentStageID
+		if stageChanged && task.State == types.TaskStateRunning {
+			// The live turn would settle as the review of the stage the card was moved to.
+			r.mu.Unlock()
+			r.writeError(w, http.StatusConflict, fmt.Sprintf("pause %s before moving it to another stage", taskID))
+			return
+		}
+		if stageChanged && r.stageIndexFor(task, body.CurrentStageID) < 0 {
+			r.mu.Unlock()
+			r.writeError(w, http.StatusBadRequest, fmt.Sprintf("stage %s is not part of %s's workflow (%v)", body.CurrentStageID, taskID, r.workflowStages(task.WorkflowID)))
+			return
+		}
+		if body.State != "" && body.State != types.TaskStateRunning && !fsm.CanTransition(task.State, body.State) {
+			r.mu.Unlock()
+			r.writeError(w, http.StatusConflict, fmt.Sprintf("%s is %s and cannot move to %s", taskID, task.State, body.State))
+			return
+		}
 		prevStage := task.CurrentStageID
 		if stageChanged {
 			task.CurrentStageID = body.CurrentStageID
-			if i := stageIndexOf(body.CurrentStageID); i >= 0 {
-				task.CurrentStageIndex = i
-			}
+			task.CurrentStageIndex = r.stageIndexFor(task, body.CurrentStageID)
 		}
 		wantRun := body.State == types.TaskStateRunning
 		switch {
@@ -632,7 +647,7 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			if err := r.startStage(taskID, "run", ""); err != nil && !errors.Is(err, errTaskBusy) {
 				var blocked *depsBlockedError
 				if !errors.As(err, &blocked) {
-					r.writeError(w, http.StatusConflict, err.Error())
+					r.writeError(w, stageStartStatus(err), err.Error())
 					return
 				}
 			}

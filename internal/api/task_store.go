@@ -102,6 +102,10 @@ func (r *Router) persistBoard() error {
 	if path == "" {
 		return nil
 	}
+	// Snapshot and write under one persistMu hold, so a slower save of an older snapshot can never
+	// land on disk after a newer one. Lock order: persistMu, then r.mu.
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
 	r.mu.RLock()
 	bf := boardFile{Version: taskStoreVersion, NextTaskSeq: r.taskSeq + 1, Tasks: make([]*types.Task, 0, len(r.tasks))}
 	for _, t := range r.tasks {
@@ -122,9 +126,8 @@ func (r *Router) persistBoard() error {
 	if err != nil {
 		return fmt.Errorf("encode board: %w", err)
 	}
+	r.mirrorTasks(r.mirrorSnapshot())
 
-	r.persistMu.Lock()
-	defer r.persistMu.Unlock()
 	if bytes.Equal(data, r.lastPersisted) {
 		return nil
 	}
@@ -171,9 +174,15 @@ func (r *Router) startBoardPersister() {
 	}()
 }
 
-// Close stops background work and flushes the board. Safe to call more than once.
+// Close stops background work and flushes the board. Running stages are interrupted (they settle as
+// paused, so Continue resumes them after a restart) and queued ones are released. Safe to call more
+// than once.
 func (r *Router) Close() error {
 	r.closeOnce.Do(func() { close(r.stop) })
+	if !r.stages.Stop(poolStopTimeout) {
+		fmt.Printf("[Shutdown] Some stages did not settle within %s\n", poolStopTimeout)
+	}
+	r.stopHooks()
 	r.saveConsolesNow()
 	return r.persistBoard()
 }

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { safeHref } from '../utils/safeHref'
 import { ref, computed, onMounted, watch, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTaskStore } from '../stores/tasks'
@@ -165,7 +166,7 @@ onMounted(() => {
           {{ taskId }}
           <Check v-if="copied === taskId" class="w-3 h-3 text-emerald-400" /><Copy v-else class="w-3 h-3 text-slate-400" />
         </button>
-        <a v-if="meta.jira_key" :href="meta.jira_url" target="_blank" rel="noopener"
+        <a v-if="meta.jira_key" :href="safeHref(meta.jira_url)" target="_blank" rel="noopener"
           class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-950/70 border border-blue-800/70 text-blue-300 hover:text-blue-100 text-[11px] font-mono flex-shrink-0">
           {{ meta.jira_key }} <ExternalLink class="w-2.5 h-2.5" />
         </a>
@@ -198,7 +199,7 @@ onMounted(() => {
                 class="w-full text-left px-3 py-2 hover:bg-slate-800 text-slate-200 flex items-center gap-2">
                 <GitBranch class="w-3.5 h-3.5" /> Copy branch name
               </button>
-              <a v-if="meta.jira_url" :href="meta.jira_url" target="_blank" rel="noopener" role="menuitem"
+              <a v-if="meta.jira_url" :href="safeHref(meta.jira_url)" target="_blank" rel="noopener" role="menuitem"
                 class="block px-3 py-2 hover:bg-slate-800 text-slate-200"><span class="flex items-center gap-2"><ExternalLink class="w-3.5 h-3.5" /> Open in JIRA</span></a>
             </div>
           </div>

@@ -7,24 +7,29 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/localaccess"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 	"github.com/gorilla/websocket"
 )
 
+var originGuard = localaccess.FromEnv()
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
+	// Only pages served from this machine may open the event stream; a cross-site page must not
+	// read task logs or provider events. The HTTP middleware also checks the Host header.
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for dev / CORS
+		return originGuard.AllowedOrigin(r.Header.Get("Origin"))
 	},
 }
 
 // Client represents a connected WebSocket client.
 type Client struct {
-	hub      *Hub
-	conn     *websocket.Conn
-	send     chan []byte
-	taskID   string // Filter events for specific task (or empty for all)
+	hub    *Hub
+	conn   *websocket.Conn
+	send   chan []byte
+	taskID string // Filter events for specific task (or empty for all)
 }
 
 // Hub maintains the set of active clients and broadcasts events.

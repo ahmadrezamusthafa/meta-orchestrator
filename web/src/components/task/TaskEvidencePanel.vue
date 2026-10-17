@@ -5,7 +5,7 @@ import { api } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import {
   Film, RefreshCw, Loader2, CheckCircle2, XCircle, AlertTriangle, FileText, Route, Clapperboard, Copy, Download, Play,
-  MinusCircle, Info, ChevronLeft, ChevronRight, X, GitCommit, Bug, Image as ImageIcon, ListChecks, Presentation,
+  MinusCircle, Info, ChevronLeft, ChevronRight, X, GitCommit, Bug, Image as ImageIcon, ListChecks, Presentation, ShieldCheck,
 } from 'lucide-vue-next'
 
 // Test evidence of the Implementation stage, planned from the spec: end-to-end user flows, one
@@ -234,6 +234,33 @@ async function record() {
   }
 }
 
+// Recheck the signed evidence manifest: every file's SHA-256 and the HMAC over the results.
+const verifying = ref(false)
+async function verify() {
+  verifying.value = true
+  try {
+    const v = await api.verifyTaskEvidence(props.task.id)
+    if (v.valid) {
+      toast.success('Evidence intact', `${v.recorded_files} files match the signed manifest${v.signed_at ? ` of ${v.signed_at}` : ''}.`)
+    } else if (!v.signed) {
+      toast.info('Not signed yet', v.error || 'The manifest is signed when the evidence turn ends.')
+    } else {
+      const parts = [
+        !v.signature_valid ? 'the manifest itself was edited' : '',
+        v.changed.length ? `changed: ${v.changed.join(', ')}` : '',
+        v.missing.length ? `missing: ${v.missing.join(', ')}` : '',
+        v.added.length ? `added since signing: ${v.added.join(', ')}` : '',
+        v.error ?? '',
+      ].filter(Boolean)
+      toast.error('Evidence changed since it was signed', parts.join(' · '))
+    }
+  } catch (e: any) {
+    toast.error('Could not verify evidence', e?.message || '')
+  } finally {
+    verifying.value = false
+  }
+}
+
 // A Markdown summary of the evidence, to paste into a PR, a ticket or a review message.
 async function copyReport() {
   const icon = (s?: string) => (s === 'passed' ? '✅ Passed' : s === 'failed' ? '❌ Failed' : s === 'blocked' ? '⚠️ Blocked' : '—')
@@ -300,6 +327,10 @@ watch(selected, () => { log.value = null; logError.value = ''; now.value = 0; li
             <button v-if="items.length" type="button" @click="copyReport" title="Copy a Markdown summary for a PR, ticket or review"
               class="h-8 px-3 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5">
               <Copy class="w-3.5 h-3.5" /> Copy summary
+            </button>
+            <button v-if="items.length" type="button" @click="verify" :disabled="verifying" title="Recheck every evidence file against the signed manifest"
+              class="h-8 px-3 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5 disabled:opacity-50">
+              <Loader2 v-if="verifying" class="w-3.5 h-3.5 animate-spin" /><ShieldCheck v-else class="w-3.5 h-3.5" /> Verify
             </button>
             <template v-if="!readOnly">
               <button type="button" @click="emit('open-routing')"

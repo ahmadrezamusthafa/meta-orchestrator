@@ -13,19 +13,16 @@ import (
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/api"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/artifacts"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/circuitbreaker"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/hooks"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/localaccess"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/packages"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/toolchain"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/worker"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -52,15 +49,47 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// preparePath puts the managed packages' shims first on PATH, then adds the package-manager bin
+// folders (Homebrew, go install, …) that may be missing when the daemon is not started from a
+// login shell, so installed tools are found by the daemon and the agents it starts.
+func preparePath() {
+	packages.EnsurePath(packages.DefaultHome())
+	toolchain.EnsurePath()
+}
+
+// loadPackages loads configs/packages.json; state lives in $MO_HOME or ~/.meta-orchestrator.
+func loadPackages(cwd string, tc *toolchain.Toolchain) *packages.Manager {
+	m, err := packages.Load(filepath.Join(cwd, "configs", "packages.json"), packages.Options{Home: packages.DefaultHome(), Toolchain: tc})
+	if err != nil {
+		fmt.Printf("[Packages] %v\n", err)
+	}
+	return m
+}
+
+// runPackagesCLI handles `daemon packages …` without starting the server.
+func runPackagesCLI(cwd string, args []string) int {
+	preparePath()
+	m := loadPackages(cwd, toolchain.New())
+	if m == nil {
+		return 1
+	}
+	defer m.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return packages.RunCLI(ctx, m, args, os.Stdout)
+}
+
 func main() {
+	cwd, _ := os.Getwd()
+	if len(os.Args) > 1 && os.Args[1] == "packages" {
+		os.Exit(runPackagesCLI(cwd, os.Args[2:]))
+	}
+
 	fmt.Println("================================================================")
-	fmt.Println("  Meta-Orchestrator Daemon Core (Phase 1 Foundation)")
+	fmt.Println("  Meta-Orchestrator Daemon")
 	fmt.Println("================================================================")
 
-	cwd, _ := os.Getwd()
-	// Package-manager bin folders (Homebrew, go install, …) may be missing when the daemon is not
-	// started from a login shell; add them so installed tools are found by the daemon and agents.
-	toolchain.EnsurePath()
+	preparePath()
 
 	// 1. Cascading Configuration Resolver
 	configResolver := config.NewCascadingConfigResolver(cwd)
@@ -74,64 +103,30 @@ func main() {
 	// 2. Registries Initialization
 	workflowReg := fsm.NewWorkflowRegistry()
 	profileReg := registry.NewProfileRegistry()
-	_ = profileReg.LoadFromFile("configs/profiles.json")
+	if err := profileReg.LoadFromFile(filepath.Join(cwd, "configs", "profiles.json")); err != nil {
+		fmt.Printf("[Profiles] Stage roles not loaded: %v\n", err)
+	}
 
 	promptReg := registry.NewPromptRegistry(cwd)
 	skillResolver := skills.NewMultiSourceSkillResolver(cwd)
-	artifactMgr := artifacts.NewArtifactManager(".sdlc/artifacts")
+	artifactMgr := artifacts.NewArtifactManager(filepath.Join(cwd, ".sdlc", "artifacts"))
 	hookEngine := hooks.NewHookEngine(cwd)
-	taskStore := fsm.NewMemoryTaskStateStore()
 	projectMgr := projects.NewProjectManager(cwd)
 	fmt.Printf("[Projects] Loaded %d registered multi-repo workspaces\n", len(projectMgr.List()))
 
-	// 3. Tool Lifecycle Manager
-	toolMgr := tools.NewToolManager("", func(toolID string, stage string, pct int, msg string) {
-		fmt.Printf("[Tool Progress] [%s] %s (%d%%): %s\n", toolID, stage, pct, msg)
-	})
-	fmt.Printf("[Tools] Registered %d installable packages\n", len(toolMgr.ListPackages()))
+	// 3. Package manager for the orchestrator's own tools
+	toolchainSvc := toolchain.New()
+	pkgMgr := loadPackages(cwd, toolchainSvc)
+	if pkgMgr != nil {
+		defer pkgMgr.Close()
+		fmt.Printf("[Packages] Tracking %d packages; managed shims in %s\n", pkgMgr.Count(), pkgMgr.BinDir())
+	}
 
 	// 4. WebSocket Streaming Hub
 	wsHub := ws.NewHub()
 	go wsHub.Run()
 
-	// 5. Anti-Loop Frustration Circuit Breaker
-	circuitBreaker := circuitbreaker.NewCircuitBreaker(3, func(payload *types.FrustrationHaltPayload) {
-		fmt.Printf("[Circuit Breaker] Tripped for task %s at stage %s (consecutive fails: %d)\n",
-			payload.TaskID, payload.StageID, payload.ConsecutiveFails)
-		wsHub.BroadcastEvent(&types.OrchestratorEvent{
-			Type:    types.EventFrustrationHalt,
-			TaskID:  payload.TaskID,
-			StageID: payload.StageID,
-			Payload: payload,
-		})
-	})
-
-	// 6. Router & Task Profiler
-	taskProfiler := router.NewTaskProfiler(cfg, cwd)
-	_ = taskProfiler
-	_ = circuitBreaker
-	_ = skillResolver
-	_ = artifactMgr
-	_ = hookEngine
-
-	// 7. Crash Recovery
-	ctx := context.Background()
-	recoveredFSMs, err := fsm.RecoverActiveTasks(ctx, taskStore, workflowReg)
-	if err != nil {
-		fmt.Printf("[Recovery] Failed to recover active tasks: %v\n", err)
-	} else {
-		fmt.Printf("[Recovery] Successfully recovered %d active tasks in < 5s RTO\n", len(recoveredFSMs))
-	}
-
-	// 8. Asynchronous Worker Pool
-	workerPool := worker.NewPool(10, 100, func(ctx context.Context, task *types.Task) error {
-		activeTools, _ := skillResolver.ListSkills()
-		fmt.Printf("[Worker] Executing task %s (%s) with %d active AI tools (including dynamic MCP connectors)...\n",
-			task.ID, task.Title, len(activeTools))
-		return nil
-	})
-
-	// 9. HTTP Server with REST API & WebSocket endpoints
+	// 5. HTTP Server with REST API & WebSocket endpoints
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHub.HandleWebSocket)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -140,43 +135,49 @@ func main() {
 	})
 
 	apiRouter := api.NewRouter(api.RouterConfig{
-		TaskStore:         taskStore,
-		WorkflowReg:       workflowReg,
-		ToolManager:       toolMgr,
-		ArtifactManager:   artifactMgr,
-		ConfigResolver:    configResolver,
-		ProjectManager:    projectMgr,
-		SkillResolver:     skillResolver,
-		PromptRegistry:    promptReg,
-		WSHub:             wsHub,
-		RootDir:           cwd,
-		Telemetry:         telemetryConfig(cwd),
-		TaskStorePath:     filepath.Join(cwd, ".sdlc", "tasks.json"),
-		ProviderStatePath: filepath.Join(cwd, ".sdlc", "providers.json"),
-		EnableJiraSync:    true,
-		Docker:            dockerLimits(),
+		TaskStore:   taskStateMirror(),
+		WorkflowReg: workflowReg,
+		HookEngine:  hookEngine,
+		// Stages run on a bounded pool (MO_MAX_CONCURRENT_STAGES, default 10) owned by the router.
+		MaxConcurrentStages: maxConcurrentStages(),
+		Packages:            pkgMgr,
+		Toolchain:           toolchainSvc,
+		ProfileRegistry:     profileReg,
+		ArtifactManager:     artifactMgr,
+		ConfigResolver:      configResolver,
+		ProjectManager:      projectMgr,
+		SkillResolver:       skillResolver,
+		PromptRegistry:      promptReg,
+		WSHub:               wsHub,
+		RootDir:             cwd,
+		Telemetry:           telemetryConfig(cwd),
+		TaskStorePath:       filepath.Join(cwd, ".sdlc", "tasks.json"),
+		ProviderStatePath:   filepath.Join(cwd, ".sdlc", "providers.json"),
+		EnableJiraSync:      true,
+		Docker:              dockerLimits(),
 	})
 	mux.Handle("/api/", apiRouter)
 
+	listenAddr := localaccess.ListenAddr()
 	server := &http.Server{
-		Addr:    ":8080",
-		Handler: mux,
+		Addr:              listenAddr,
+		Handler:           localaccess.FromEnv().Middleware(mux),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {
-		fmt.Println("[HTTP] WebSocket & Health API server listening on :8080")
+		fmt.Printf("[HTTP] WebSocket & Health API server listening on %s\n", listenAddr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("[HTTP] Server error: %v\n", err)
 		}
 	}()
 
-	// 10. Graceful Shutdown
+	// 6. Graceful Shutdown
 	stopSig := make(chan os.Signal, 1)
 	signal.Notify(stopSig, syscall.SIGINT, syscall.SIGTERM)
 	<-stopSig
 
-	fmt.Println("\n[Shutdown] Received termination signal, gracefully draining workers...")
-	workerPool.Stop(5 * time.Second)
+	fmt.Println("\n[Shutdown] Received termination signal, interrupting running stages...")
 	if err := apiRouter.Close(); err != nil {
 		fmt.Printf("[Shutdown] Failed to flush task board: %v\n", err)
 	}
@@ -194,4 +195,21 @@ func main() {
 func dockerLimits() api.DockerLimits {
 	n, _ := strconv.Atoi(os.Getenv("MO_DOCKER_MAX_CONCURRENT"))
 	return api.DockerLimits{MaxConcurrent: n, CPUs: os.Getenv("MO_DOCKER_CPUS")}
+}
+
+// taskStateMirror mirrors task snapshots to Redis when REDIS_ADDR is set, so active tasks the board
+// file lacks can be restored at startup. Without it the JSON board is the only store.
+func taskStateMirror() fsm.TaskStateStore {
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		return nil
+	}
+	fmt.Printf("[Recovery] Mirroring task state to Redis at %s\n", addr)
+	return fsm.NewRedisTaskStateStore(redis.NewClient(&redis.Options{Addr: addr}))
+}
+
+// maxConcurrentStages reads MO_MAX_CONCURRENT_STAGES; unset or invalid uses the router default.
+func maxConcurrentStages() int {
+	n, _ := strconv.Atoi(os.Getenv("MO_MAX_CONCURRENT_STAGES"))
+	return n
 }

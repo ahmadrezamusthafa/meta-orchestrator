@@ -22,14 +22,13 @@ func NewBudgetTracker() *BudgetTracker {
 	}
 }
 
-// SetTaskBudget configures max token allowance for a task.
+// SetTaskBudget starts a budget of maxTokens for the task's next stage run: usage recorded from
+// here on is counted against it, so earlier stages do not use up a later stage's budget.
 func (bt *BudgetTracker) SetTaskBudget(taskID string, maxTokens int64) {
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
 	bt.budget[taskID] = maxTokens
-	if _, exists := bt.usage[taskID]; !exists {
-		bt.usage[taskID] = &types.TokenUsage{}
-	}
+	bt.usage[taskID] = &types.TokenUsage{}
 }
 
 // RecordUsage accumulates token usage and errors if budget is exceeded.
@@ -48,12 +47,11 @@ func (bt *BudgetTracker) RecordUsage(taskID string, promptTokens int64, completi
 	u.TotalTokens += (promptTokens + completionTokens)
 	u.EstimatedCostUSD += costUSD
 
+	cp := *u
 	max, hasMax := bt.budget[taskID]
 	if hasMax && max > 0 && u.TotalTokens > max {
-		return u, fmt.Errorf("task %s exceeded max token budget (%d > %d tokens)", taskID, u.TotalTokens, max)
+		return &cp, fmt.Errorf("task %s exceeded max token budget (%d > %d tokens)", taskID, u.TotalTokens, max)
 	}
-
-	cp := *u
 	return &cp, nil
 }
 

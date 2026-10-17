@@ -39,6 +39,7 @@ import {
 } from 'lucide-vue-next'
 import DirectoryPickerModal from '../components/common/DirectoryPickerModal.vue'
 import ConfirmDeleteModal from '../components/common/ConfirmDeleteModal.vue'
+import RepoDependenciesPanel from '../components/dependencies/RepoDependenciesPanel.vue'
 
 const router = useRouter()
 const projectStore = useProjectStore()
@@ -1594,6 +1595,11 @@ function launchTaskForProject() {
               </div>
             </div>
           </div>
+        </section>
+
+        <!-- Section 3: each repository's own dependencies (npm, Go modules, …) -->
+        <section v-if="editFormId && editFormRepos.length" class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+          <RepoDependenciesPanel :project-id="editFormId" title="Repository dependencies" />
         </section>
       </div>
     </template>

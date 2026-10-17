@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { safeHref } from '../../utils/safeHref'
 import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
@@ -131,10 +132,10 @@ onMounted(() => load())
             <span class="text-slate-500">→</span>
             <span class="font-mono text-slate-200">{{ draft.target_branch || '—' }}</span>
             <span class="text-slate-400">{{ draft.files }} file(s) · {{ draft.commits }} commit(s)<template v-if="draft.uncommitted"> · uncommitted edits</template><template v-if="draft.on_remote && draft.unpushed"> · {{ draft.unpushed }} not pushed</template><template v-else-if="!draft.on_remote && draft.commits"> · not pushed yet</template></span>
-            <a v-if="draft.repo_url" :href="draft.repo_url" target="_blank" rel="noopener" class="text-slate-400 hover:text-slate-100 flex items-center gap-1 capitalize">
+            <a v-if="draft.repo_url" :href="safeHref(draft.repo_url)" target="_blank" rel="noopener" class="text-slate-400 hover:text-slate-100 flex items-center gap-1 capitalize">
               {{ draft.provider || 'remote' }} <ExternalLink class="w-3 h-3" />
             </a>
-            <a v-if="draft.existing_url" :href="draft.existing_url" target="_blank" rel="noopener"
+            <a v-if="draft.existing_url" :href="safeHref(draft.existing_url)" target="_blank" rel="noopener"
               class="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded bg-violet-950/70 border border-violet-800/70 text-violet-200 hover:text-white">
               <GitPullRequest class="w-3 h-3" /> Open pull request <ExternalLink class="w-3 h-3" />
             </a>

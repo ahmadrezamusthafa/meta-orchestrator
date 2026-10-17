@@ -54,8 +54,8 @@ func TestPromptsAPIEndpoints(t *testing.T) {
 		}
 
 		var checkResp struct {
-			Compatible      bool                    `json:"compatible"`
-			DiscoveredCount int                     `json:"discovered_count"`
+			Compatible      bool                     `json:"compatible"`
+			DiscoveredCount int                      `json:"discovered_count"`
 			Templates       []registry.PromptItemDTO `json:"templates"`
 		}
 		if err := json.Unmarshal(rrCheck.Body.Bytes(), &checkResp); err != nil {
@@ -81,8 +81,8 @@ func TestPromptsAPIEndpoints(t *testing.T) {
 		}
 
 		var regResp struct {
-			Source          registry.PromptSource   `json:"source"`
-			DiscoveredCount int                     `json:"discovered_count"`
+			Source          registry.PromptSource    `json:"source"`
+			DiscoveredCount int                      `json:"discovered_count"`
 			Templates       []registry.PromptItemDTO `json:"templates"`
 		}
 		if err := json.Unmarshal(rrReg.Body.Bytes(), &regResp); err != nil {

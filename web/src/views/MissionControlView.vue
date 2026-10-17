@@ -10,6 +10,7 @@ import TaskConsoleDrawer from '../components/kanban/TaskConsoleDrawer.vue'
 import KanbanSwimlanes from '../components/kanban/KanbanSwimlanes.vue'
 import JiraSyncSettingsModal from '../components/kanban/JiraSyncSettingsModal.vue'
 import ConfirmDeleteModal from '../components/common/ConfirmDeleteModal.vue'
+import SetupEverythingBanner from '../components/packages/SetupEverythingBanner.vue'
 import { LayoutDashboard, Plus, Download, Settings2 } from 'lucide-vue-next'
 
 const taskStore = useTaskStore()
@@ -100,6 +101,9 @@ onMounted(async () => {
       @open-jira-import="showJiraImportModal = true"
       @open-jira-sync="showJiraSyncModal = true"
     />
+
+    <!-- Required tools missing on this machine: one click installs them all -->
+    <SetupEverythingBanner compact class="mx-6 mt-4" />
 
     <!-- Horizontal Scrolling Kanban Board Layout -->
     <!-- The whole board scrolls as one (both axes); columns grow with their cards. -->

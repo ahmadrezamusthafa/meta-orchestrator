@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -249,5 +250,41 @@ func TestStartCommandStreamsBothOutputsAndExitCode(t *testing.T) {
 	}
 	if _, _, err := startCommand(ctx, []string{"definitely-not-a-command-xyz"}); err == nil {
 		t.Fatal("a missing binary fails to start")
+	}
+}
+
+// A check that started before an install finished must not cache its stale answer over the
+// install's invalidation.
+func TestInvalidateWinsOverACheckInFlight(t *testing.T) {
+	var mu sync.Mutex
+	installed := false
+	started, release := make(chan struct{}), make(chan struct{})
+	h := fakeHost("darwin", map[string]bool{"golangci-lint": true}, nil)
+	h.run = func(ctx context.Context, name string, args ...string) (string, error) {
+		mu.Lock()
+		ok := installed
+		mu.Unlock()
+		if !ok {
+			close(started)
+			<-release
+			return "", errors.New("exit status 1")
+		}
+		return "golangci-lint 1.0\n", nil
+	}
+	tc := newTestToolchain(h)
+	lint, _ := Lookup("golangci-lint")
+	done := make(chan Status)
+	go func() { done <- tc.Checker.Check(lint) }()
+	<-started
+	mu.Lock()
+	installed = true // the install finishes while the old check still runs
+	mu.Unlock()
+	tc.Checker.Invalidate()
+	close(release)
+	if s := <-done; s.Installed {
+		t.Fatalf("the in-flight check saw the old machine: %+v", s)
+	}
+	if s := tc.Checker.Check(lint); !s.Installed {
+		t.Fatalf("a check after the invalidation reused the stale answer: %+v", s)
 	}
 }

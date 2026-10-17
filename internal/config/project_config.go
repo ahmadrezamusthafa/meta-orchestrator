@@ -1,5 +1,7 @@
 package config
 
+import "gopkg.in/yaml.v3"
+
 // AIProviderConfig defines credentials and settings for an LLM provider.
 type AIProviderConfig struct {
 	Enabled    bool   `json:"enabled" yaml:"enabled"`
@@ -7,6 +9,24 @@ type AIProviderConfig struct {
 	AuthMethod string `json:"auth_method,omitempty" yaml:"auth_method,omitempty"` // "api_key" or "oauth"
 	BaseURL    string `json:"base_url,omitempty" yaml:"base_url,omitempty"`
 	Model      string `json:"model" yaml:"model"`
+
+	// enabledSet records that a YAML layer set "enabled" explicitly, so a layer that only
+	// changes the model does not switch the provider off when configs are merged.
+	enabledSet bool
+}
+
+// UnmarshalYAML decodes the provider and notes whether "enabled" was present.
+func (c *AIProviderConfig) UnmarshalYAML(node *yaml.Node) error {
+	type plain AIProviderConfig
+	if err := node.Decode((*plain)(c)); err != nil {
+		return err
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "enabled" {
+			c.enabledSet = true
+		}
+	}
+	return nil
 }
 
 // ModelTiersConfig defines model allocations per reasoning/codegen tier.

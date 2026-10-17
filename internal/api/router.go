@@ -1,34 +1,43 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/artifacts"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/atdd"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/circuitbreaker"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/connectors"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/hooks"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/packages"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/pullrequest"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/quota"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/security"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/telemetry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/toolchain"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/worker"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
 // RouterConfig holds dependencies required by the REST API router.
 type RouterConfig struct {
-	TaskStore         fsm.TaskStateStore
-	WorkflowReg       *fsm.WorkflowRegistry
-	ToolManager       *tools.ToolManager
+	TaskStore   fsm.TaskStateStore
+	WorkflowReg *fsm.WorkflowRegistry
+	// Packages installs and tracks the tools the orchestrator itself needs. Nil loads
+	// RootDir/configs/packages.json with its state in packages.DefaultHome().
+	Packages          *packages.Manager
 	ArtifactManager   *artifacts.ArtifactManager
 	ConfigResolver    *config.CascadingConfigResolver
 	ProjectManager    *projects.ProjectManager
@@ -53,6 +62,15 @@ type RouterConfig struct {
 	// Toolchain checks and installs the tools the repositories' stacks need. Nil checks this
 	// machine (toolchain.New).
 	Toolchain *toolchain.Toolchain
+	// ProfileRegistry holds the stage roles. Nil loads RootDir/configs/profiles.json.
+	ProfileRegistry *registry.ProfileRegistry
+	// MaxConcurrentStages bounds the stages (agent turns) running at once; 0 uses 10.
+	MaxConcurrentStages int
+	// StageQueueSize is how many claimed stages may wait for a free slot; 0 uses 100.
+	StageQueueSize int
+	// HookEngine runs lifecycle hooks; nil creates one for RootDir. Hooks in RootDir/.sdlc/hooks.json
+	// are loaded into it.
+	HookEngine *hooks.HookEngine
 }
 
 // Router provides the HTTP REST API handler for the Mission Control frontend.
@@ -78,16 +96,39 @@ type Router struct {
 	approvals     *approvalHub
 	docker        *dockerGate          // limits concurrent Docker commands across all agents
 	toolchain     *toolchain.Toolchain // checks and installs the tools the stacks need
+	evidenceJobs  sync.WaitGroup       // background evidence finalization (transcode, signed manifest)
 	busyOps       sync.Map             // "pr:<task>" / "uat:<task>" while a delivery job runs
 	prClient      *pullrequest.Client  // opens pull requests; tests point it at a fake API
 	uatRunner     uatScreenshotRunner  // captures UAT screenshots; tests stub it
+
+	// Guardrails on the stage flow (guardrails.go).
+	methods     *registry.MethodRegistry           // per-method limits (configs/methods.json)
+	breaker     *circuitbreaker.CircuitBreaker     // halts a stage that keeps failing the same way
+	writeLocks  *security.WriteLockManager         // ATDD red-phase write lock
+	interceptor *security.PolyglotSkillInterceptor // enforces writeLocks on tool calls
+	redPhase    *atdd.RedPhaseVerifier             // judges the ATDD test run
+
 	lastPersisted []byte
+	stages        *worker.Pool // bounded pool every stage turn runs on
+	hookCtx       context.Context
+	hookCancel    context.CancelFunc
+	hookWG        sync.WaitGroup
+	mirrored      map[string][]byte // task snapshots last written to cfg.TaskStore; guarded by persistMu
+	mirrorFailing bool              // guarded by persistMu
 	stop          chan struct{}
 	closeOnce     sync.Once
+
+	pkgOnce      sync.Once
+	pkgMgr       *packages.Manager // the tools the orchestrator itself needs (packages_handler.go)
+	profilesOnce sync.Once
+	profiles     *registry.ProfileRegistry // stage roles (configs/profiles.json)
 }
 
 // NewRouter constructs a new REST API router.
 func NewRouter(cfg RouterConfig) *Router {
+	if cfg.ArtifactManager == nil {
+		cfg.ArtifactManager = artifacts.NewArtifactManager(filepath.Join(cfg.RootDir, ".sdlc", "artifacts"))
+	}
 	if cfg.ConnectorsManager == nil {
 		cfg.ConnectorsManager = connectors.NewManager(cfg.RootDir)
 	}
@@ -105,6 +146,9 @@ func NewRouter(cfg RouterConfig) *Router {
 	}
 	if cfg.WSHub != nil && cfg.ConnectorsManager != nil {
 		cfg.ConnectorsManager.SetBroadcastFunc(cfg.WSHub.BroadcastEvent)
+	}
+	if cfg.WorkflowReg == nil {
+		cfg.WorkflowReg = fsm.NewWorkflowRegistry()
 	}
 
 	var orchCfg *config.OrchestratorConfig
@@ -144,11 +188,14 @@ func NewRouter(cfg RouterConfig) *Router {
 		docker:         newDockerGate(cfg.Docker),
 		toolchain:      cfg.Toolchain,
 		prClient:       &pullrequest.Client{},
+		stages:         newStagePool(cfg),
+		mirrored:       map[string][]byte{},
 		stop:           make(chan struct{}),
 	}
 	if r.toolchain == nil {
 		r.toolchain = toolchain.New()
 	}
+	r.docker.onStats = r.reportContainerStats
 	r.connections = newConnectionChecker(r.quota)
 	stratRouter.SetAvailability(r.connections.Usable)
 	if saved := savedRouterSettings(); saved != nil {
@@ -156,8 +203,12 @@ func NewRouter(cfg RouterConfig) *Router {
 		stratRouter.SetSettings(*saved)
 	}
 	r.initTelemetry()
+	r.initGuardrails()
+	r.initHooks()
+	r.loadWorkflows()
 	r.loadBoard()
 	r.loadConsoles()
+	r.recoverFromMirror()
 	r.reconcileIdleRunning()
 	r.registerRoutes()
 	r.startBackgroundProcessMonitor()
@@ -191,10 +242,12 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/tasks", r.handleTasks)
 	r.mux.HandleFunc("/api/v1/tasks/", r.handleTaskItem)
 	r.mux.HandleFunc("/api/v1/tasks/analyze", r.handleTaskAnalyze)
+	r.mux.HandleFunc("/api/v1/tasks/{id}/evidence/verify", r.handleEvidenceVerify)
+	r.mux.HandleFunc("/api/v1/tasks/{id}/outline", r.handleTaskOutline)
 	r.mux.HandleFunc("/api/v1/toolchain", r.handleToolchain)
 	r.mux.HandleFunc("/api/v1/toolchain/", r.handleToolchainAction)
-	r.mux.HandleFunc("/api/v1/tools", r.handleTools)
-	r.mux.HandleFunc("/api/v1/tools/", r.handleToolAction)
+	r.mux.HandleFunc("/api/v1/packages", r.handlePackages)
+	r.mux.HandleFunc("/api/v1/packages/", r.handlePackageAction)
 	r.mux.HandleFunc("/api/v1/providers", r.handleProviders)
 	r.mux.HandleFunc("/api/v1/providers/test", r.handleProviderTest)
 	r.mux.HandleFunc("/api/v1/providers/usage", r.handleProviderUsage)
@@ -209,6 +262,8 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/providers/oauth/disconnect", r.handleOAuthDisconnect)
 	r.mux.HandleFunc("/api/v1/providers/oauth/providers", r.handleOAuthProviders)
 	r.mux.HandleFunc("/api/v1/workflows", r.handleWorkflows)
+	r.mux.HandleFunc("/api/v1/workflows/", r.handleWorkflowItem)
+	r.mux.HandleFunc("/api/v1/hooks", r.handleHooks)
 	r.mux.HandleFunc("/api/v1/registries", r.handleRegistries)
 	r.mux.HandleFunc("/api/v1/benchmarks", r.handleBenchmarks)
 	r.mux.Handle("/api/v1/telemetry/", telemetry.NewHandler(r.telemetry.store))
@@ -219,6 +274,7 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/projects", r.handleProjects)
 	r.mux.HandleFunc("/api/v1/projects/scan", r.handleProjectScan)
 	r.mux.HandleFunc("/api/v1/projects/", r.handleProjectItem)
+	r.mux.HandleFunc("/api/v1/dependencies/jobs/", r.handleDependencyJob)
 	r.mux.HandleFunc("/api/v1/fs/browse", r.handleFSBrowse)
 	r.mux.HandleFunc("/api/v1/fs/mkdir", r.handleFSMkdir)
 
@@ -255,11 +311,8 @@ func (r *Router) registerRoutes() {
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// Enable CORS for development frontend
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
-
+	// CORS and the loopback-only Host/Origin checks live in localaccess.Middleware, which wraps
+	// the daemon's whole mux; no wildcard origin is ever sent from here.
 	if req.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return

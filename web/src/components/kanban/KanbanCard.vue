@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { safeHref } from '../../utils/safeHref'
 import { computed, ref, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Task, WorkflowStage } from '../../types'
@@ -142,7 +143,7 @@ const ACCENT: Record<string, string> = {
         class="font-mono text-[11px] font-semibold text-slate-400 hover:text-slate-200 flex-shrink-0">
         {{ copiedId ? 'Copied' : task.id }}
       </button>
-      <a v-if="jiraKey" :href="meta.jira_url" target="_blank" rel="noopener" @click.stop
+      <a v-if="jiraKey" :href="safeHref(meta.jira_url)" target="_blank" rel="noopener" @click.stop
         :title="`Open ${jiraKey} in JIRA${meta.jira_status ? ` (${meta.jira_status})` : ''}`"
         class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-950/70 border border-blue-800/70 text-blue-300 hover:text-blue-100 text-[10px] font-mono">
         {{ jiraKey }}<ExternalLink class="w-2.5 h-2.5 opacity-70" />
@@ -213,7 +214,7 @@ const ACCENT: Record<string, string> = {
       <span v-if="task.dependencies?.length" class="flex items-center gap-0.5 flex-shrink-0" :title="`Prerequisites: ${task.dependencies.join(', ')}`">
         <Link2 class="w-3 h-3" />{{ task.dependencies.length }}
       </span>
-      <a v-if="meta.confluence_page_url" :href="meta.confluence_page_url" target="_blank" rel="noopener" @click.stop
+      <a v-if="meta.confluence_page_url" :href="safeHref(meta.confluence_page_url)" target="_blank" rel="noopener" @click.stop
         class="flex items-center gap-0.5 text-indigo-300 hover:text-indigo-100 flex-shrink-0" title="Published on Confluence">
         <FileText class="w-3 h-3" />
       </a>

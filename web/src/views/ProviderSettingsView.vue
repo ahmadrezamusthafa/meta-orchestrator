@@ -19,6 +19,7 @@ const usageByProvider = ref<Record<string, ProviderUsage>>({})
 const usageLoading = ref(false)
 const usageWindows: ProviderUsageWindow[] = ['24h', '7d', '30d']
 let usageTimer: ReturnType<typeof setInterval> | null = null
+let isUnmounted = false
 
 async function loadUsage(refresh = false) {
   usageLoading.value = true
@@ -41,12 +42,14 @@ function setUsageWindow(w: ProviderUsageWindow) {
 
 onMounted(async () => {
   await loadProviders()
+  if (isUnmounted) return // left the page while loading; onUnmounted already ran
   loadConnections()
   loadUsage()
   usageTimer = setInterval(() => loadUsage(), 60_000)
 })
 
 onUnmounted(() => {
+  isUnmounted = true
   if (usageTimer) clearInterval(usageTimer)
 })
 

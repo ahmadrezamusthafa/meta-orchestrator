@@ -41,6 +41,7 @@ func (s *evidenceStub) StreamActivity(ctx context.Context, req *llm.LLMRequest, 
 func evidenceRouter(t *testing.T, stub *evidenceStub) (*Router, string) {
 	root := t.TempDir()
 	r := NewRouter(RouterConfig{RootDir: root})
+	t.Cleanup(r.evidenceJobs.Wait) // background finalization writes into root
 	for _, p := range []string{"claude", "antigravity", "openai", "opencode"} {
 		r.clientFactory.OverrideProvider(p, stub)
 	}

@@ -326,6 +326,21 @@ export interface EvidenceSpecCaseDTO {
   evidence: { id: string; status: string }[]
 }
 
+/** GET /tasks/{id}/evidence/verify: the signed evidence manifest rechecked against the files. */
+export interface EvidenceVerifyDTO {
+  signed: boolean
+  signature_valid: boolean
+  files_unchanged: boolean
+  valid: boolean
+  changed: string[]
+  missing: string[]
+  added: string[]
+  signed_at?: string
+  error?: string
+  manifest_file: string
+  recorded_files: number
+}
+
 export interface TaskEvidenceDTO {
   task_id: string
   enabled: boolean
@@ -449,6 +464,8 @@ export interface WorkflowDefinition {
   version: string
   stages: WorkflowStage[]
   default_role: string
+  // Built-in workflows are read-only; saving changes creates a custom copy.
+  builtin?: boolean
 }
 
 export interface OrchestratorEvent {
@@ -457,18 +474,6 @@ export interface OrchestratorEvent {
   stage_id: string
   timestamp: string
   payload: any
-}
-
-export interface ToolDTO {
-  id: string
-  name: string
-  category: string
-  current_version: string
-  latest_version: string
-  best_fit_version: string
-  status: 'HEALTHY' | 'UPDATE_AVAILABLE' | 'ERROR' | 'NOT_INSTALLED'
-  description: string
-  past_versions: string[]
 }
 
 export interface ProviderDTO {
@@ -738,6 +743,30 @@ export interface HookItemDTO {
   type: string
   command: string
   policy: string
+  /** .sdlc/hooks.json or the convention script's path */
+  source?: string
+}
+
+export interface MethodItemDTO {
+  id: string
+  name: string
+  description: string
+  execution_pattern: string
+  allowed_roles: string[]
+  max_consecutive_iterations: number
+}
+
+export interface ProfileItemDTO {
+  id: string
+  name: string
+  role: string
+  description: string
+  allowed_skills: string[]
+  denied_skills: string[]
+  system_prompt_template: string
+  max_token_budget: number
+  /** Pipeline stages that run with this role. */
+  stages: string[]
 }
 
 export interface RegistryDTO {
@@ -747,10 +776,23 @@ export interface RegistryDTO {
     source: string
     format: string
     description: string
+    location?: string
+    enabled?: boolean
     repo_url?: string
   }>
   prompts: PromptItemDTO[]
   hooks: HookItemDTO[]
+  methods?: MethodItemDTO[]
+  profiles?: ProfileItemDTO[]
+  /** Registry files that exist but could not be read. */
+  problems?: string[]
+}
+
+/** A repository a draft task likely touches (POST /projects/{id}/suggest-repos). */
+export interface RepoSuggestion {
+  name: string
+  score: number
+  reasons: string[]
 }
 
 export type ProjectRole = 'frontend' | 'backend' | 'automation-test' | 'contracts' | 'artifact' | 'infrastructure' | 'other'
@@ -1061,6 +1103,17 @@ export interface UniversalSkillDTO {
   metadata?: Record<string, any>
 }
 
+/** POST /skills/{name}/run: one test run of a command-based skill. */
+export interface SkillRunResult {
+  skill: string
+  role: string
+  ok: boolean
+  exit_code: number
+  output: string
+  error?: string
+  duration_ms: number
+}
+
 export interface SkillSourceDTO {
   id: string
   name: string
@@ -1361,4 +1414,139 @@ export interface ConnectorSuggestion {
   /** Agents get it in their turns (enabled, connected or configured, credentials set). */
   ready: boolean
   access?: string
+}
+
+// ── Packages: every tool the orchestrator itself uses, installed and versioned by it ──
+
+export type PackageKind = 'npm-cli' | 'go-cli' | 'npx-installer' | 'claude-plugin' | 'system'
+export type PackageStatus = 'installed' | 'not_installed' | 'error' | 'checking'
+export type PackageAction = 'install' | 'update' | 'rollback' | 'uninstall'
+export type PackageJobAction = PackageAction | 'setup'
+export type JobState = 'queued' | 'running' | 'succeeded' | 'failed'
+
+/** A background install/update/rollback/uninstall (packages) or a repository dependency install. */
+export interface PackageJob {
+  id: string
+  /** Package id, or "repo:<repo>" for a repository dependency job. */
+  package: string
+  action: PackageJobAction
+  version: string
+  from_version: string
+  state: JobState
+  log: string[]
+  message: string
+  started: string
+  finished: string
+}
+
+export interface PackageInstalledVersion {
+  version: string
+  installed_at: string
+  active: boolean
+  kind: 'install' | 'snapshot'
+}
+
+export interface PackageManual {
+  commands: string[]
+  note: string
+}
+
+export interface PackageHistoryEntry {
+  at: string
+  action: string
+  from: string
+  to: string
+  ok: boolean
+  message: string
+}
+
+export interface PackageDTO {
+  id: string
+  name: string
+  category: string
+  description: string
+  docs: string
+  kind: PackageKind
+  package: string
+  required: boolean
+  requires: string[]
+  status: PackageStatus
+  version: string
+  latest: string
+  update_available: boolean
+  /** Installed by the orchestrator under its own home (versioned) rather than found on the system. */
+  managed: boolean
+  location: string
+  /** A copy found elsewhere on PATH, when the managed one is used. */
+  system_copy: string
+  installed_versions: PackageInstalledVersion[]
+  actions: Record<PackageAction | 'pick_version', boolean>
+  action_notes: Partial<Record<PackageAction, string>>
+  manual: PackageManual | null
+  job: PackageJob | null
+  history: PackageHistoryEntry[]
+  notes: string
+}
+
+export interface PackagesResponse {
+  home: string
+  bin_dir: string
+  on_path: boolean
+  packages: PackageDTO[]
+}
+
+export interface PackageVersions {
+  versions: string[]
+  latest: string
+}
+
+export interface PackageSetupResult {
+  jobs: PackageJob[]
+  skipped: { id: string; reason: string }[]
+}
+
+// ── Repository dependencies: each repo's own project dependencies (npm, Go modules, …) ──
+
+export type DependencyEcosystemId = 'node' | 'go' | 'flutter' | 'dart' | 'ruby' | 'python' | 'jvm'
+
+export interface RepoDependency {
+  name: string
+  wanted: string
+  installed: string
+  latest: string
+  dev: boolean
+  /** A framework or headline dependency, listed first. */
+  key: boolean
+}
+
+export interface DependencyInstallCommand {
+  command: string[]
+  /** The orchestrator can run it for you. */
+  auto: boolean
+  note: string
+}
+
+export interface DependencyEcosystem {
+  ecosystem: DependencyEcosystemId
+  manager: string
+  manifest: string
+  lockfile: string
+  installed: boolean
+  drift: string
+  install: DependencyInstallCommand
+  /** A tool the install needs that this machine lacks (e.g. "pnpm"). */
+  missing_tool: string
+  dependencies: RepoDependency[]
+}
+
+export interface RepoDependencies {
+  repo: string
+  path: string
+  ecosystems: DependencyEcosystem[]
+  job: PackageJob | null
+}
+
+export interface ProjectDependencies {
+  project_id: string
+  repos: RepoDependencies[]
 }

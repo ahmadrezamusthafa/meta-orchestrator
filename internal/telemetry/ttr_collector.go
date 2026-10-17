@@ -80,6 +80,8 @@ type activeRun struct {
 	stage      string
 	stageStart time.Time
 	firstTest  *bool
+	// tokensAtStart is the task's cumulative usage when the run began; the run owns only the delta.
+	tokensAtStart types.TokenUsage
 }
 
 // RunSink persists finished runs (e.g. the telemetry datastore).
@@ -120,11 +122,15 @@ func (c *TTRCollector) StartRun(meta RunMeta) {
 	now := c.now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.runs[meta.TaskID] = &activeRun{
+	run := &activeRun{
 		rec:        RunRecord{RunMeta: meta, PhaseDurationsUS: make(map[string]int64), StartedAt: now},
 		stage:      meta.StageID,
 		stageStart: now,
 	}
+	if c.tokens != nil {
+		run.tokensAtStart = c.tokens(meta.TaskID)
+	}
+	c.runs[meta.TaskID] = run
 }
 
 // TransitionHook returns an fsm.StateTransitionHook that closes the current phase timer.
@@ -230,9 +236,10 @@ func (c *TTRCollector) Finish(taskID string, success bool) (RunRecord, bool) {
 	rec.DurationUS = now.Sub(rec.StartedAt).Microseconds()
 	rec.FirstPass = success && !rec.FrustrationHalt && (r.firstTest == nil || *r.firstTest)
 	if c.tokens != nil {
-		u := c.tokens(taskID)
+		u, base := c.tokens(taskID), r.tokensAtStart
 		rec.PromptTokens, rec.CompletionTokens, rec.CachedTokens, rec.CostUSD =
-			u.PromptTokens, u.CompletionTokens, u.CachedTokens, u.EstimatedCostUSD
+			u.PromptTokens-base.PromptTokens, u.CompletionTokens-base.CompletionTokens,
+			u.CachedTokens-base.CachedTokens, u.EstimatedCostUSD-base.EstimatedCostUSD
 	}
 	sinks := append([]RunSink(nil), c.sinks...)
 	c.mu.Unlock()

@@ -34,6 +34,8 @@ export const useWorkflowStore = defineStore('workflows', () => {
     isLoading.value = true
     try {
       workflows.value = await api.getWorkflows()
+    } catch (e) {
+      console.error('Failed to load workflows:', e)
     } finally {
       isLoading.value = false
     }
@@ -41,6 +43,12 @@ export const useWorkflowStore = defineStore('workflows', () => {
 
   async function createWorkflow(wf: WorkflowDefinition) {
     const res = await api.createWorkflow(wf)
+    await fetchWorkflows()
+    return res
+  }
+
+  async function updateWorkflow(wf: WorkflowDefinition) {
+    const res = await api.updateWorkflow(wf)
     await fetchWorkflows()
     return res
   }
@@ -53,5 +61,6 @@ export const useWorkflowStore = defineStore('workflows', () => {
     isLoading,
     fetchWorkflows,
     createWorkflow,
+    updateWorkflow,
   }
 })

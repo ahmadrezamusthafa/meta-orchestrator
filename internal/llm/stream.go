@@ -152,7 +152,7 @@ func (d *AnthropicDriver) StreamActivity(ctx context.Context, req *LLMRequest, e
 	if req == nil {
 		return nil, fmt.Errorf("request cannot be nil")
 	}
-	if d.apiKey == "test-key" || strings.HasPrefix(d.apiKey, "mock-") {
+	if cannedKey(d.apiKey) {
 		resp, err := d.Complete(ctx, req)
 		if err == nil {
 			emit(StreamEvent{Type: StreamTextDelta, Text: resp.Content})
@@ -298,7 +298,7 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 		prompt = "Continue."
 	}
 	interactive := req.Approver != nil
-	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--include-partial-messages"}
+	args := []string{"-p", positionalArg(prompt), "--output-format", "stream-json", "--verbose", "--include-partial-messages"}
 	if interactive {
 		// The prompt goes over stdin so the same channel can carry permission prompts and answers.
 		args = []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
@@ -569,6 +569,15 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	return resp, nil
 }
 
+// positionalArg keeps free text (task titles, descriptions, operator messages) from being parsed as
+// a CLI flag when passed as a positional argument: a leading space is harmless to the model.
+func positionalArg(s string) string {
+	if strings.HasPrefix(s, "-") {
+		return " " + s
+	}
+	return s
+}
+
 // hookBlockReason is the CLI's hook refusal without the echoed prompt, which may hold the very
 // data the hook objected to.
 func hookBlockReason(content string) string {
@@ -757,7 +766,7 @@ func (d *OpenAIDriver) StreamActivity(ctx context.Context, req *LLMRequest, emit
 	if req == nil {
 		return nil, fmt.Errorf("request cannot be nil")
 	}
-	if d.apiKey == "test-key" || strings.HasPrefix(d.apiKey, "mock-") || d.apiKey == "" ||
+	if cannedKey(d.apiKey) || d.apiKey == "" ||
 		strings.Contains(d.apiKey, "••••") || !strings.HasPrefix(d.apiKey, "sk-") {
 		resp, err := d.Complete(ctx, req)
 		if err == nil {

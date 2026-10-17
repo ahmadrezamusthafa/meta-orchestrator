@@ -7,8 +7,10 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/telemetry"
 )
 
 // DockerLimits caps the Docker work agents run on this machine.
@@ -39,7 +41,7 @@ var dockerValueFlags = map[string]bool{"-f": true, "--file": true, "-p": true, "
 	"--log-level": true, "--config": true}
 
 // shellSeparators split a command line into the simple commands it runs.
-var shellSeparators = regexp.MustCompile(`&&|\|\||[;|\n(]|\$\(`)
+var shellSeparators = regexp.MustCompile(`&&|\|\||[;|&\n(]|\$\(`)
 
 // commandPrefixes run the next word as the actual command.
 var commandPrefixes = map[string]bool{"sudo": true, "time": true, "nice": true, "env": true, "exec": true, "command": true}
@@ -84,12 +86,20 @@ func heavyDockerCommand(cmd string) bool {
 // dockerRunCommand matches the start of a docker run/create invocation.
 var dockerRunCommand = regexp.MustCompile(`\b(docker|podman)(\s+container)?\s+(run|create)\b`)
 
-// limitContainers adds a CPU limit to the containers a command starts, unless it sets its own.
-func limitContainers(cmd, cpus string) string {
-	if cpus == "" || cpus == "0" || strings.Contains(cmd, "--cpus") {
+// limitContainers adds a CPU limit to the containers a command starts, unless it sets its own,
+// and labels them with the task so their resource use can be sampled.
+func limitContainers(cmd, cpus, taskID string) string {
+	var flags []string
+	if cpus != "" && cpus != "0" && !strings.Contains(cmd, "--cpus") {
+		flags = append(flags, "--cpus="+cpus)
+	}
+	if safeTaskID.MatchString(taskID) && !strings.Contains(cmd, dockerTaskLabel+"=") {
+		flags = append(flags, "--label "+dockerTaskLabel+"="+taskID)
+	}
+	if len(flags) == 0 {
 		return cmd
 	}
-	return dockerRunCommand.ReplaceAllString(cmd, "${0} --cpus="+cpus)
+	return dockerRunCommand.ReplaceAllString(cmd, "${0} "+strings.Join(flags, " "))
 }
 
 type dockerSlot struct {
@@ -103,6 +113,13 @@ type dockerGate struct {
 	mu     sync.Mutex
 	held   map[string]dockerSlot // tool use id → holder
 	seq    int
+
+	// Container resource sampling while a turn uses Docker (docker_stats.go).
+	watches       map[string]*turnWatch // turn id → its monitor
+	hasDocker     func() bool
+	statsRun      telemetry.CommandRunner
+	statsInterval time.Duration
+	onStats       func(taskID, turnID string, s telemetry.ResourceSummary)
 }
 
 func newDockerGate(limits DockerLimits) *dockerGate {
@@ -112,7 +129,8 @@ func newDockerGate(limits DockerLimits) *dockerGate {
 	if limits.CPUs == "" {
 		limits.CPUs = defaultDockerCPUs
 	}
-	return &dockerGate{limits: limits, slots: make(chan struct{}, limits.MaxConcurrent), held: map[string]dockerSlot{}}
+	return &dockerGate{limits: limits, slots: make(chan struct{}, limits.MaxConcurrent), held: map[string]dockerSlot{},
+		watches: map[string]*turnWatch{}, hasDocker: dockerInstalled, statsRun: telemetry.ExecRunner, statsInterval: defaultStatsInterval}
 }
 
 // holders describes the commands occupying the slots.
@@ -179,6 +197,7 @@ func (g *dockerGate) releaseTurn(turnID string) {
 	for ; n > 0; n-- {
 		<-g.slots
 	}
+	g.stopWatch(turnID)
 }
 
 // wrap makes an allowed heavy Docker command wait for a slot, run in the foreground (so its slot
@@ -203,10 +222,14 @@ func (g *dockerGate) wrap(next llm.Approver, taskID, turnID string, note func(st
 		for k, v := range d.UpdatedInput {
 			input[k] = v
 		}
+		g.watchTurn(taskID, turnID)
 		var changes []string
-		if limited := limitContainers(raw, g.limits.CPUs); limited != raw {
+		if limited := limitContainers(raw, g.limits.CPUs, taskID); limited != raw {
 			input["command"] = limited
-			changes = append(changes, "containers capped at "+g.limits.CPUs+" CPUs")
+			if strings.Contains(limited, "--cpus="+g.limits.CPUs) && !strings.Contains(raw, "--cpus") {
+				changes = append(changes, "containers capped at "+g.limits.CPUs+" CPUs")
+			}
+			changes = append(changes, "containers labelled "+dockerTaskLabel+"="+taskID+" for resource sampling")
 		}
 		if bg, _ := input["run_in_background"].(bool); bg {
 			input["run_in_background"] = false

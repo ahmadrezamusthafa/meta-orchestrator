@@ -516,7 +516,7 @@ func (r *Router) handleConnectorMCPConfig(w http.ResponseWriter, req *http.Reque
 		r.writeError(w, http.StatusServiceUnavailable, "Connectors manager not configured")
 		return
 	}
-	mcpExport := r.cfg.ConnectorsManager.GetMCPExportConfig()
+	mcpExport := r.cfg.ConnectorsManager.MaskedMCPExportConfig() // browsers never see live credentials
 	r.writeJSON(w, http.StatusOK, mcpExport)
 }
 

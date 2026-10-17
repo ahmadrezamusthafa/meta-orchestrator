@@ -20,6 +20,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'toggle', enabled: boolean): void
   (e: 'inspect-compatibility'): void
+  (e: 'test-run'): void
 }>()
 
 const formatBadge = computed(() => {
@@ -167,6 +168,16 @@ function handleToggle() {
           <span>{{ skill.requires_network ? 'Net' : 'Local' }}</span>
         </span>
       </div>
+
+      <button
+        v-if="skill.command && skill.enabled"
+        type="button"
+        @click="emit('test-run')"
+        class="text-[11px] font-semibold text-slate-300 hover:text-white flex items-center gap-1 transition-colors"
+      >
+        <Terminal class="w-3 h-3" />
+        <span>Test run</span>
+      </button>
 
       <button
         type="button"

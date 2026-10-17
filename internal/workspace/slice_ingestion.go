@@ -1,84 +1,75 @@
 package workspace
 
 import (
-	"context"
-	"fmt"
-	"os/exec"
-
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/artifacts"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
+	"path/filepath"
+	"sort"
+	"strings"
 )
 
-// ExternalSliceInput provides input for mid-process execution.
-type ExternalSliceInput struct {
-	SourceBranch      string `json:"source_branch,omitempty"`
-	ExternalTaskPlan  string `json:"external_task_plan,omitempty"`
-	ExternalPRD       string `json:"external_prd,omitempty"`
-	ProduceVideo      bool   `json:"produce_video"`
+// A task can start mid-pipeline (a slice). Documents the operator uploads with it — PRD.md,
+// TECH_DOC.md, TASK_PLAN.md — stand in for the output of the stages the slice skips, so later
+// stages, evidence and pull requests read them exactly as if those stages had run.
+
+// sliceDocStages maps an uploaded document's file name (case-insensitive) to the stage whose
+// output it replaces.
+var sliceDocStages = map[string]string{
+	"prd.md":          "prd_discovery",
+	"tech_doc.md":     "techdoc_rfc",
+	"tech_doc_rfc.md": "techdoc_rfc",
+	"techdoc.md":      "techdoc_rfc",
+	"rfc.md":          "techdoc_rfc",
+	"task_plan.md":    "task_breakdown",
 }
 
-// SliceIngestionEngine hydrates workspaces for mid-process execution slices.
-type SliceIngestionEngine struct {
-	artMgr      *artifacts.ArtifactManager
-	synthesizer *SliceContextSynthesizer
-	hydrator    *fsm.SliceHydrator
+// SliceDocument is an uploaded document that becomes a skipped stage's output.
+type SliceDocument struct {
+	Stage   string
+	Name    string
+	Content string
 }
 
-// NewSliceIngestionEngine creates an ingestion engine.
-func NewSliceIngestionEngine(artMgr *artifacts.ArtifactManager) *SliceIngestionEngine {
-	return &SliceIngestionEngine{
-		artMgr:      artMgr,
-		synthesizer: NewSliceContextSynthesizer(artMgr),
-		hydrator:    fsm.NewSliceHydrator(),
-	}
+// StageForDocument returns the stage an uploaded file name stands in for.
+func StageForDocument(name string) (string, bool) {
+	stage, ok := sliceDocStages[strings.ToLower(filepath.Base(name))]
+	return stage, ok
 }
 
-// IngestAndHydrate prepares the workspace and artifacts for sliced execution.
-func (e *SliceIngestionEngine) IngestAndHydrate(
-	ctx context.Context,
-	ws *Workspace,
-	task *types.Task,
-	workflowDef *types.WorkflowDefinition,
-	slice *types.StageSlice,
-	input *ExternalSliceInput,
-) (*fsm.SliceExecutionPlan, error) {
-	// 1. Calculate slice bounds
-	plan, err := e.hydrator.HydrateSlice(workflowDef, slice, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to calculate slice plan: %w", err)
+// PlanSliceIngestion decides which uploaded documents become stage outputs: those that map to a
+// stage before startStage in pipeline. The rest are returned in ignored with the reason, sorted
+// by name. Empty documents are ignored.
+func PlanSliceIngestion(docs map[string]string, pipeline []string, startStage string) (ingest []SliceDocument, ignored []string) {
+	index := map[string]int{}
+	for i, st := range pipeline {
+		index[st] = i
 	}
-
-	// 2. Checkout existing branch if specified
-	if input != nil && input.SourceBranch != "" {
-		for _, repoPath := range ws.RepoPaths {
-			cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "checkout", input.SourceBranch)
-			_ = cmd.Run()
+	start, ok := index[startStage]
+	if !ok {
+		start = 0
+	}
+	names := make([]string, 0, len(docs))
+	for n := range docs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	taken := map[string]string{}
+	for _, name := range names {
+		content := docs[name]
+		stage, known := StageForDocument(name)
+		i, inPipeline := index[stage]
+		switch {
+		case strings.TrimSpace(content) == "":
+			ignored = append(ignored, name+": empty")
+		case !known || !inPipeline:
+			ignored = append(ignored, name+": not a PRD.md, TECH_DOC.md or TASK_PLAN.md")
+		case i >= start:
+			ignored = append(ignored, name+": the task runs "+stage+" itself")
+		case taken[stage] != "":
+			ignored = append(ignored, name+": "+taken[stage]+" already provides "+stage)
+		default:
+			taken[stage] = name
+			ingest = append(ingest, SliceDocument{Stage: stage, Name: filepath.Base(name), Content: content})
 		}
 	}
-
-	// 3. Ingest external TASK_PLAN.md if provided
-	if input != nil && input.ExternalTaskPlan != "" {
-		taskPlanPath := e.artMgr.TaskArtifactDir(task.ID)
-		_, err := e.artMgr.WriteArtifact(task.ID, artifacts.ArtifactTaskPlan, input.ExternalTaskPlan, "operator_upload")
-		if err != nil {
-			return nil, fmt.Errorf("failed to write external task plan: %w", err)
-		}
-		_ = taskPlanPath
-	}
-
-	// 4. Synthesize upstream artifacts if starting mid-process (e.g. Stage 7 Implementation)
-	if plan.StartIndex > 0 {
-		err := e.synthesizer.SynthesizePrerequisites(task.ID, task.Title, task.Description)
-		if err != nil {
-			return nil, fmt.Errorf("failed to synthesize prerequisites: %w", err)
-		}
-	}
-
-	// 5. Update task state and stage
-	task.CurrentStageIndex = plan.StartIndex
-	task.CurrentStageID = workflowDef.Stages[plan.StartIndex].ID
-	task.ActiveSlice = slice
-
-	return plan, nil
+	sort.SliceStable(ingest, func(a, b int) bool { return index[ingest[a].Stage] < index[ingest[b].Stage] })
+	return ingest, ignored
 }

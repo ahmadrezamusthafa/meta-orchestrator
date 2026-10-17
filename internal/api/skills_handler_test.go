@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/connectors"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
@@ -99,8 +101,8 @@ Run smoke tests and verify zero regressions.
 		t.Fatalf("check-compatibility returned %d", rec.Code)
 	}
 	var checkResp struct {
-		Compatible      bool                          `json:"compatible"`
-		DiscoveredCount int                           `json:"discovered_count"`
+		Compatible      bool                            `json:"compatible"`
+		DiscoveredCount int                             `json:"discovered_count"`
 		Skills          []*types.UniversalSkillContract `json:"skills"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &checkResp); err != nil {
@@ -165,5 +167,47 @@ Run smoke tests and verify zero regressions.
 	// Verify source deleted
 	if len(resolver.ListSources()) != 0 {
 		t.Errorf("expected source to be deleted")
+	}
+}
+
+// MCP server skills and the MCP export carry the servers' environments: browsers only ever see
+// their credentials masked.
+func TestSkillsAndMCPExportNeverShowCredentials(t *testing.T) {
+	for _, k := range []string{"SLACK_BOT_TOKEN", "SLACK_TOKEN"} {
+		t.Setenv(k, "")
+	}
+	root := t.TempDir()
+	const fileSecret, connectorSecret = "ghp_projectfile_secret_1234", "xoxb-connector-secret-5678"
+	mcpFile := `{"mcpServers":{"gh":{"command":"github-mcp-server","args":["stdio","--token","` + fileSecret + `"],` +
+		`"env":{"GITHUB_PERSONAL_ACCESS_TOKEN":"` + fileSecret + `","GITHUB_TOOLSETS":"repos"}}}}`
+	cm := connectors.NewManager(root)
+	t.Cleanup(cm.StopPeriodicPinger)
+	slack, _ := cm.GetConnector("slack")
+	cp := *slack
+	cp.Enabled = true
+	cp.MCP = &types.MCPConfig{Enabled: true, Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-slack"}, Transport: "stdio",
+		Env: map[string]string{"SLACK_BOT_TOKEN": connectorSecret, "SLACK_TEAM_ID": "T1"}}
+	if _, err := cm.UpdateConnector(cp); err != nil {
+		t.Fatal(err)
+	}
+	// Saving a connector rewrites .mcp.json; the project's own file is written afterwards.
+	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte(mcpFile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRouter(RouterConfig{RootDir: root, SkillResolver: skills.NewMultiSourceSkillResolver(root), ConnectorsManager: cm})
+
+	for _, path := range []string{"/api/v1/skills", "/api/v1/skills/gh", "/api/v1/skills/slack", "/api/v1/connectors/mcp-config"} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d", path, rec.Code)
+		}
+		body := rec.Body.String()
+		if strings.Contains(body, fileSecret) || strings.Contains(body, connectorSecret) {
+			t.Errorf("GET %s shows a credential in clear", path)
+		}
+		if path == "/api/v1/skills/gh" && !strings.Contains(body, "••••1234") {
+			t.Errorf("GET %s should show the masked token: %s", path, body)
+		}
 	}
 }

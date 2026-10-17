@@ -7,11 +7,11 @@ import (
 
 // DependencyRef represents a package requirement discovered in a manifest.
 type DependencyRef struct {
-	RepoName         string `json:"repo_name"`
-	PackageName      string `json:"package_name"`
-	RequiredVersion  string `json:"required_version"`
-	ProvidedVersion  string `json:"provided_version,omitempty"`
-	ManifestPath     string `json:"manifest_path"`
+	RepoName        string `json:"repo_name"`
+	PackageName     string `json:"package_name"`
+	RequiredVersion string `json:"required_version"`
+	ProvidedVersion string `json:"provided_version,omitempty"`
+	ManifestPath    string `json:"manifest_path"`
 }
 
 // CollisionError details an incompatible cross-repo dependency constraint.

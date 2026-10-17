@@ -190,4 +190,3 @@ func (c *MultiRepoGitCoordinator) RemoveTaskWorktree(srcRepoPath, targetWorktree
 
 	return nil
 }
-

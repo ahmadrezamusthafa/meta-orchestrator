@@ -15,11 +15,11 @@ import (
 
 // WorkspaceProvisioner manages ephemeral sandboxes, git worktrees, and cloned repository directories.
 type WorkspaceProvisioner struct {
-	mu            sync.RWMutex
+	mu                sync.RWMutex
 	rootWorkspacesDir string
-	hookEngine    *hooks.HookEngine
-	activeSpaces  map[string]*Workspace
-	sourceDirMap  map[string]map[string]string // taskID -> (repo -> srcPath)
+	hookEngine        *hooks.HookEngine
+	activeSpaces      map[string]*Workspace
+	sourceDirMap      map[string]map[string]string // taskID -> (repo -> srcPath)
 }
 
 // NewWorkspaceProvisioner initializes provisioner rooted at rootWorkspacesDir.
@@ -128,7 +128,7 @@ func (p *WorkspaceProvisioner) Provision(ctx context.Context, taskID string, rep
 			StageID:       "WORKSPACE_PROVISION",
 			WorkspacePath: taskDir,
 		}
-		if err := p.hookEngine.TriggerEvent(ctx, hooks.HookPreStage, hookCtx); err != nil {
+		if _, err := p.hookEngine.TriggerEvent(ctx, hooks.HookPreStage, hookCtx); err != nil {
 			return nil, fmt.Errorf("pre-stage hook failed during workspace provisioning: %w", err)
 		}
 	}

@@ -16,7 +16,9 @@ export interface TocEntry {
 export const escapeHtml = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 
-const SAFE_URL = /^(https?:|mailto:|#|\/(?!\/))/i
+// Browsers drop tab/newline from URLs and treat "\" as "/", so "/\host" is protocol-relative.
+const SAFE_URL = /^(https?:|mailto:|#|\/(?![/\\]))/i
+const cleanUrl = (href: string | null | undefined) => (href || '').replace(/[\t\n\r]/g, '').trim()
 // Remote images, plus task artifacts served by the orchestrator itself (UAT screenshots).
 const SAFE_IMAGE = /^(https?:|\/api\/v1\/artifacts\/)/i
 
@@ -46,13 +48,15 @@ const marked = new Marked({
     },
     link({ href, title, tokens }) {
       const inner = this.parser.parseInline(tokens)
-      if (!SAFE_URL.test((href || '').trim())) return inner
+      href = cleanUrl(href)
+      if (!SAFE_URL.test(href)) return inner
       const external = /^https?:/i.test(href)
       const t = title ? ` title="${escapeHtml(title)}"` : ''
       return `<a href="${escapeHtml(href)}"${t}${external ? ' target="_blank" rel="noopener noreferrer"' : ''}>${inner}</a>`
     },
     image({ href, text, title }) {
-      if (!SAFE_IMAGE.test((href || '').trim())) return escapeHtml(text || '')
+      href = cleanUrl(href)
+      if (!SAFE_IMAGE.test(href)) return escapeHtml(text || '')
       const t = title ? ` title="${escapeHtml(title)}"` : ''
       return `<img src="${escapeHtml(href)}" alt="${escapeHtml(text || '')}"${t} loading="lazy">`
     },
