@@ -94,8 +94,8 @@ async function analyze(complexity?: Complexity) {
 function backToDetails() {
   step.value = 'details'
 }
-const externalPlanContent = ref('')
-const externalPlanName = ref('')
+// Uploaded documents (file name → markdown) that stand in for the stages a slice skips.
+const externalDocs = ref<Record<string, string>>({})
 
 const activeProject = computed(() => {
   return projectStore.projects.find(p => p.id === selectedProjectId.value) || projectStore.activeProject
@@ -144,11 +144,10 @@ watch([selectedProjectId, title, description], () => {
 })
 
 function handleFileSelected(file: File) {
-  externalPlanName.value = file.name
   const reader = new FileReader()
   reader.onload = (e) => {
-    externalPlanContent.value = (e.target?.result as string) || ''
-    toastStore.info('Prerequisite Ingested', `Loaded ${file.name} into slice pipeline`)
+    externalDocs.value = { ...externalDocs.value, [file.name]: (e.target?.result as string) || '' }
+    toastStore.info('Document attached', `${file.name} will be used for the stage it replaces`)
   }
   reader.readAsText(file)
 }
@@ -271,12 +270,8 @@ async function handleSubmit() {
         produce_video: produceVideo.value,
       }
       payload.source_branch = sourceBranch.value
-      if (externalPlanContent.value) {
-        if (externalPlanName.value.toLowerCase().includes('prd')) {
-          payload.external_prd = externalPlanContent.value
-        } else {
-          payload.external_task_plan = externalPlanContent.value
-        }
+      if (Object.keys(externalDocs.value).length) {
+        payload.external_docs = externalDocs.value
       }
     }
 

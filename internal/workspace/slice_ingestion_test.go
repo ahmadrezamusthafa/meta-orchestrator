@@ -1,69 +1,41 @@
 package workspace
 
 import (
-	"context"
+	"strings"
 	"testing"
-	"time"
-
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/artifacts"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
-func TestSliceIngestionAndUpstreamSynthesis(t *testing.T) {
-	tmpDir := t.TempDir()
-	artMgr := artifacts.NewArtifactManager(tmpDir)
-	ingestion := NewSliceIngestionEngine(artMgr)
+var pipeline = []string{"prd_discovery", "atdd_creation", "techdoc_rfc", "task_breakdown", "task_implementation", "e2e_validation"}
 
-	reg := fsm.NewWorkflowRegistry()
-	general, _ := reg.Get("general-ai-sdlc")
-
-	task := &types.Task{
-		ID:          "task-slice-01",
-		Title:       "Payment Gateway Implementation",
-		Description: "Directly implement Stripe payment integration",
-		CreatedAt:   time.Now(),
+func TestPlanSliceIngestionMapsDocsToSkippedStages(t *testing.T) {
+	docs := map[string]string{
+		"PRD.md":       "# PRD",
+		"Tech_Doc.md":  "# RFC",
+		"TASK_PLAN.md": "# Plan",
+		"notes.md":     "# Notes",
+		"RFC.md":       "# Second RFC",
+		"empty/PRD.md": " ",
 	}
-
-	ws := &Workspace{
-		TaskID:    task.ID,
-		BasePath:  tmpDir,
-		RepoPaths: map[string]string{"backend": tmpDir},
+	ingest, ignored := PlanSliceIngestion(docs, pipeline, "task_implementation")
+	var got []string
+	for _, d := range ingest {
+		got = append(got, d.Stage+"="+d.Name)
 	}
-
-	// Slice starting at Stage 6 (IMPLEMENTATION_GREEN) and halting at Stage 7 (E2E_AUTOMATION)
-	slice := &types.StageSlice{
-		StartStageID: "IMPLEMENTATION_GREEN",
-		HaltStageID:  "E2E_AUTOMATION",
-		ProduceVideo: true,
+	if strings.Join(got, ",") != "prd_discovery=PRD.md,techdoc_rfc=RFC.md,task_breakdown=TASK_PLAN.md" {
+		t.Fatalf("ingest = %v", got)
 	}
-
-	input := &ExternalSliceInput{
-		ExternalTaskPlan: "## Tasks\n- TASK-1: Wire Stripe API",
-		ProduceVideo:     true,
+	want := []string{"Tech_Doc.md: RFC.md already provides techdoc_rfc", "empty/PRD.md: empty", "notes.md: not a PRD.md, TECH_DOC.md or TASK_PLAN.md"}
+	if strings.Join(ignored, "|") != strings.Join(want, "|") {
+		t.Fatalf("ignored = %q", ignored)
 	}
+}
 
-	ctx := context.Background()
-	plan, err := ingestion.IngestAndHydrate(ctx, ws, task, general, slice, input)
-	if err != nil {
-		t.Fatalf("ingestion failed: %v", err)
+func TestPlanSliceIngestionLeavesStagesTheTaskRuns(t *testing.T) {
+	ingest, ignored := PlanSliceIngestion(map[string]string{"PRD.md": "# PRD", "TASK_PLAN.md": "# Plan"}, pipeline, "techdoc_rfc")
+	if len(ingest) != 1 || ingest[0].Stage != "prd_discovery" {
+		t.Fatalf("ingest = %+v", ingest)
 	}
-
-	if plan.EffectiveStages[0].ID != "IMPLEMENTATION_GREEN" {
-		t.Errorf("expected first stage to be IMPLEMENTATION_GREEN, got %s", plan.EffectiveStages[0].ID)
-	}
-	if task.CurrentStageID != "IMPLEMENTATION_GREEN" {
-		t.Errorf("expected task stage to be IMPLEMENTATION_GREEN, got %s", task.CurrentStageID)
-	}
-
-	// Verify synthesized upstream PRD and Tech Doc artifacts exist
-	prdContent, _, err := artMgr.ReadArtifact(task.ID, artifacts.ArtifactPRD)
-	if err != nil || prdContent == "" {
-		t.Errorf("expected synthesized PRD artifact to exist")
-	}
-
-	rfcContent, _, err := artMgr.ReadArtifact(task.ID, artifacts.ArtifactTechDocRFC)
-	if err != nil || rfcContent == "" {
-		t.Errorf("expected synthesized RFC artifact to exist")
+	if len(ignored) != 1 || ignored[0] != "TASK_PLAN.md: the task runs task_breakdown itself" {
+		t.Fatalf("ignored = %q", ignored)
 	}
 }

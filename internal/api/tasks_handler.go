@@ -27,6 +27,7 @@ type CreateTaskRequest struct {
 	SourceBranch     string            `json:"source_branch,omitempty"`
 	ExternalTaskPlan string            `json:"external_task_plan,omitempty"`
 	ExternalPRD      string            `json:"external_prd,omitempty"`
+	ExternalDocs     map[string]string `json:"external_docs,omitempty"` // file name → markdown, for the stages a slice skips
 	MaxTokenBudget   int64             `json:"max_token_budget,omitempty"`
 	Complexity       string            `json:"complexity,omitempty"`
 	// ComplexitySource/Rationale/TaskType carry the analysis the operator reviewed (POST /tasks/analyze).
@@ -287,6 +288,7 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 		createdCopy := cloneTask(newTask)
 		r.mu.Unlock()
 		r.saveBoardNow()
+		r.ingestSliceDocuments(createdCopy, body.ExternalDocs, body.ExternalPRD, body.ExternalTaskPlan)
 
 		if len(unmetDeps) > 0 {
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
