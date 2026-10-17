@@ -12,6 +12,14 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
+// executeTaskWithAI runs the task's current stage synchronously, so a test can assert on the
+// settled state. Production code starts stages through startStage.
+func (r *Router) executeTaskWithAI(taskID string) {
+	if run, err := r.claimStage(taskID, "run", ""); err == nil {
+		r.executeStage(run)
+	}
+}
+
 type erroringProvider struct{ stubProvider }
 
 func (erroringProvider) Complete(ctx context.Context, req *llm.LLMRequest) (*llm.LLMResponse, error) {

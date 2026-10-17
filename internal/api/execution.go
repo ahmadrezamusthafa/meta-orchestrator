@@ -228,14 +228,6 @@ func (r *Router) startStageWithMessage(taskID, message, model string) (turnID, e
 	return run.turnID, user.ID, nil
 }
 
-// executeTaskWithAI runs the task's current stage synchronously (used by tests and callers that
-// already run in their own goroutine).
-func (r *Router) executeTaskWithAI(taskID string) {
-	if run, err := r.claimStage(taskID, "run", ""); err == nil {
-		r.executeStage(run)
-	}
-}
-
 // executeStage runs one claimed stage through the router and settles the resulting state.
 func (r *Router) executeStage(run *stageRun) {
 	defer run.cancel()
