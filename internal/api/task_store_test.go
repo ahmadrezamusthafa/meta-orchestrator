@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -60,6 +62,40 @@ func TestBoardStartsEmptyAndSurvivesRestart(t *testing.T) {
 	third := decodeTask(t, do(restarted, http.MethodPost, "/api/v1/tasks", `{"title":"Third"}`).Body.Bytes())
 	if third.ID == first.ID || third.ID == second.ID {
 		t.Fatalf("restarted board reused ID %s", third.ID)
+	}
+}
+
+// Concurrent saves (the ticker, handlers, Close) must never leave an older snapshot on disk after
+// a newer one: a stale write also became lastPersisted, so the newer state was not rewritten.
+func TestConcurrentSavesNeverLeaveAStaleBoard(t *testing.T) {
+	root := t.TempDir()
+	r := persistentRouter(t, root, nil)
+	task := decodeTask(t, do(r, http.MethodPost, "/api/v1/tasks", `{"title":"t"}`).Body.Bytes())
+	for round := 0; round < 30; round++ {
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				r.mu.Lock()
+				n, _ := strconv.Atoi(r.tasks[task.ID].Metadata["n"])
+				r.tasks[task.ID].Metadata["n"] = strconv.Itoa(n + 1)
+				r.mu.Unlock()
+				r.saveBoardNow()
+			}()
+		}
+		wg.Wait()
+		data, err := os.ReadFile(r.cfg.TaskStorePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var bf boardFile
+		if err := json.Unmarshal(data, &bf); err != nil || len(bf.Tasks) != 1 {
+			t.Fatalf("board: %v", err)
+		}
+		if want := r.taskSnapshot(task.ID).Metadata["n"]; bf.Tasks[0].Metadata["n"] != want {
+			t.Fatalf("round %d: disk has n=%s after every save finished, memory has n=%s", round, bf.Tasks[0].Metadata["n"], want)
+		}
 	}
 }
 

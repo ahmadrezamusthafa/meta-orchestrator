@@ -39,7 +39,7 @@ var dockerValueFlags = map[string]bool{"-f": true, "--file": true, "-p": true, "
 	"--log-level": true, "--config": true}
 
 // shellSeparators split a command line into the simple commands it runs.
-var shellSeparators = regexp.MustCompile(`&&|\|\||[;|\n(]|\$\(`)
+var shellSeparators = regexp.MustCompile(`&&|\|\||[;|&\n(]|\$\(`)
 
 // commandPrefixes run the next word as the actual command.
 var commandPrefixes = map[string]bool{"sudo": true, "time": true, "nice": true, "env": true, "exec": true, "command": true}

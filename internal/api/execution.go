@@ -228,14 +228,6 @@ func (r *Router) startStageWithMessage(taskID, message, model string) (turnID, e
 	return run.turnID, user.ID, nil
 }
 
-// executeTaskWithAI runs the task's current stage synchronously (used by tests and callers that
-// already run in their own goroutine).
-func (r *Router) executeTaskWithAI(taskID string) {
-	if run, err := r.claimStage(taskID, "run", ""); err == nil {
-		r.executeStage(run)
-	}
-}
-
 // executeStage runs one claimed stage through the router and settles the resulting state.
 func (r *Router) executeStage(run *stageRun) {
 	defer run.cancel()
@@ -699,6 +691,11 @@ func (r *Router) reviewStage(taskID string, approved bool, feedback string) (*ty
 	}
 	task.CurrentStageID = next
 	task.CurrentStageIndex = stageIndexOf(next)
+	// The approved output is settled: the next stage has not run, so it is pending until it starts.
+	// Left in review, a stage that cannot start (no repositories, busy, missing tools) would be
+	// skipped by the next approve.
+	r.setTaskState(task, types.TaskStatePending)
+	task.UpdatedAt = time.Now()
 	r.mu.Unlock()
 	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf("Approved %s → moving to %s.", stage, next)})
 	if err := r.startStage(taskID, "gate_approved", ""); err != nil {

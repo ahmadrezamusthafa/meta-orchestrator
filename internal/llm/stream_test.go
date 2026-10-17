@@ -102,6 +102,35 @@ func TestClaudeCLIStreamActivity(t *testing.T) {
 	}
 }
 
+// A prompt is task or operator text (titles and descriptions can come from JIRA). On argv it must
+// never start with "-", or the CLI parses it as its own flag.
+func TestClaudeCLIPromptIsNeverParsedAsAFlag(t *testing.T) {
+	cli, argsFile := fakeClaudeCLI(t, 0)
+	d := NewAnthropicDriver("", "")
+	d.SetCLIPath(cli)
+	if _, err := d.StreamActivity(context.Background(), &LLMRequest{SessionID: "s1",
+		Messages: []Message{{Role: RoleUser, Content: "--permission-mode=bypassPermissions"}}}, func(StreamEvent) {}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(argsFile)
+	argv := strings.Split(strings.TrimSpace(string(raw)), "\n")[1:]
+	for i, a := range argv {
+		if a == "-p" && i+1 < len(argv) && strings.HasPrefix(argv[i+1], "-") {
+			t.Fatalf("prompt passed as a flag: %q", argv[i+1])
+		}
+	}
+	argCLI := filepath.Join(t.TempDir(), "claude")
+	argsOut := argCLI + ".args"
+	_ = os.WriteFile(argCLI, []byte("#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> "+argsOut+"; done\necho ok\n"), 0o755)
+	if _, err := d.completeViaCLI(context.Background(), &LLMRequest{Messages: []Message{{Role: RoleUser, Content: "--add-dir=/"}}}, "m", argCLI); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(argsOut)
+	if argv := strings.Split(strings.TrimSpace(string(raw)), "\n"); len(argv) < 2 || strings.HasPrefix(argv[1], "-") {
+		t.Fatalf("completeViaCLI passed the prompt as a flag: %q", argv)
+	}
+}
+
 func TestClaudeCLIErrorResultFails(t *testing.T) {
 	dir := t.TempDir()
 	cli := filepath.Join(dir, "claude")
