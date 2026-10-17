@@ -476,61 +476,6 @@ export interface OrchestratorEvent {
   payload: any
 }
 
-export interface ToolManualInstall {
-  docs: string
-  commands?: string[]
-  note?: string
-}
-
-/** A tool the orchestrator itself relies on (configs/tools.json), as its health check found it here. */
-export interface ToolDTO {
-  id: string
-  name: string
-  category: string
-  description: string
-  status: 'INSTALLED' | 'NOT_INSTALLED' | 'ERROR'
-  installed_version?: string
-  path?: string
-  problem?: string
-  health_check_cmd: string
-  required_runtimes?: Record<string, string>
-  /** Set when the toolchain catalog can install it (one click where the package manager allows). */
-  toolchain_id?: string
-  install: ToolManualInstall
-  job?: ToolchainJob
-  checked_at: string
-}
-
-/** POST /tools/install answer: a toolchain job (202) or how to install it yourself (501). */
-export type ToolInstallResult =
-  | { kind: 'job'; job: ToolchainJob }
-  | { kind: 'manual'; reason: string; install: ToolManualInstall }
-
-export interface ToolRuntimeCheck {
-  runtime: string
-  constraint: string
-  found?: string
-  satisfied: boolean
-  problem?: string
-}
-
-export interface ToolCompatibility {
-  tool_id: string
-  name: string
-  status: ToolDTO['status']
-  installed_version?: string
-  runtimes: ToolRuntimeCheck[]
-  compatible: boolean
-}
-
-export interface ToolMatrix {
-  host_os: string
-  host_arch: string
-  matrix_status: 'compatible' | 'conflicts'
-  tools: ToolCompatibility[]
-  conflicts: string[]
-}
-
 export interface ProviderDTO {
   id: string
   name: string
@@ -1469,4 +1414,139 @@ export interface ConnectorSuggestion {
   /** Agents get it in their turns (enabled, connected or configured, credentials set). */
   ready: boolean
   access?: string
+}
+
+// ── Packages: every tool the orchestrator itself uses, installed and versioned by it ──
+
+export type PackageKind = 'npm-cli' | 'go-cli' | 'npx-installer' | 'claude-plugin' | 'system'
+export type PackageStatus = 'installed' | 'not_installed' | 'error' | 'checking'
+export type PackageAction = 'install' | 'update' | 'rollback' | 'uninstall'
+export type PackageJobAction = PackageAction | 'setup'
+export type JobState = 'queued' | 'running' | 'succeeded' | 'failed'
+
+/** A background install/update/rollback/uninstall (packages) or a repository dependency install. */
+export interface PackageJob {
+  id: string
+  /** Package id, or "repo:<repo>" for a repository dependency job. */
+  package: string
+  action: PackageJobAction
+  version: string
+  from_version: string
+  state: JobState
+  log: string[]
+  message: string
+  started: string
+  finished: string
+}
+
+export interface PackageInstalledVersion {
+  version: string
+  installed_at: string
+  active: boolean
+  kind: 'install' | 'snapshot'
+}
+
+export interface PackageManual {
+  commands: string[]
+  note: string
+}
+
+export interface PackageHistoryEntry {
+  at: string
+  action: string
+  from: string
+  to: string
+  ok: boolean
+  message: string
+}
+
+export interface PackageDTO {
+  id: string
+  name: string
+  category: string
+  description: string
+  docs: string
+  kind: PackageKind
+  package: string
+  required: boolean
+  requires: string[]
+  status: PackageStatus
+  version: string
+  latest: string
+  update_available: boolean
+  /** Installed by the orchestrator under its own home (versioned) rather than found on the system. */
+  managed: boolean
+  location: string
+  /** A copy found elsewhere on PATH, when the managed one is used. */
+  system_copy: string
+  installed_versions: PackageInstalledVersion[]
+  actions: Record<PackageAction | 'pick_version', boolean>
+  action_notes: Partial<Record<PackageAction, string>>
+  manual: PackageManual | null
+  job: PackageJob | null
+  history: PackageHistoryEntry[]
+  notes: string
+}
+
+export interface PackagesResponse {
+  home: string
+  bin_dir: string
+  on_path: boolean
+  packages: PackageDTO[]
+}
+
+export interface PackageVersions {
+  versions: string[]
+  latest: string
+}
+
+export interface PackageSetupResult {
+  jobs: PackageJob[]
+  skipped: { id: string; reason: string }[]
+}
+
+// ── Repository dependencies: each repo's own project dependencies (npm, Go modules, …) ──
+
+export type DependencyEcosystemId = 'node' | 'go' | 'flutter' | 'dart' | 'ruby' | 'python' | 'jvm'
+
+export interface RepoDependency {
+  name: string
+  wanted: string
+  installed: string
+  latest: string
+  dev: boolean
+  /** A framework or headline dependency, listed first. */
+  key: boolean
+}
+
+export interface DependencyInstallCommand {
+  command: string[]
+  /** The orchestrator can run it for you. */
+  auto: boolean
+  note: string
+}
+
+export interface DependencyEcosystem {
+  ecosystem: DependencyEcosystemId
+  manager: string
+  manifest: string
+  lockfile: string
+  installed: boolean
+  drift: string
+  install: DependencyInstallCommand
+  /** A tool the install needs that this machine lacks (e.g. "pnpm"). */
+  missing_tool: string
+  dependencies: RepoDependency[]
+}
+
+export interface RepoDependencies {
+  repo: string
+  path: string
+  ecosystems: DependencyEcosystem[]
+  job: PackageJob | null
+}
+
+export interface ProjectDependencies {
+  project_id: string
+  repos: RepoDependencies[]
 }

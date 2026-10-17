@@ -1,63 +1,38 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
-import { useToolsStore } from '../stores/tools'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
+import { usePackagesStore } from '../stores/packages'
 import { useToastStore } from '../stores/toast'
-import type { ToolDTO } from '../types'
-import ToolLifecycleCard from '../components/tools/ToolLifecycleCard.vue'
-import InstallWizardModal from '../components/tools/InstallWizardModal.vue'
-import BestFitMatrixModal from '../components/tools/BestFitMatrixModal.vue'
+import PackagesSection from '../components/packages/PackagesSection.vue'
+import SetupEverythingBanner from '../components/packages/SetupEverythingBanner.vue'
 import ToolchainSection from '../components/toolchain/ToolchainSection.vue'
 import ConnectorSuggestions from '../components/toolchain/ConnectorSuggestions.vue'
-import { Search, Sparkles, X, RefreshCw } from 'lucide-vue-next'
+import { Search, X, RefreshCw } from 'lucide-vue-next'
 
-const toolsStore = useToolsStore()
+const route = useRoute()
+const packagesStore = usePackagesStore()
 const toastStore = useToastStore()
 
 const searchQuery = ref('')
 const selectedCategory = ref('All')
-const activeInstallTool = ref<ToolDTO | null>(null)
-const showMatrixModal = ref(false)
 const isRefreshing = ref(false)
 
-const categories = computed(() => ['All', ...new Set(toolsStore.tools.map((t) => t.category).filter(Boolean))])
+const categories = computed(() => ['All', ...new Set(packagesStore.packages.map((p) => p.category).filter(Boolean))])
 
-onMounted(async () => {
-  await toolsStore.fetchTools()
+let detach: (() => void) | null = null
+onMounted(() => {
+  detach = packagesStore.attach()
+  void packagesStore.fetch()
+  // Deep links such as /tools#toolchain ("install <tool> first") land on that section.
+  if (route.hash === '#toolchain') void nextTick(() => document.getElementById('toolchain')?.scrollIntoView())
 })
+onBeforeUnmount(() => detach?.())
 
-const filteredTools = computed(() => {
-  return toolsStore.tools.filter((t) => {
-    if (selectedCategory.value !== 'All' && t.category !== selectedCategory.value) {
-      return false
-    }
-    if (searchQuery.value) {
-      const q = searchQuery.value.toLowerCase()
-      if (!t.name.toLowerCase().includes(q) && !t.id.toLowerCase().includes(q)) {
-        return false
-      }
-    }
-    return true
-  })
-})
-
-async function handleInstallCompleted() {
-  if (activeInstallTool.value) {
-    toastStore.success('Tool installed', `${activeInstallTool.value.name} passed its health check`)
-    activeInstallTool.value = null
-  }
-  await toolsStore.fetchTools()
-}
-
-async function closeInstall() {
-  activeInstallTool.value = null
-  await toolsStore.fetchTools()
-}
-
-/** Re-runs every health check (e.g. after installing a tool from your own terminal). */
+/** Re-runs every package check (e.g. after installing something from your own terminal). */
 async function handleRefresh() {
   isRefreshing.value = true
   try {
-    await toolsStore.recheckTools()
+    await packagesStore.recheck()
   } catch (err: any) {
     toastStore.error('Re-check failed', err?.message)
   } finally {
@@ -69,21 +44,23 @@ async function handleRefresh() {
 <template>
   <div class="h-full flex flex-col bg-slate-950 overflow-hidden">
     <!-- Sub-header Toolbar -->
-    <div class="h-14 px-6 bg-slate-900/50 border-b border-slate-800 flex items-center justify-between gap-4">
-      <div class="flex items-center gap-4">
+    <div class="min-h-14 px-6 py-2 bg-slate-900/50 border-b border-slate-800 flex flex-wrap items-center justify-between gap-4">
+      <div class="flex flex-wrap items-center gap-4">
+        <h1 class="text-sm font-bold text-slate-100">Tool Hub &amp; Packages</h1>
         <!-- Search -->
         <div class="relative w-64">
           <Search class="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
           <input
             v-model="searchQuery"
             type="text"
-            placeholder="Search tools & runtimes..."
+            placeholder="Search packages..."
             class="w-full h-9 pl-9 pr-8 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
           />
           <button
             v-if="searchQuery"
             @click="searchQuery = ''"
             type="button"
+            aria-label="Clear search"
             class="absolute right-2.5 top-2.5 text-slate-500 hover:text-slate-300 transition-colors"
           >
             <X class="w-4 h-4" />
@@ -91,10 +68,11 @@ async function handleRefresh() {
         </div>
 
         <!-- Category Tabs -->
-        <div class="flex items-center gap-1">
+        <div class="flex flex-wrap items-center gap-1">
           <button
             v-for="cat in categories"
             :key="cat"
+            type="button"
             @click="selectedCategory = cat"
             class="h-8 px-3 rounded-lg text-xs font-medium transition-colors"
             :class="selectedCategory === cat ? 'bg-slate-800 text-emerald-400 font-semibold' : 'text-slate-400 hover:text-slate-200'"
@@ -104,33 +82,28 @@ async function handleRefresh() {
         </div>
       </div>
 
-      <!-- Actions -->
-      <div class="flex items-center gap-2.5">
-        <button
-          @click="handleRefresh"
-          :disabled="isRefreshing"
-          title="Re-run every health check"
-          type="button"
-          class="h-9 w-9 flex items-center justify-center rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
-        >
-          <RefreshCw class="w-4 h-4" :class="{ 'animate-spin text-emerald-400': isRefreshing }" />
-        </button>
-
-        <button
-          @click="showMatrixModal = true"
-          type="button"
-          class="h-9 px-3.5 rounded-lg bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-xs font-semibold uppercase tracking-wider flex items-center gap-2 transition-colors shadow-sm"
-        >
-          <Sparkles class="w-4 h-4 text-emerald-400" />
-          <span>Check compatibility</span>
-        </button>
-      </div>
+      <button
+        @click="handleRefresh"
+        :disabled="isRefreshing"
+        title="Re-check every package"
+        aria-label="Re-check every package"
+        type="button"
+        class="h-9 w-9 flex items-center justify-center rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
+      >
+        <RefreshCw class="w-4 h-4" :class="{ 'animate-spin text-emerald-400': isRefreshing }" />
+      </button>
     </div>
 
-    <!-- Catalog Grid -->
     <main class="flex-1 p-6 overflow-y-auto space-y-8">
-      <!-- Real CLI tools the registered repositories' stacks need on this machine -->
+      <SetupEverythingBanner />
+
+      <!-- The tools the orchestrator itself uses: install, update, pick a version, roll back, uninstall -->
       <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+        <PackagesSection :search="searchQuery" :category="selectedCategory" />
+      </div>
+
+      <!-- Real CLI tools the registered repositories' stacks need on this machine -->
+      <div id="toolchain" class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 scroll-mt-6">
         <ToolchainSection
           :scope="{}"
           title="Stack toolchain"
@@ -141,28 +114,6 @@ async function handleRefresh() {
       <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
         <ConnectorSuggestions :scope="{}" title="Connectors your repositories use" />
       </div>
-
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 font-semibold">Tools the orchestrator uses</h2>
-      <p v-if="!toolsStore.isLoading && !toolsStore.tools.length" class="text-xs text-slate-500">
-        No tools listed: configs/tools.json is missing or invalid (see the daemon log).
-      </p>
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <ToolLifecycleCard
-          v-for="tool in filteredTools"
-          :key="tool.id"
-          :tool="tool"
-          @install="activeInstallTool = tool"
-        />
-      </div>
     </main>
-
-    <InstallWizardModal
-      v-if="activeInstallTool"
-      :tool="activeInstallTool"
-      @close="closeInstall"
-      @completed="handleInstallCompleted"
-    />
-
-    <BestFitMatrixModal v-if="showMatrixModal" @close="showMatrixModal = false" />
   </div>
 </template>
