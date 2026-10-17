@@ -77,8 +77,10 @@ func (s *Service) Limits(ctx context.Context, providerIDs []string, force bool) 
 	for _, id := range providerIDs {
 		f, ok := s.fetchers[id]
 		if !ok {
+			mu.Lock()
 			out[id] = ProviderLimits{ProviderID: id, Status: StatusUnavailable, Windows: []Window{},
 				Message: "This provider does not expose plan usage.", FetchedAt: s.now()}
+			mu.Unlock()
 			continue
 		}
 		if !force {
@@ -86,7 +88,9 @@ func (s *Service) Limits(ctx context.Context, providerIDs []string, force bool) 
 			cached, hit := s.cache[id]
 			s.mu.Unlock()
 			if hit && s.now().Sub(cached.FetchedAt) < s.ttl {
+				mu.Lock()
 				out[id] = cached
+				mu.Unlock()
 				continue
 			}
 		}
