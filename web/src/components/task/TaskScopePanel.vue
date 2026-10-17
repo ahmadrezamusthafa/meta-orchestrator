@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { safeHref } from '../../utils/safeHref'
 import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../../services/api'
 import { useTaskStore } from '../../stores/tasks'
@@ -118,7 +119,7 @@ onMounted(loadArtifacts)
           <div class="flex flex-wrap items-center gap-2 text-[11px]">
             <span class="px-1.5 py-0.5 rounded border font-semibold" :class="TONE_BADGE[life.tone]">{{ life.status }}</span>
             <span class="text-slate-400">{{ stageName(task.current_stage_id) }} · stage {{ current + 1 }} of {{ STAGES.length }}</span>
-            <a v-if="meta.jira_key" :href="meta.jira_url" target="_blank" rel="noopener"
+            <a v-if="meta.jira_key" :href="safeHref(meta.jira_url)" target="_blank" rel="noopener"
               class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-950/70 border border-blue-800/70 text-blue-300 hover:text-blue-100 font-mono">
               {{ meta.jira_key }} <ExternalLink class="w-2.5 h-2.5" />
             </a>

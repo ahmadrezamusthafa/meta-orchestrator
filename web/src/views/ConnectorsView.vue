@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { safeHref } from '../utils/safeHref'
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../services/api'
@@ -2072,7 +2073,7 @@ onUnmounted(() => {
 
                   <div class="flex items-center gap-2 flex-shrink-0">
                     <a
-                      :href="issue.url || (issue as any).URL"
+                      :href="safeHref(issue.url || (issue as any).URL)"
                       target="_blank"
                       rel="noopener"
                       class="p-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-blue-400 hover:border-slate-700 transition"

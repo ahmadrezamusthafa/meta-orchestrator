@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { safeHref } from '../../utils/safeHref'
 import { ref, onMounted, computed } from 'vue'
 import { api } from '../../services/api'
 import { useTaskStore } from '../../stores/tasks'
@@ -293,7 +294,7 @@ onMounted(async () => {
                 </button>
 
                 <a
-                  :href="issue.url"
+                  :href="safeHref(issue.url)"
                   target="_blank"
                   rel="noopener"
                   @click.stop

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { safeHref } from '../../utils/safeHref'
 import { ref } from 'vue'
 import type { Task, WorkflowStage } from '../../types'
 import { useTaskStore } from '../../stores/tasks'
@@ -61,7 +62,7 @@ function drop(stageId: string, e: DragEvent) {
         </button>
         <a
           v-if="lane.key !== taskStore.NO_EPIC && lane.url"
-          :href="lane.url"
+          :href="safeHref(lane.url)"
           target="_blank"
           rel="noopener"
           class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-violet-950/70 border border-violet-800/70 text-violet-300 hover:text-violet-100 text-[10px] font-mono"
