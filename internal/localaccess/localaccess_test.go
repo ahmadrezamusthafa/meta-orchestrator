@@ -1,8 +1,10 @@
 package localaccess
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -79,5 +81,18 @@ func TestMiddleware(t *testing.T) {
 				t.Fatal("wildcard CORS must not be sent")
 			}
 		})
+	}
+}
+
+func TestMiddlewareCapsBodies(t *testing.T) {
+	var readErr error
+	h := New(nil).Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, readErr = io.Copy(io.Discard, r.Body)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(strings.Repeat("x", MaxBodyBytes+1)))
+	req.Host = "localhost:8080"
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if readErr == nil {
+		t.Fatal("a body over MaxBodyBytes must fail to read")
 	}
 }

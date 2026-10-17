@@ -16,6 +16,9 @@ import (
 	"strings"
 )
 
+// MaxBodyBytes caps every request body; the API exchanges JSON documents, never bulk uploads.
+const MaxBodyBytes = 32 << 20
+
 // DefaultListenAddr binds the daemon to loopback only.
 const DefaultListenAddr = "127.0.0.1:8080"
 
@@ -79,7 +82,8 @@ func (g *Guard) CheckRequest(r *http.Request) bool {
 	return g.AllowedHost(r.Host) && g.AllowedOrigin(r.Header.Get("Origin"))
 }
 
-// Middleware refuses requests that fail CheckRequest and answers CORS for allowed origins only.
+// Middleware refuses requests that fail CheckRequest, answers CORS for allowed origins only and
+// caps request bodies at MaxBodyBytes.
 func (g *Guard) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !g.CheckRequest(r) {
@@ -95,6 +99,9 @@ func (g *Guard) Middleware(next http.Handler) http.Handler {
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
+		}
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, MaxBodyBytes)
 		}
 		next.ServeHTTP(w, r)
 	})
