@@ -165,7 +165,7 @@ function exportYaml() {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
 
-    toastStore.success('Workflow Exported', 'Saved to .sdlc/workflow.yaml')
+    toastStore.success('Workflow Exported', 'Downloaded workflow.yaml')
   } catch (err) {
     toastStore.error('Export Failed')
   } finally {

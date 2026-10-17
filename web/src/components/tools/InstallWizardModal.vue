@@ -23,7 +23,12 @@ const isFinished = ref(false)
 onMounted(async () => {
   miniLogs.value.push(`[Init] Checking host environment for ${props.tool.name}...`)
   
-  await toolsStore.installTool(props.tool.id, props.tool.latest_version)
+  try {
+    await toolsStore.installTool(props.tool.id, props.tool.latest_version)
+  } catch (err: any) {
+    miniLogs.value.push(`[Error] ${err?.message || 'Installation failed'}`)
+    return
+  }
 
   setTimeout(() => {
     currentStep.value = 2

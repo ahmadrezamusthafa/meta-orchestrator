@@ -332,7 +332,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     })
-    if (!res.ok) throw new Error('Failed to create task')
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to create task')
     return res.json()
   },
 
@@ -343,7 +343,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ instruction })
     })
-    if (!res.ok) throw new Error('Failed to inject context')
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to inject context')
     return res.json()
   },
 
@@ -351,7 +351,11 @@ export const api = {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/reset`, {
       method: 'POST'
     })
-    if (!res.ok) throw new Error('Failed to reset workspace')
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      if (askForTools(taskId, errData, 'run')) return errData
+      throw new Error(errData?.error || 'Failed to reset workspace')
+    }
     return res.json()
   },
 
@@ -361,7 +365,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ approved, feedback })
     })
-    if (!res.ok) throw new Error('Failed to update gate')
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to update gate')
     return res.json()
   },
 
@@ -381,6 +385,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tool_id: toolId, version })
     })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to install tool')
     return res.json()
   },
 
@@ -390,17 +395,20 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tool_id: toolId, target_version: targetVersion })
     })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to roll back tool')
     return res.json()
   },
 
   async resolveBestFitMatrix(): Promise<any> {
     const res = await fetch(`${BASE_URL}/tools/resolve-matrix`, { method: 'POST' })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to resolve tool matrix')
     return res.json()
   },
 
   // Providers & Benchmarks
   async getProviders(): Promise<{ providers: ProviderDTO[]; tier_mapping: any; is_override: boolean }> {
     const res = await fetch(`${BASE_URL}/providers`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to fetch providers')
     return res.json()
   },
 
@@ -416,6 +424,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider_id: providerId })
     })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to check provider')
     return res.json()
   },
 
@@ -523,6 +532,7 @@ export const api = {
   // Workflows & Registries
   async getWorkflows(): Promise<WorkflowDefinition[]> {
     const res = await fetch(`${BASE_URL}/workflows`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to fetch workflows')
     return res.json()
   },
 
@@ -532,11 +542,13 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(workflow)
     })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to save workflow')
     return res.json()
   },
 
   async getRegistries(): Promise<RegistryDTO> {
     const res = await fetch(`${BASE_URL}/registries`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to fetch registries')
     return res.json()
   },
 
@@ -583,7 +595,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(project)
     })
-    if (!res.ok) throw new Error(`Failed to update project ${id}`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `Failed to update project ${id}`)
     return res.json()
   },
 

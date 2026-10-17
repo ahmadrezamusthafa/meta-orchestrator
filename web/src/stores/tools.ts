@@ -13,6 +13,8 @@ export const useToolsStore = defineStore('tools', () => {
     isLoading.value = true
     try {
       tools.value = await api.getTools(category, search)
+    } catch (e) {
+      console.error('Failed to load tools:', e)
     } finally {
       isLoading.value = false
     }
@@ -34,7 +36,7 @@ export const useToolsStore = defineStore('tools', () => {
 
   function initProgressSubscription() {
     wsService.subscribe((event) => {
-      if (event.type === 'tool.progress' && event.payload) {
+      if (event.type === 'tool.install.progress' && event.payload) {
         installProgress.value = event.payload
       }
     })
