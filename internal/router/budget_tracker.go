@@ -48,12 +48,11 @@ func (bt *BudgetTracker) RecordUsage(taskID string, promptTokens int64, completi
 	u.TotalTokens += (promptTokens + completionTokens)
 	u.EstimatedCostUSD += costUSD
 
+	cp := *u
 	max, hasMax := bt.budget[taskID]
 	if hasMax && max > 0 && u.TotalTokens > max {
-		return u, fmt.Errorf("task %s exceeded max token budget (%d > %d tokens)", taskID, u.TotalTokens, max)
+		return &cp, fmt.Errorf("task %s exceeded max token budget (%d > %d tokens)", taskID, u.TotalTokens, max)
 	}
-
-	cp := *u
 	return &cp, nil
 }
 
