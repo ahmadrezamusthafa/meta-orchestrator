@@ -12,7 +12,7 @@ import type {
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
   TaskActivityResponse, TaskChatResponse, TaskDiffDTO, DiffAgainst, TaskArtifactDTO,
   PullRequestDraftDTO, PullRequestOpenedDTO, UATGuideStatusDTO, UATGuideSettings,
-  TaskAnalysisDTO, TaskRoutingDTO, StageRoute, RouteMatrixCellDTO, TaskEvidenceDTO
+  TaskAnalysisDTO, TaskRoutingDTO, StageRoute, RouteMatrixCellDTO, TaskEvidenceDTO, EvidenceVerifyDTO
 } from '../types'
 
 
@@ -233,6 +233,12 @@ export const api = {
   },
 
   // Runs an evidence turn on the Implementation stage: test the change and record the videos
+  async verifyTaskEvidence(taskId: string): Promise<EvidenceVerifyDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/evidence/verify`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Could not verify test evidence')
+    return (await res.json()).verify
+  },
+
   async recordTaskEvidence(taskId: string): Promise<void> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/evidence`, { method: 'POST' })
     if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Could not start recording test evidence')
