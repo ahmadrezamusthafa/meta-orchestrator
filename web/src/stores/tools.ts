@@ -13,6 +13,8 @@ export const useToolsStore = defineStore('tools', () => {
     isLoading.value = true
     try {
       tools.value = await api.getTools(category, search)
+    } catch (e) {
+      console.error('Failed to load tools:', e)
     } finally {
       isLoading.value = false
     }

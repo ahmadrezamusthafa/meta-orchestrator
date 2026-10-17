@@ -45,8 +45,12 @@ const filteredTools = computed(() => {
 async function handleRollbackConfirm(version: string) {
   if (activeRollbackTool.value) {
     const name = activeRollbackTool.value.name
-    await toolsStore.rollbackTool(activeRollbackTool.value.id, version)
-    toastStore.warning('Tool Rolled Back', `${name} reverted to version ${version}`)
+    try {
+      await toolsStore.rollbackTool(activeRollbackTool.value.id, version)
+      toastStore.warning('Tool Rolled Back', `${name} reverted to version ${version}`)
+    } catch (err: any) {
+      toastStore.error('Rollback Failed', err?.message || `${name} was not rolled back`)
+    }
     activeRollbackTool.value = null
   }
 }
