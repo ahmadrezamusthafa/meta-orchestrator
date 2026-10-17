@@ -51,7 +51,7 @@ func fileExists(path string) bool {
 
 func main() {
 	fmt.Println("================================================================")
-	fmt.Println("  Meta-Orchestrator Daemon Core (Phase 1 Foundation)")
+	fmt.Println("  Meta-Orchestrator Daemon")
 	fmt.Println("================================================================")
 
 	cwd, _ := os.Getwd()
