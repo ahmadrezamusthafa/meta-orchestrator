@@ -196,7 +196,8 @@ func (r *Router) startStage(taskID, trigger, feedback string) error {
 
 // stageIdleStates are the states in which a typed message continues the current stage rather than
 // starting a side conversation.
-var stageIdleStates = map[types.TaskState]bool{types.TaskStatePending: true, types.TaskStateSuspended: true, types.TaskStateFailed: true}
+var stageIdleStates = map[types.TaskState]bool{types.TaskStatePending: true, types.TaskStateSuspended: true, types.TaskStateFailed: true,
+	types.TaskStateBlockedFrustration: true}
 
 // messageRunsStage reports whether an operator message should continue the task's current stage:
 // the stage is idle and could start right now (repositories assigned, prerequisites done).
@@ -387,10 +388,11 @@ func (r *Router) executeStage(run *stageRun) {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: "No task worktree is available, so the agent starts read-only and describes the changes. " +
 			"If it asks to make them, approving its plan lets it act here, with every change still asking you first."})
 	}
-	msgs[0].Content += "\n" + permissionBrief(permission)
+	permission, planExit, guard := r.beginGuardrails(run, workDir, permission, planExit)
+	msgs[0].Content += "\n" + permissionBrief(permission) + guard.brief()
 	resp, used, execErr := r.runAgentTurn(run.ctx, agentTurn{Source: "execute", TurnID: run.turnID, Task: task, Decision: decision,
 		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, AddDirs: addDirs, MaxTokens: 8192,
-		PermissionMode: permission, Approver: r.approverFor(taskID, run.turnID, planExit)})
+		PermissionMode: permission, Approver: guard.approver(r.approverFor(taskID, run.turnID, planExit)), OnTool: guard.onTool, OnDecision: guard.decided})
 	r.endTurn(taskID, run.turnID, resp, used)
 	r.notePRSync(taskID, run.turnID)
 	if resp != nil && len(skills) > 0 {
@@ -400,6 +402,7 @@ func (r *Router) executeStage(run *stageRun) {
 		r.reportEvidence(taskID, run.turnID, ev)
 	}
 
+	r.settleATDD(guard, resp, execErr)
 	r.settleStage(taskID, task.CurrentStageID, resp, used, execErr, !evidenceOnly)
 }
 
@@ -575,6 +578,7 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 			note = fmt.Sprintf("✓ %s finished. This is the final stage — approve to complete the task, or reject with feedback.", stage)
 		}
 	}
+	halt := r.recordStageOutcome(task, stage, execErr)
 	task.UpdatedAt = time.Now()
 	snap := cloneTask(task)
 	r.mu.Unlock()
@@ -584,6 +588,7 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 		kind = types.ConsoleKindError
 	}
 	r.addEntry(taskID, types.ConsoleEntry{Kind: kind, Content: note})
+	r.reportFrustrationHalt(halt)
 	r.broadcastTask(snap)
 }
 

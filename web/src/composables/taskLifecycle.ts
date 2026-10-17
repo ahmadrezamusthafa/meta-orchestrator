@@ -124,8 +124,8 @@ export function taskLifecycle(task: Task | null | undefined, opts: { busy?: bool
     case 'BLOCKED_FRUSTRATION':
       return {
         tone: 'error', status: 'Blocked', isRunning: false,
-        title: `Blocked at ${s} after repeated failures`,
-        detail: 'Give the agent guidance, or reset the failure counter and retry.',
+        title: `Blocked at ${s} after ${meta.frustration_count || 'repeated'} identical failures`,
+        detail: `${meta.failing_trace ? meta.failing_trace + ' — ' : ''}Retrying unchanged would fail the same way. Give the agent guidance or type a message with a different approach, or reset the failure counter and retry.`,
         primary: { kind: 'reset', label: 'Reset & retry', hint: 'Clear failure counters and run the stage again.' },
       }
     case 'WAITING_DEPENDENCY': {
