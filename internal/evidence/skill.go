@@ -248,10 +248,10 @@ func cleanRel(p string) string {
 	return p
 }
 
-// Collect reads the evidence directory: every video in it, and the manifest when there is one.
-func Collect(dir string) Report {
-	rep := Report{Videos: []string{}}
-	present := map[string]bool{}
+// listVideos returns every video in the evidence directory (relative, slash-separated, sorted),
+// skipping hidden files and directories.
+func listVideos(dir string) []string {
+	out := []string{}
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -264,13 +264,34 @@ func Collect(dir string) Report {
 		}
 		if !d.IsDir() && IsVideo(d.Name()) {
 			rel, _ := filepath.Rel(dir, p)
-			rel = filepath.ToSlash(rel)
-			present[rel] = true
-			rep.Videos = append(rep.Videos, rel)
+			out = append(out, filepath.ToSlash(rel))
 		}
 		return nil
 	})
-	sort.Strings(rep.Videos)
+	sort.Strings(out)
+	return out
+}
+
+// Collect reads the evidence directory: every video in it, and the manifest when there is one. A
+// video that also has an MP4 transcode (case.webm next to case.mp4) is reported as the MP4.
+func Collect(dir string) Report {
+	rep := Report{Videos: []string{}}
+	present := map[string]bool{}
+	all := listVideos(dir)
+	for _, v := range all {
+		present[v] = true
+	}
+	preferMP4 := func(v string) string {
+		if v != "" && !strings.EqualFold(filepath.Ext(v), ".mp4") && present[MP4Path(v)] {
+			return MP4Path(v)
+		}
+		return v
+	}
+	for _, v := range all {
+		if preferMP4(v) == v {
+			rep.Videos = append(rep.Videos, v)
+		}
+	}
 
 	raw, err := os.ReadFile(filepath.Join(dir, ManifestFile))
 	if err != nil {
@@ -283,7 +304,7 @@ func Collect(dir string) Report {
 	}
 	for i := range m.Cases {
 		c := &m.Cases[i]
-		c.Video, c.Poster = cleanRel(c.Video), cleanRel(c.Poster)
+		c.Video, c.Poster = preferMP4(cleanRel(c.Video)), cleanRel(c.Poster)
 		if c.Kind == "" {
 			c.Kind = KindOf(c.ID)
 		}
@@ -305,7 +326,7 @@ func Collect(dir string) Report {
 		}
 	}
 	if sm := m.Summary; sm != nil {
-		sm.Video, sm.Poster = cleanRel(sm.Video), cleanRel(sm.Poster)
+		sm.Video, sm.Poster = preferMP4(cleanRel(sm.Video)), cleanRel(sm.Poster)
 		sm.VideoMissing = sm.Video != "" && !present[sm.Video]
 	}
 	rep.Manifest = &m

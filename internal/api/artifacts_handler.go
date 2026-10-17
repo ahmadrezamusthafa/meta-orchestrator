@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
+
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/artifacts"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/techdoc"
 )
 
 // maxArtifactBytes caps a text artifact returned inline.
@@ -30,7 +32,7 @@ func stageDocName(stage string) string {
 }
 
 func (r *Router) artifactDir(taskID string) string {
-	return filepath.Join(r.cfg.RootDir, ".sdlc", "artifacts", taskID)
+	return r.cfg.ArtifactManager.TaskArtifactDir(taskID)
 }
 
 // resolveArtifactPath maps a request to a file inside the task's artifact directory, rejecting
@@ -136,53 +138,16 @@ func (r *Router) handleArtifacts(w http.ResponseWriter, req *http.Request) {
 }
 
 // artifactEntry describes one file in a task's artifact directory.
-type artifactEntry struct {
-	Path       string    `json:"path"`
-	Name       string    `json:"name"`
-	Kind       string    `json:"kind"` // "stage_output", "document", "media", "other"
-	StageID    string    `json:"stage_id,omitempty"`
-	Size       int64     `json:"size"`
-	ModifiedAt time.Time `json:"modified_at"`
-}
+type artifactEntry = artifacts.Entry
 
-// handleTaskArtifacts serves GET /api/v1/tasks/{id}/artifacts: every file the task has produced.
+// handleTaskArtifacts serves GET /api/v1/tasks/{id}/artifacts: every file the task has produced,
+// as the artifact registry finds it on disk.
 func (r *Router) handleTaskArtifacts(w http.ResponseWriter, req *http.Request, taskID string) {
 	if req.Method != http.MethodGet {
 		r.writeError(w, http.StatusMethodNotAllowed, "GET required for artifacts")
 		return
 	}
-	base := r.artifactDir(taskID)
-	entries := []artifactEntry{}
-	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || strings.HasPrefix(d.Name(), ".") {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(base, path)
-		rel = filepath.ToSlash(rel)
-		e := artifactEntry{Path: rel, Name: d.Name(), Size: info.Size(), ModifiedAt: info.ModTime(), Kind: "other"}
-		ext := strings.ToLower(filepath.Ext(path))
-		switch {
-		case strings.HasPrefix(rel, "stages/") && ext == ".md":
-			e.Kind = "stage_output"
-			stage := strings.TrimSuffix(d.Name(), ".md")
-			if i := strings.Index(stage, "-"); i > 0 {
-				stage = stage[i+1:]
-			}
-			e.StageID = stage
-		case ext == ".md" || ext == ".txt" || ext == ".json" || ext == ".yaml" || ext == ".yml":
-			e.Kind = "document"
-		case artifactContentTypes[ext] != "":
-			e.Kind = "media"
-		}
-		entries = append(entries, e)
-		return nil
-	})
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
-	r.writeJSON(w, http.StatusOK, map[string]interface{}{"task_id": taskID, "artifacts": entries})
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{"task_id": taskID, "artifacts": r.cfg.ArtifactManager.List(taskID)})
 }
 
 // saveStageDocument keeps the latest output of a stage as a reviewable document.
@@ -197,6 +162,18 @@ func (r *Router) saveStageDocument(taskID, stage, model, content string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}
-	header := fmt.Sprintf("<!-- %s · %s · generated %s by %s -->\n\n", taskID, stage, time.Now().Format(time.RFC3339), model)
-	_ = os.WriteFile(path, []byte(header+content), 0o644)
+	now := time.Now()
+	header := fmt.Sprintf("<!-- %s · %s · generated %s by %s -->\n\n", taskID, stage, now.Format(time.RFC3339), model)
+	doc := content
+	if techdoc.Frames(stage) {
+		meta := techdoc.Meta{TaskID: taskID, Stage: stage, Model: model, Generated: now}
+		if t := r.taskSnapshot(taskID); t != nil {
+			meta.Title, meta.Repos = t.Title, t.AssignedRepos
+		}
+		doc = techdoc.Render(meta, content)
+	}
+	if err := os.WriteFile(path, []byte(header+doc), 0o644); err != nil {
+		return
+	}
+	r.checkStageDocument(taskID, stage, content)
 }

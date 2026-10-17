@@ -3,23 +3,33 @@ package evidence
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
+	"image"
+	_ "image/jpeg" // register decoders for image.DecodeConfig
+	_ "image/png"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-// CapturedScreenshot records details of a saved milestone image.
+// CapturedScreenshot is one screenshot in an evidence directory, fingerprinted for the manifest.
 type CapturedScreenshot struct {
-	StepName   string    `json:"step_name"`
-	FilePath   string    `json:"file_path"`
+	FilePath   string    `json:"file_path"` // relative to the evidence directory
 	SHA256Hash string    `json:"sha256_hash"`
-	CapturedAt time.Time `json:"captured_at"`
-	Width      int       `json:"width"`
-	Height     int       `json:"height"`
+	SizeBytes  int64     `json:"size_bytes"`
+	CapturedAt time.Time `json:"captured_at"` // the file's modification time
+	// Width and Height are read from the image header; 0 when the format cannot be decoded (webp).
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
 }
 
-// ScreenshotService manages viewport snapshot capture and indexing.
+var screenshotExts = map[string]bool{".png": true, ".jpg": true, ".jpeg": true, ".webp": true}
+
+// IsScreenshot reports whether name is an image file.
+func IsScreenshot(name string) bool { return screenshotExts[strings.ToLower(filepath.Ext(name))] }
+
+// ScreenshotService indexes the screenshots an evidence recorder saved.
 type ScreenshotService struct{}
 
 // NewScreenshotService creates a screenshot service.
@@ -27,32 +37,27 @@ func NewScreenshotService() *ScreenshotService {
 	return &ScreenshotService{}
 }
 
-// SaveMilestoneScreenshot records an image file with cryptographic SHA-256 fingerprint.
-func (s *ScreenshotService) SaveMilestoneScreenshot(taskID string, stepName string, rawBytes []byte, outputDir string) (*CapturedScreenshot, error) {
-	if outputDir == "" {
-		outputDir = filepath.Join(".sdlc", "artifacts", taskID, "screenshots")
+// Describe fingerprints one screenshot: its SHA-256, size and real dimensions. rel is the path
+// recorded in the result.
+func (s *ScreenshotService) Describe(path, rel string) (*CapturedScreenshot, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create screenshot directory: %w", err)
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
 	}
-
-	fileName := fmt.Sprintf("step_%s.png", stepName)
-	targetPath := filepath.Join(outputDir, fileName)
-
-	if err := os.WriteFile(targetPath, rawBytes, 0644); err != nil {
-		return nil, fmt.Errorf("failed to write screenshot file: %w", err)
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return nil, err
 	}
-
-	hasher := sha256.New()
-	hasher.Write(rawBytes)
-	hashStr := hex.EncodeToString(hasher.Sum(nil))
-
-	return &CapturedScreenshot{
-		StepName:   stepName,
-		FilePath:   targetPath,
-		SHA256Hash: hashStr,
-		CapturedAt: time.Now(),
-		Width:      1280,
-		Height:     720,
-	}, nil
+	shot := &CapturedScreenshot{FilePath: rel, SHA256Hash: hex.EncodeToString(h.Sum(nil)), SizeBytes: st.Size(), CapturedAt: st.ModTime()}
+	if _, err := f.Seek(0, io.SeekStart); err == nil {
+		if cfg, _, err := image.DecodeConfig(f); err == nil {
+			shot.Width, shot.Height = cfg.Width, cfg.Height
+		}
+	}
+	return shot, nil
 }

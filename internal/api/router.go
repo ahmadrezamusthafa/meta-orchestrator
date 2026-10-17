@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -81,6 +82,7 @@ type Router struct {
 	approvals     *approvalHub
 	docker        *dockerGate          // limits concurrent Docker commands across all agents
 	toolchain     *toolchain.Toolchain // checks and installs the tools the stacks need
+	evidenceJobs  sync.WaitGroup       // background evidence finalization (transcode, signed manifest)
 	busyOps       sync.Map             // "pr:<task>" / "uat:<task>" while a delivery job runs
 	prClient      *pullrequest.Client  // opens pull requests; tests point it at a fake API
 	uatRunner     uatScreenshotRunner  // captures UAT screenshots; tests stub it
@@ -99,6 +101,9 @@ type Router struct {
 
 // NewRouter constructs a new REST API router.
 func NewRouter(cfg RouterConfig) *Router {
+	if cfg.ArtifactManager == nil {
+		cfg.ArtifactManager = artifacts.NewArtifactManager(filepath.Join(cfg.RootDir, ".sdlc", "artifacts"))
+	}
 	if cfg.ConnectorsManager == nil {
 		cfg.ConnectorsManager = connectors.NewManager(cfg.RootDir)
 	}
@@ -160,6 +165,7 @@ func NewRouter(cfg RouterConfig) *Router {
 	if r.toolchain == nil {
 		r.toolchain = toolchain.New()
 	}
+	r.docker.onStats = r.reportContainerStats
 	r.connections = newConnectionChecker(r.quota)
 	stratRouter.SetAvailability(r.connections.Usable)
 	if saved := savedRouterSettings(); saved != nil {
@@ -203,6 +209,8 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/tasks", r.handleTasks)
 	r.mux.HandleFunc("/api/v1/tasks/", r.handleTaskItem)
 	r.mux.HandleFunc("/api/v1/tasks/analyze", r.handleTaskAnalyze)
+	r.mux.HandleFunc("/api/v1/tasks/{id}/evidence/verify", r.handleEvidenceVerify)
+	r.mux.HandleFunc("/api/v1/tasks/{id}/outline", r.handleTaskOutline)
 	r.mux.HandleFunc("/api/v1/toolchain", r.handleToolchain)
 	r.mux.HandleFunc("/api/v1/toolchain/", r.handleToolchainAction)
 	r.mux.HandleFunc("/api/v1/tools", r.handleTools)

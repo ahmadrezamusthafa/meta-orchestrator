@@ -326,6 +326,21 @@ export interface EvidenceSpecCaseDTO {
   evidence: { id: string; status: string }[]
 }
 
+/** GET /tasks/{id}/evidence/verify: the signed evidence manifest rechecked against the files. */
+export interface EvidenceVerifyDTO {
+  signed: boolean
+  signature_valid: boolean
+  files_unchanged: boolean
+  valid: boolean
+  changed: string[]
+  missing: string[]
+  added: string[]
+  signed_at?: string
+  error?: string
+  manifest_file: string
+  recorded_files: number
+}
+
 export interface TaskEvidenceDTO {
   task_id: string
   enabled: boolean

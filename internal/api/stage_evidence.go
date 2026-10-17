@@ -254,6 +254,7 @@ func (r *Router) reportEvidence(taskID, turnID string, p *evidencePrep) {
 		}
 	}
 	r.addEntry(taskID, types.ConsoleEntry{Kind: kind, TurnID: turnID, Content: msg})
+	r.finalizeEvidenceAsync(taskID, turnID, p.Dir)
 }
 
 func plural(n int) string {

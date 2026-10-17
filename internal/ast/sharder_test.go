@@ -1,6 +1,7 @@
 package ast
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,87 +9,100 @@ import (
 	"testing"
 )
 
-func TestASTSharderTokenReduction(t *testing.T) {
-	tmpDir := t.TempDir()
-	sourceFile := filepath.Join(tmpDir, "OrderService.ts")
-
-	// Generate a 500-line simulated TypeScript service with large method bodies
-	var sb strings.Builder
-	sb.WriteString("import { Database } from './db';\n")
-	sb.WriteString("import { PaymentGateway } from './payment';\n\n")
-	sb.WriteString("export class OrderService {\n")
-	sb.WriteString("  public async processOrder(orderId: string): Promise<boolean> {\n")
-	for i := 0; i < 200; i++ {
-		sb.WriteString(fmt.Sprintf("    // Heavy computational logic step %d\n    const step%d = await this.db.calculateTax(%d);\n", i, i, i))
+func outline(t *testing.T, name, src string) *ASTContextSlice {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	sb.WriteString("    return true;\n  }\n\n")
-	sb.WriteString("  public async cancelOrder(orderId: string): Promise<void> {\n")
-	for i := 0; i < 150; i++ {
-		sb.WriteString(fmt.Sprintf("    // Heavy rollback logic step %d\n    await this.db.rollbackTransaction(%d);\n", i, i))
-	}
-	sb.WriteString("  }\n}\n")
-
-	if err := os.WriteFile(sourceFile, []byte(sb.String()), 0644); err != nil {
-		t.Fatalf("failed to write test source: %v", err)
-	}
-
-	sharder := NewSharder()
-	slice, err := sharder.ShardFile(sourceFile)
+	s, err := NewSharder().ShardFile(path)
 	if err != nil {
-		t.Fatalf("failed to shard file: %v", err)
+		t.Fatalf("shard %s: %v", name, err)
 	}
+	return s
+}
 
-	if slice.OriginalLines < 400 {
-		t.Errorf("expected >400 original lines, got %d", slice.OriginalLines)
+func symbols(s *ASTContextSlice) string {
+	var out []string
+	for _, sym := range s.Symbols {
+		out = append(out, fmt.Sprintf("%s:%s@%d", sym.Kind, sym.Name, sym.StartLine))
 	}
-	if slice.TokenReductionPct < 90.0 {
-		t.Errorf("expected >90%% token reduction, got %.2f%%", slice.TokenReductionPct)
-	}
+	return strings.Join(out, " ")
+}
 
-	// Verify symbols preserved
-	foundProcessOrder := false
-	for _, sym := range slice.Symbols {
-		if strings.Contains(sym.Signature, "processOrder") {
-			foundProcessOrder = true
-			break
-		}
+func TestTypeScriptOutline(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString("import { Database } from './db';\n\nexport class OrderService {\n  public async processOrder(orderId: string): Promise<boolean> {\n")
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&sb, "    if (step%d) {\n      await this.db.calculateTax(%d);\n    }\n", i, i)
 	}
-	if !foundProcessOrder {
-		t.Errorf("processOrder signature was not extracted in symbols")
+	sb.WriteString("    return true;\n  }\n\n  cancelOrder(id: string) {\n    return;\n  }\n}\nexport const total = (a: number) => a * 2;\n")
+	s := outline(t, "OrderService.ts", sb.String())
+	if got := symbols(s); got != "class:OrderService@3 method:processOrder@4 method:cancelOrder@608 function:total@612" {
+		t.Fatalf("symbols = %s", got)
 	}
-
-	if !strings.Contains(slice.ShardedContent, "processOrder") {
-		t.Errorf("sharded content missing processOrder signature")
+	if s.Language != LangTypeScript || s.OriginalLines != 612 || s.ShardedLines != 6 {
+		t.Fatalf("lines %d → %d", s.OriginalLines, s.ShardedLines)
+	}
+	want := float64(612-6) / 612 * 100
+	if s.LineReductionPct != want {
+		t.Fatalf("line reduction %.2f, want %.2f", s.LineReductionPct, want)
 	}
 }
 
-func TestASTSharderGoFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	sourceFile := filepath.Join(tmpDir, "server.go")
-
-	content := `package main
+func TestGoOutlineFindsMethodsAndTypes(t *testing.T) {
+	s := outline(t, "server.go", `package main
 
 import "fmt"
 
-func HandleRequest(id string) error {
-	for i := 0; i < 50; i++ {
-		fmt.Println("processing", i)
-	}
+type Server struct {
+	addr string
+}
+
+type Handler interface{ Serve() }
+
+type ID string
+
+func (s *Server) Start(port int) error {
+	go func() {
+		fmt.Println("x")
+	}()
 	return nil
 }
-`
-	_ = os.WriteFile(sourceFile, []byte(content), 0644)
 
-	sharder := NewSharder()
-	slice, err := sharder.ShardFile(sourceFile)
-	if err != nil {
-		t.Fatalf("failed to shard go file: %v", err)
-	}
+func (Server) name() string { return "" }
 
-	if slice.Language != LangGo {
-		t.Errorf("expected LangGo, got %s", slice.Language)
+func Map[T any](in []T) []T { return in }
+
+func HandleRequest(id string) error {
+	return nil
+}
+`)
+	want := "struct:Server@5 interface:Handler@9 type:ID@11 method:Start@13 method:name@20 function:Map@22 function:HandleRequest@24"
+	if got := symbols(s); got != want {
+		t.Fatalf("symbols = %s\nwant      %s", got, want)
 	}
-	if len(slice.Symbols) == 0 {
-		t.Errorf("expected at least 1 symbol extracted")
+}
+
+func TestPythonAndPHPOutline(t *testing.T) {
+	py := outline(t, "svc.py", "class Refund:\n    def apply(self):\n        pass\n\nasync def main():\n    pass\n")
+	if got := symbols(py); got != "class:Refund@1 method:apply@2 function:main@5" {
+		t.Fatalf("python = %s", got)
+	}
+	php := outline(t, "Refunds.php", "<?php\nfinal class Refunds {\n  public static function apply($id) {\n  }\n}\nRoute::post('/refunds', [Refunds::class, 'apply']);\n")
+	if got := symbols(php); got != "class:Refunds@2 function:apply@3 route:Route::post('/refunds', [Refunds::class, 'apply']);@6" {
+		t.Fatalf("php = %s", got)
+	}
+}
+
+func TestUnknownFilesAreNotOutlined(t *testing.T) {
+	sh := NewSharder()
+	if l := sh.DetectLanguage("README.md"); l != "" {
+		t.Fatalf("README.md detected as %q", l)
+	}
+	path := filepath.Join(t.TempDir(), "notes.txt")
+	_ = os.WriteFile(path, []byte("function x() {}"), 0o644)
+	if _, err := sh.ShardFile(path); !errors.Is(err, ErrUnsupportedLanguage) {
+		t.Fatalf("err = %v", err)
 	}
 }
