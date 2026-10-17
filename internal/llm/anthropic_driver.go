@@ -82,7 +82,7 @@ func (d *AnthropicDriver) Complete(ctx context.Context, req *LLMRequest) (*LLMRe
 	}
 
 	// Unit test mock bypass
-	if d.apiKey == "test-key" || strings.HasPrefix(d.apiKey, "mock-") {
+	if cannedKey(d.apiKey) {
 		promptTokens := d.CountTokens(req)
 		return &LLMResponse{
 			Content:      "Claude architecture analysis complete.",

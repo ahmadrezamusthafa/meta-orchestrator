@@ -9,6 +9,12 @@ import (
 
 func TestClientFactoryResolutionAndFallback(t *testing.T) {
 	cfg := config.GetDefaultConfig()
+	// Canned keys keep the test offline; the default config would call the real Claude CLI.
+	for _, name := range []string{"claude", "openai"} {
+		p := cfg.Providers[name]
+		p.APIKey = "test-key"
+		cfg.Providers[name] = p
+	}
 	factory := NewClientFactory(cfg)
 
 	// Test 1: Resolve Anthropic

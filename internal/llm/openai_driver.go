@@ -76,7 +76,7 @@ func (d *OpenAIDriver) Complete(ctx context.Context, req *LLMRequest) (*LLMRespo
 	}
 
 	// Unit test mock bypass
-	if d.apiKey == "test-key" || strings.HasPrefix(d.apiKey, "mock-") {
+	if cannedKey(d.apiKey) {
 		promptTokens := d.CountTokens(req)
 		return &LLMResponse{
 			Content:      "OpenAI execution complete.",

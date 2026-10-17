@@ -152,7 +152,7 @@ func (d *AnthropicDriver) StreamActivity(ctx context.Context, req *LLMRequest, e
 	if req == nil {
 		return nil, fmt.Errorf("request cannot be nil")
 	}
-	if d.apiKey == "test-key" || strings.HasPrefix(d.apiKey, "mock-") {
+	if cannedKey(d.apiKey) {
 		resp, err := d.Complete(ctx, req)
 		if err == nil {
 			emit(StreamEvent{Type: StreamTextDelta, Text: resp.Content})
@@ -766,7 +766,7 @@ func (d *OpenAIDriver) StreamActivity(ctx context.Context, req *LLMRequest, emit
 	if req == nil {
 		return nil, fmt.Errorf("request cannot be nil")
 	}
-	if d.apiKey == "test-key" || strings.HasPrefix(d.apiKey, "mock-") || d.apiKey == "" ||
+	if cannedKey(d.apiKey) || d.apiKey == "" ||
 		strings.Contains(d.apiKey, "••••") || !strings.HasPrefix(d.apiKey, "sk-") {
 		resp, err := d.Complete(ctx, req)
 		if err == nil {
