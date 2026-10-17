@@ -38,24 +38,6 @@ const activeSlotPrompt = ref<PromptItemDTO | null>(null)
 const mockValues = ref<Record<string, string>>({})
 const isCopied = ref(false)
 
-const sampleTemplatesContent: Record<string, string> = {
-  pm_prd_generator: `You are the lead Product Manager agent in the Zero-Trust Software Factory.
-Synthesize the requirements for feature {{feature_name}}.
-Existing Architecture Context:
-{{system_architecture}}
-Target Repositories: {{target_repositories}}
-Generate PRD.md with user stories, acceptance criteria, and edge cases.`,
-  qa_atdd_generator: `You are the QA Automation Specialist agent.
-Author executable Playwright TypeScript tests for {{feature_name}}.
-Refer to PRD criteria and existing codebase AST slices.
-Failing trace reference: {{failing_test_traces}}
-Write tests to fail in Red Phase before code generation.`,
-  system_architect_rfc: `You are the System Architect agent.
-Design the technical specification TECH_DOC_RFC.md for {{feature_name}}.
-Target AST Slice: {{target_ast_slice}}
-Database migrations, sequence diagrams, and cross-repo data flow required.`,
-}
-
 const safePrompts = computed(() => {
   return Array.isArray(props.prompts) ? props.prompts : []
 })
@@ -80,41 +62,23 @@ const filteredPrompts = computed(() => {
 
 function openSlotTester(p: PromptItemDTO) {
   activeSlotPrompt.value = p
+  // Slots start empty: the preview shows [MISSING: …] until the operator fills them, so a copied
+  // prompt never carries made-up values.
   mockValues.value = {}
-  const vars = p.variables || []
-  vars.forEach((v: string) => {
-    if (!v) return
-    if (v.includes('epic') || v.includes('parent_issue')) {
-      mockValues.value[v] = 'MIB-9685'
-    } else if (v.includes('user_story')) {
-      mockValues.value[v] = 'Billing Dashboard & Subscription Backyard auto collection toggle'
-    } else if (v.includes('prd_source') || v.includes('prd_url')) {
-      mockValues.value[v] = 'https://wiki.atlassian.net/wiki/spaces/ARCH/pages/8942001/PRD-Billing'
-    } else if (v.includes('milestone')) {
-      mockValues.value[v] = 'Q4-Enterprise-Launch'
-    } else if (v.includes('architecture')) {
-      mockValues.value[v] = 'PostgreSQL + Redis Queue + Docker Compose bridge'
-    } else if (v.includes('feature')) {
-      mockValues.value[v] = 'Stripe Payment Gateway & Webhook Idempotency'
-    } else if (v.includes('trace')) {
-      mockValues.value[v] = 'Playwright timeout: expected HTTP 200 within 5000ms, received 504'
-    } else if (v.includes('repositories')) {
-      mockValues.value[v] = 'frontend-portal, backend-core, api-contracts'
-    } else {
-      mockValues.value[v] = `Sample ${v} value`
-    }
-  })
-}
-
-function getRawTemplate(id: string): string {
-  if (activeSlotPrompt.value && activeSlotPrompt.value.raw_content) {
-    return activeSlotPrompt.value.raw_content
+  for (const v of p.variables || []) {
+    if (v) mockValues.value[v] = ''
   }
-  return sampleTemplatesContent[id] || `You are an autonomous Meta-Orchestrator agent.\nExecuting task for {{feature_name}}.\nContext: {{system_architecture}}.\nTrace: {{failing_test_traces}}.`
 }
 
-function getRenderedPrompt(id: string): string {
-  let content = getRawTemplate(id)
+// getRawTemplate returns the registered template's own text; there is no sample fallback, so the
+// preview is always the real prompt.
+function getRawTemplate(): string {
+  return activeSlotPrompt.value?.raw_content || ''
+}
+
+function getRenderedPrompt(): string {
+  let content = getRawTemplate()
+  if (!content) return 'This template has no content to preview.'
   for (const [key, val] of Object.entries(mockValues.value)) {
     const replacement = val || `[MISSING: ${key}]`
     content = content.split(`{{${key}}}`).join(replacement)
@@ -126,7 +90,8 @@ function getRenderedPrompt(id: string): string {
 
 async function copyRendered() {
   if (!activeSlotPrompt.value) return
-  const text = getRenderedPrompt(activeSlotPrompt.value.id)
+  if (!getRawTemplate()) return
+  const text = getRenderedPrompt()
   await navigator.clipboard.writeText(text)
   isCopied.value = true
   toastStore.success('Copied', 'Rendered prompt copied to clipboard')
@@ -373,7 +338,7 @@ function onRegisteredPromptSource() {
               </button>
             </div>
             <div class="p-3.5 bg-slate-950 border border-slate-800 rounded-lg font-mono text-xs text-slate-200 leading-relaxed whitespace-pre-wrap selection:bg-sky-950 max-h-96 overflow-y-auto">
-              {{ getRenderedPrompt(activeSlotPrompt.id) }}
+              {{ getRenderedPrompt() }}
             </div>
           </div>
         </div>
