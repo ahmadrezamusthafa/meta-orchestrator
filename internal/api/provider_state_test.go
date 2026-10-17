@@ -197,6 +197,31 @@ func TestProviderUsageIncludesPlanLimits(t *testing.T) {
 	}
 }
 
+// Shadow-benchmark replays are real, paid provider calls: provider usage and the monthly quota
+// must count them, even though they stay out of production telemetry summaries.
+func TestProviderUsageCountsShadowCalls(t *testing.T) {
+	isolateProviderState(t, "")
+	r := NewRouter(RouterConfig{RootDir: t.TempDir()})
+	now := time.Now()
+	_ = r.telemetry.store.RecordTokens(telemetry.TokenEvent{CallMeta: telemetry.CallMeta{Model: "claude/claude-sonnet-5-5"},
+		PromptTokens: 100, CompletionTokens: 10, Timestamp: now})
+	_ = r.telemetry.store.RecordTokens(telemetry.TokenEvent{CallMeta: telemetry.CallMeta{Model: "claude/claude-sonnet-5-5", Shadow: true},
+		PromptTokens: 1000, CompletionTokens: 100, Timestamp: now})
+	w := httptest.NewRecorder()
+	r.handleProviderUsage(w, httptest.NewRequest(http.MethodGet, "/api/v1/providers/usage?window=24h", nil))
+	var body struct {
+		Providers []ProviderUsage `json:"providers"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range body.Providers {
+		if p.ProviderID == "claude" && p.Last24h.TotalTokens != 1210 {
+			t.Fatalf("claude last 24h tokens = %d, want 1210 (shadow calls included)", p.Last24h.TotalTokens)
+		}
+	}
+}
+
 // Registering a custom model (router settings, /models/register) and saving a provider's default
 // model both write defaultProviders; readers must not race either writer.
 func TestProviderCatalogConcurrentAccess(t *testing.T) {

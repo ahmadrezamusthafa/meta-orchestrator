@@ -199,7 +199,8 @@ func (r *Router) handleProviderUsage(w http.ResponseWriter, req *http.Request) {
 
 	var events []telemetry.TokenEvent
 	if r.telemetry != nil && r.telemetry.store != nil {
-		events = r.telemetry.store.Tokens(telemetry.Filter{Since: since})
+		// Shadow-benchmark replays are billed like any other call, so they count toward usage and quota.
+		events = r.telemetry.store.Tokens(telemetry.Filter{Since: since, IncludeShadow: true})
 	}
 
 	providerAuthStore.mu.RLock()
