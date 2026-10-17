@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/connectors"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
@@ -48,7 +49,27 @@ func (r *Router) handleSkills(w http.ResponseWriter, req *http.Request) {
 		filtered = append(filtered, s)
 	}
 
-	r.writeJSON(w, http.StatusOK, filtered)
+	r.writeJSON(w, http.StatusOK, maskedSkills(filtered))
+}
+
+// maskedSkills returns the skills safe to send to a browser: an MCP server skill carries its
+// server's environment, whose credentials are masked (also where they appear in its arguments).
+func maskedSkills(list []*types.UniversalSkillContract) []*types.UniversalSkillContract {
+	out := make([]*types.UniversalSkillContract, 0, len(list))
+	for _, s := range list {
+		out = append(out, maskedSkill(s))
+	}
+	return out
+}
+
+func maskedSkill(s *types.UniversalSkillContract) *types.UniversalSkillContract {
+	if s == nil || len(s.Environment) == 0 {
+		return s
+	}
+	cp := *s
+	cp.Args = connectors.RedactArgs(s.Args, s.Environment)
+	cp.Environment = connectors.MaskEnv(s.Environment)
+	return &cp
 }
 
 // handleSkillAction processes item-level operations like inspection, toggling, and compatibility audit.
@@ -116,7 +137,7 @@ func (r *Router) handleSkillAction(w http.ResponseWriter, req *http.Request) {
 		}
 		for _, s := range all {
 			if s.Name == skillName {
-				r.writeJSON(w, http.StatusOK, s)
+				r.writeJSON(w, http.StatusOK, maskedSkill(s))
 				return
 			}
 		}
@@ -163,7 +184,7 @@ func (r *Router) handleSkillSources(w http.ResponseWriter, req *http.Request) {
 		r.writeJSON(w, http.StatusCreated, map[string]interface{}{
 			"source":           src,
 			"discovered_count": len(discovered),
-			"skills":           discovered,
+			"skills":           maskedSkills(discovered),
 		})
 
 	default:
@@ -245,7 +266,7 @@ func (r *Router) handleSkillCheckCompatibility(w http.ResponseWriter, req *http.
 		"compatible":       allCompatible,
 		"path":             payload.Path,
 		"discovered_count": len(skills),
-		"skills":           skills,
+		"skills":           maskedSkills(skills),
 	})
 }
 

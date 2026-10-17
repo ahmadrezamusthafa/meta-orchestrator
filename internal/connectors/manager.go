@@ -1093,22 +1093,37 @@ func (m *Manager) save() error {
 }
 
 func (m *Manager) getMCPExportConfigLocked() map[string]interface{} {
+	return m.mcpExportLocked(false)
+}
+
+// mcpExportLocked builds the mcpServers map from copies of the connectors' settings; forBrowser
+// masks every credential in env and args.
+func (m *Manager) mcpExportLocked(forBrowser bool) map[string]interface{} {
+	view := func(args []string, env map[string]string) ([]string, map[string]string) {
+		if forBrowser {
+			return RedactArgs(args, env), MaskEnv(env)
+		}
+		mcp := cloneMCP(types.MCPConfig{Args: args, Env: env})
+		return mcp.Args, mcp.Env
+	}
 	servers := make(map[string]interface{})
 	for id, item := range m.items {
 		if _, stack := lookupStack(id); stack && item.Enabled && item.MCP != nil && (item.MCP.Enabled || item.ConfigMode == "mcp") {
 			// Stack connectors keep the credential outside the MCP env: export the runnable form.
 			if mcp, ok := m.runtimeMCPLocked(item); ok {
-				servers[id] = map[string]interface{}{"command": mcp.Command, "args": mcp.Args, "env": mcp.Env}
+				args, env := view(mcp.Args, mcp.Env)
+				servers[id] = map[string]interface{}{"command": mcp.Command, "args": args, "env": env}
 			}
 			continue
 		}
 		if item.Enabled && item.MCP != nil && (item.MCP.Enabled || item.ConfigMode == "mcp") {
+			args, env := view(item.MCP.Args, item.MCP.Env)
 			serverEntry := map[string]interface{}{
 				"command": item.MCP.Command,
-				"args":    item.MCP.Args,
+				"args":    args,
 			}
-			if len(item.MCP.Env) > 0 {
-				serverEntry["env"] = item.MCP.Env
+			if len(env) > 0 {
+				serverEntry["env"] = env
 			}
 			servers[id] = serverEntry
 		}
@@ -1913,6 +1928,13 @@ func (m *Manager) GetMCPExportConfig() map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.getMCPExportConfigLocked()
+}
+
+// MaskedMCPExportConfig is GetMCPExportConfig with every credential masked, for browsers.
+func (m *Manager) MaskedMCPExportConfig() map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.mcpExportLocked(true)
 }
 
 // UpdateJira updates JIRA connector settings.
