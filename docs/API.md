@@ -190,13 +190,23 @@ Submit human operator approval or rejection at a gated SDLC boundary (e.g. `tech
 
 ---
 
-### 2.3 Tool Hub & Dependency Lifecycle
+### 2.3 Tool Hub: Package Manager
 
-* `GET /api/v1/tools`: Tools from `configs/tools.json` with real status (`INSTALLED` + parsed version, `NOT_INSTALLED`, or `ERROR`) from each `health_check_cmd`, run without a shell and cached for a minute.
-* `POST /api/v1/tools/install` `{"tool_id"}`: `202` with a toolchain job when the tool maps to a toolchain catalog entry that can be installed here; `501` with the manual commands and docs otherwise. Version pinning is rejected (`400`).
-* `POST /api/v1/tools/recheck`: Clears the cache and re-runs the health checks.
-* `POST /api/v1/tools/resolve-matrix`: Compatibility of each tool's `required_runtimes` with the runtimes detected on this host (OS/arch from the daemon).
-* `POST /api/v1/tools/rollback`: `501` — package managers keep no previous versions to switch to.
+The orchestrator's own tools from `configs/packages.json` (see README §10 for what each kind does). State lives in `$MO_HOME` (default `~/.meta-orchestrator`).
+
+* `GET /api/v1/packages` → `{"home", "bin_dir", "on_path", "packages": [Package]}`. Never waits for the network: `latest` is the cached value (`""` until a background lookup finishes; refreshed hourly).
+  * `Package` = `{"id","name","category","description","docs","kind","package","required","requires":[id],"status":"installed"|"not_installed"|"error"|"checking","version","latest","update_available","managed","location","system_copy","installed_versions":[{"version","installed_at","active","kind":"install"|"snapshot"}],"actions":{"install","update","rollback","uninstall","pick_version"},"action_notes":{"install"?,"update"?,"rollback"?,"uninstall"?},"manual":{"commands":[string],"note"}|null,"job":Job|null,"history":[{"at","action","from","to","ok","message"}],"notes","problem"?}`.
+  * `version` is `"unknown"` when the package is present but its version cannot be read. `managed` is true for an npm-cli/go-cli version linked from `bin_dir`, and for installed npx-installer and claude-plugin packages (which the orchestrator snapshots and restores in place); `system_copy` is an unmanaged copy of an npm-cli/go-cli binary found on `PATH`. `history` is newest first (at most 20). `problem` (additive) explains `status: "error"`.
+* `GET /api/v1/packages/{id}/versions[?prerelease=1]` → `{"versions": [string], "latest"}`, newest first, at most 50 (npm registry, `go list -m -versions`, or Homebrew's stable version). `502 {"error", "versions": [], "latest"}` when the registry cannot be reached.
+* `POST /api/v1/packages/{id}/install` `{"version"?}` → `202 Job`; `400` for an invalid version, a version on a kind that cannot be pinned (claude-plugin, system) or a missing prerequisite (npm, npx, go, claude); `501 {"error", "manual": {"commands", "note"}}` when it needs the operator's terminal; `409 {"error", "job"}` while a job for the package is queued or running.
+* `POST /api/v1/packages/{id}/update` → `202 Job` (to the latest release).
+* `POST /api/v1/packages/{id}/rollback` `{"version"?}` → `202 Job`. Without a version: the previously active kept version (npm-cli, go-cli) or the newest snapshot of another version (npx-installer, claude-plugin). A version that is not kept is installed (npm-cli, go-cli, npx-installer). `400` when there is nothing to roll back to; `501` for system packages.
+* `POST /api/v1/packages/{id}/uninstall` → `202 Job`; `400` when nothing (managed) is installed.
+* `POST /api/v1/packages/setup` → `202 {"jobs": [Job], "skipped": [{"id", "reason"}]}`: installs every required package that is missing, dependencies (`requires`) first, one job (`action: "setup"`) per package run one after another; a failure fails the remaining jobs without running them.
+* `POST /api/v1/packages/recheck` → same as `GET /api/v1/packages`, after clearing the cached version checks.
+* `GET /api/v1/packages/jobs/{id}` → `Job` = `{"id","package","action":"install"|"update"|"rollback"|"uninstall"|"setup","version","from_version","state":"queued"|"running"|"succeeded"|"failed","log":[string],"message","started","finished"}` (`finished` is `""` until done).
+* WebSocket event `package.job` carries a `Job` on every state change and, while it logs, at most every 500 ms.
+* CLI: `go run ./cmd/daemon packages <list|versions|install|update|rollback|uninstall|setup> [id] [version]` (`make setup` runs `setup`); exits non-zero on failure.
 
 ---
 

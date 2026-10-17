@@ -120,11 +120,11 @@ Click on any task card on the Kanban board to enter the **Active Task Detail Vie
 
 ---
 
-### 3.3 Tool Hub & Dependency Management (`/tools`)
+### 3.3 Tool Hub & Dependency Management
 
-* **Guided Install:** Click **`Guided Install`** on any uninstalled or outdated tool (`Playwright`, `BMAD`, `Tree-sitter`) to launch the 4-step wizard with a live terminal stream.
-* **1-Click Rollback:** Click **`Rollback`** on any tool to select a previous stable release; symlinks swap atomically in &lt;1 second.
-* **Best-Fit Matrix:** Click **`Auto-Resolve Best Fit Matrix`** to analyze host CPU architecture and Node/Go versions and compute conflict-free version pairings.
+* **First run:** `make setup` installs every required package that is missing (Node.js, Git, Claude Code CLI), dependencies first.
+* **Install / update / pick a version / roll back / uninstall** any package from the Tool Hub or with `go run ./cmd/daemon packages <command> [id] [version]`. Managed CLIs (Claude Code, Playwright, MCP servers) switch versions with an atomic symlink swap in `$MO_HOME/bin`; BMAD and GSD roll back by restoring a snapshot taken before every change; Superpowers rollback is best effort and needs a Claude Code restart; system packages (Node, Git, ffmpeg, Docker) cannot be rolled back.
+* See README §10 and `docs/API.md` §2.3 for details.
 
 ---
 
