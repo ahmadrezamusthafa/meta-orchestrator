@@ -196,3 +196,25 @@ func TestProviderUsageIncludesPlanLimits(t *testing.T) {
 		}
 	}
 }
+
+// Registering a custom model (router settings, /models/register) and saving a provider's default
+// model both write defaultProviders; readers must not race either writer.
+func TestProviderCatalogConcurrentAccess(t *testing.T) {
+	isolateProviderState(t, "")
+	r := NewRouter(RouterConfig{RootDir: t.TempDir()})
+	r.connections = nil
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			registerCustomModel("opencode", "race-model-"+time.Now().Format("150405.000000000"), "", 0, 0)
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		postProvider(t, r, map[string]interface{}{"provider_id": "opencode", "model": "qwen2.5-coder-7b"})
+		_ = getProvidersWithAuthState()
+		_ = getAllAvailableModels()
+		_ = snapshotCreds("opencode")
+	}
+	<-done
+}

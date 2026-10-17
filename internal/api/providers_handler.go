@@ -455,6 +455,9 @@ func registerCustomModel(providerID, modelID, modelName string, costPer1k float6
 		LatencyMs: latencyMs,
 	}
 
+	// defaultProviders is guarded by providerAuthStore.mu (lock order: modelMetaMu, then it).
+	providerAuthStore.mu.Lock()
+	defer providerAuthStore.mu.Unlock()
 	foundProvider := false
 	for i := range defaultProviders {
 		if defaultProviders[i].ID == providerID {
@@ -487,6 +490,8 @@ func registerChainModels(chain []router.PriorityModelItem) {
 func getAllAvailableModels() []AvailableModelDTO {
 	modelMetaMu.RLock()
 	defer modelMetaMu.RUnlock()
+	providerAuthStore.mu.RLock()
+	defer providerAuthStore.mu.RUnlock()
 
 	var list []AvailableModelDTO
 	seen := make(map[string]bool)
