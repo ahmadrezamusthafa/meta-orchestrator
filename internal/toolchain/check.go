@@ -61,6 +61,7 @@ type Checker struct {
 	ttl  time.Duration
 	mu   sync.Mutex
 	seen map[string]Status
+	gen  int // bumped by Invalidate: a check started before it is not cached
 }
 
 const statusTTL = time.Minute
@@ -74,6 +75,7 @@ func NewChecker() *Checker {
 func (c *Checker) Invalidate() {
 	c.mu.Lock()
 	c.seen = map[string]Status{}
+	c.gen++
 	c.mu.Unlock()
 }
 
@@ -84,10 +86,13 @@ func (c *Checker) Check(t Tool) Status {
 		c.mu.Unlock()
 		return s
 	}
+	gen := c.gen
 	c.mu.Unlock()
 	s := c.check(t)
 	c.mu.Lock()
-	c.seen[t.ID] = s
+	if gen == c.gen {
+		c.seen[t.ID] = s
+	}
 	c.mu.Unlock()
 	return s
 }
