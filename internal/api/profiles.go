@@ -53,14 +53,6 @@ func (r *Router) stageProfile(stage string) *registry.AgentProfile {
 	return p
 }
 
-// stageRole is the role name of a stage ("" when it has none).
-func (r *Router) stageRole(stage string) string {
-	if p := r.stageProfile(stage); p != nil {
-		return p.Role
-	}
-	return ""
-}
-
 // checkStageSkillAllowed rejects a skill the stage's role explicitly denies.
 func (r *Router) checkStageSkillAllowed(stage, skill string) error {
 	if p := r.stageProfile(stage); p != nil && r.profileRegistry().IsDenied(p.Role, skill) {
