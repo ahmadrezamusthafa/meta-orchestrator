@@ -6,7 +6,7 @@ import type {
   JiraSyncConfig, JiraSyncSettings,
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
-  UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse,
+  UniversalSkillDTO, SkillSourceDTO, SkillRunResult, CheckPathCompatibilityResponse,
   PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
   OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO, RoutePreviewDTO, TierAssignmentDTO,
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
@@ -543,6 +543,19 @@ export const api = {
     })
     if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to save workflow')
     return res.json()
+  },
+
+  /** Runs a command-based skill once in the project root as a stage role. */
+  async runSkill(name: string, role: string): Promise<SkillRunResult> {
+    const res = await fetch(`${BASE_URL}/skills/${encodeURIComponent(name)}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role })
+    })
+    const body = await res.json().catch(() => null)
+    if (res.status === 403 && body?.skill) return body // refused for the role: show why
+    if (!res.ok) throw new Error(body?.error || `Skill run failed (HTTP ${res.status})`)
+    return body
   },
 
   async getRegistries(): Promise<RegistryDTO> {

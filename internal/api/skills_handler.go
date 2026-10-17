@@ -113,6 +113,11 @@ func (r *Router) handleSkillAction(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if len(parts) == 2 && parts[1] == "run" {
+		r.handleSkillRun(w, req, skillName)
+		return
+	}
+
 	// 2. Compatibility details
 	if len(parts) >= 2 && parts[1] == "compatibility" {
 		if req.Method != http.MethodGet {

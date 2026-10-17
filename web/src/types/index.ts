@@ -1134,6 +1134,17 @@ export interface UniversalSkillDTO {
   metadata?: Record<string, any>
 }
 
+/** POST /skills/{name}/run: one test run of a command-based skill. */
+export interface SkillRunResult {
+  skill: string
+  role: string
+  ok: boolean
+  exit_code: number
+  output: string
+  error?: string
+  duration_ms: number
+}
+
 export interface SkillSourceDTO {
   id: string
   name: string
