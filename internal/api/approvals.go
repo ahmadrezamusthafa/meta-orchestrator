@@ -33,7 +33,8 @@ func (r approvalRule) label() string {
 }
 
 // shellChaining marks commands that could run something beyond the approved prefix.
-var shellChaining = []string{"&&", "||", ";", "|", "`", "$(", ">", "<", "\n"}
+// A lone "&" backgrounds the prefix and runs whatever follows it.
+var shellChaining = []string{"&", "|", ";", "`", "$(", ">", "<", "\n"}
 
 func (r approvalRule) matches(tool string, input map[string]interface{}) bool {
 	if !strings.EqualFold(r.Tool, tool) {
@@ -174,7 +175,17 @@ func (r *Router) taskApprovalRules(taskID string) []approvalRule {
 }
 
 func (r *Router) addApprovalRule(taskID string, rule approvalRule) {
-	rules := r.taskApprovalRules(taskID)
+	// Read-modify-write under one lock: concurrent "always allow" answers must not drop a rule.
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t := r.tasks[taskID]
+	if t == nil {
+		return
+	}
+	var rules []approvalRule
+	if raw := t.Metadata["approval_rules"]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &rules)
+	}
 	for _, existing := range rules {
 		if existing == rule {
 			return
@@ -182,11 +193,10 @@ func (r *Router) addApprovalRule(taskID string, rule approvalRule) {
 	}
 	rules = append(rules, rule)
 	data, _ := json.Marshal(rules)
-	r.mu.Lock()
-	if t := r.tasks[taskID]; t != nil {
-		t.Metadata["approval_rules"] = string(data)
+	if t.Metadata == nil {
+		t.Metadata = map[string]string{}
 	}
-	r.mu.Unlock()
+	t.Metadata["approval_rules"] = string(data)
 }
 
 // allowAllLabel is the rule shown on requests the "allow all" bypass answered.
