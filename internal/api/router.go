@@ -78,6 +78,7 @@ type Router struct {
 	approvals     *approvalHub
 	docker        *dockerGate          // limits concurrent Docker commands across all agents
 	toolchain     *toolchain.Toolchain // checks and installs the tools the stacks need
+	evidenceJobs  sync.WaitGroup       // background evidence finalization (transcode, signed manifest)
 	busyOps       sync.Map             // "pr:<task>" / "uat:<task>" while a delivery job runs
 	prClient      *pullrequest.Client  // opens pull requests; tests point it at a fake API
 	uatRunner     uatScreenshotRunner  // captures UAT screenshots; tests stub it
@@ -191,6 +192,7 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/tasks", r.handleTasks)
 	r.mux.HandleFunc("/api/v1/tasks/", r.handleTaskItem)
 	r.mux.HandleFunc("/api/v1/tasks/analyze", r.handleTaskAnalyze)
+	r.mux.HandleFunc("/api/v1/tasks/{id}/evidence/verify", r.handleEvidenceVerify)
 	r.mux.HandleFunc("/api/v1/toolchain", r.handleToolchain)
 	r.mux.HandleFunc("/api/v1/toolchain/", r.handleToolchainAction)
 	r.mux.HandleFunc("/api/v1/tools", r.handleTools)
