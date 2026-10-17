@@ -44,7 +44,7 @@ func (m *Manager) takeSnapshot(r *jobRun, reason string) (*Snapshot, error) {
 		}
 	default:
 		var err error
-		rels, err = resolveFootprint(s.Footprint, m.opts.UserHome, m.scopeDir(s))
+		rels, err = resolveFootprint(footprintPatterns(s, m.opts.UserHome, m.scopeDir(s)), m.opts.UserHome, m.scopeDir(s))
 		if err != nil {
 			return nil, err
 		}
@@ -150,7 +150,7 @@ func (m *Manager) restore(r *jobRun, sn Snapshot) error {
 	var current []string
 	if s.Kind == KindNPXInstaller {
 		var err error
-		if current, err = resolveFootprint(s.Footprint, m.opts.UserHome, m.scopeDir(s)); err != nil {
+		if current, err = resolveFootprint(footprintPatterns(s, m.opts.UserHome, m.scopeDir(s)), m.opts.UserHome, m.scopeDir(s)); err != nil {
 			return err
 		}
 	}
@@ -191,7 +191,7 @@ func (m *Manager) uninstallInstaller(r *jobRun) error {
 			r.log("The installer's own uninstall failed (%v); removing the files directly.", err)
 		}
 	}
-	rels, err := resolveFootprint(s.Footprint, m.opts.UserHome, m.scopeDir(s))
+	rels, err := resolveFootprint(footprintPatterns(s, m.opts.UserHome, m.scopeDir(s)), m.opts.UserHome, m.scopeDir(s))
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package packages
 import (
 	"archive/tar"
 	"compress/gzip"
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,46 @@ import (
 // Snapshots store the files a package owns as paths relative to the operator's home folder, and
 // restoring one writes only inside that folder: entries with absolute paths, ".." or that would
 // pass through or create a symbolic link pointing outside it are refused.
+
+// footprintPatterns is the package's footprint globs plus the names its installer lists in
+// footprint_from. A listed name must be one plain path element; anything else is ignored.
+func footprintPatterns(s *Spec, root, dir string) []string {
+	patterns := append([]string(nil), s.Footprint...)
+	f := s.FootprintFrom
+	if f == nil {
+		return patterns
+	}
+	file, err := os.Open(expand(f.CSV, root, dir))
+	if err != nil {
+		return patterns // nothing installed yet
+	}
+	defer file.Close()
+	rows, err := csv.NewReader(file).ReadAll()
+	if err != nil || len(rows) == 0 {
+		return patterns
+	}
+	col := -1
+	for i, h := range rows[0] {
+		if strings.TrimSpace(h) == f.Column {
+			col = i
+		}
+	}
+	if col < 0 {
+		return patterns
+	}
+	prefix := strings.TrimSuffix(f.Prefix, "/") + "/"
+	for _, row := range rows[1:] {
+		if col >= len(row) {
+			continue
+		}
+		name := strings.TrimSpace(row[col])
+		if name == "" || !filepath.IsLocal(name) || strings.ContainsAny(name, `/\*?[`) {
+			continue
+		}
+		patterns = append(patterns, prefix+name)
+	}
+	return patterns
+}
 
 // resolveFootprint expands the patterns and returns the existing paths they match, relative to
 // root, sorted and without paths nested in another match.

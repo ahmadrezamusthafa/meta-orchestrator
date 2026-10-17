@@ -40,7 +40,7 @@ func TestManifestValidation(t *testing.T) {
 	}
 	want := map[string]string{"claude-code": KindNPMCLI, "node": KindSystem, "git": KindSystem, "playwright": KindNPMCLI,
 		"ffmpeg": KindSystem, "docker": KindSystem, "bmad": KindNPXInstaller, "gsd": KindNPXInstaller,
-		"superpowers": KindClaudePlugin, "github-mcp-server": KindGoCLI, "mcp-grafana": KindGoCLI}
+		"superpowers": KindClaudePlugin, "github-mcp-server": KindGoCLI, "mcp-grafana": KindGoCLI, "go": KindSystem}
 	if len(m.Packages) != len(want) {
 		t.Fatalf("manifest has %d packages, want %d", len(m.Packages), len(want))
 	}
@@ -53,6 +53,13 @@ func TestManifestValidation(t *testing.T) {
 		if !m.Get(id).Required {
 			t.Errorf("%s must be required", id)
 		}
+	}
+	// --action update with --modules fails on an existing install; quick-update keeps every module.
+	if got := strings.Join(m.Get("bmad").UpdateArgs, " "); !strings.Contains(got, "--action quick-update") || strings.Contains(got, "--modules") {
+		t.Errorf("bmad update_args = %q", got)
+	}
+	if o, _ := m.order([]string{"github-mcp-server"}); strings.Join(o, ",") != "go,github-mcp-server" {
+		t.Errorf("go-cli packages must install Go first: %v", o)
 	}
 	if m.Get("tree-sitter") != nil {
 		t.Error("tree-sitter is no longer used")
@@ -654,5 +661,34 @@ func TestCLI(t *testing.T) {
 	}
 	if code := RunCLI(context.Background(), e.m, []string{"install"}, &out); code != 2 {
 		t.Fatalf("missing id exit %d", code)
+	}
+}
+
+func TestFootprintFromInstallerManifest(t *testing.T) {
+	home := t.TempDir()
+	skills := filepath.Join(home, ".claude", "skills")
+	for _, d := range []string{"bmad-dev", "wds-flow", "memory", "gsd-plan"} {
+		if err := os.MkdirAll(filepath.Join(skills, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(home, "_bmad", "_config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	csvBody := "canonicalId,name\nbmad-dev,a\nwds-flow,b\nmemory,c\n../escape,d\nx/y,e\n"
+	if err := os.WriteFile(filepath.Join(home, "_bmad", "_config", "skill-manifest.csv"), []byte(csvBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &Spec{Footprint: []string{"{dir}/_bmad"}, FootprintFrom: &FootprintList{
+		CSV: "{dir}/_bmad/_config/skill-manifest.csv", Column: "canonicalId", Prefix: "{dir}/.claude/skills"}}
+	rels, err := resolveFootprint(footprintPatterns(s, home, home), home, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(rels, ",")
+	want := strings.Join([]string{filepath.Join(".claude", "skills", "bmad-dev"), filepath.Join(".claude", "skills", "memory"),
+		filepath.Join(".claude", "skills", "wds-flow"), "_bmad"}, ",")
+	if got != want {
+		t.Fatalf("footprint = %s, want %s (gsd-plan and unsafe names must be left out)", got, want)
 	}
 }

@@ -70,11 +70,22 @@ type Spec struct {
 	UpdateArgs  []string     `json:"update_args"`    // npx-installer: arguments when already installed
 	UninstArgs  []string     `json:"uninstall_args"` // npx-installer: the installer's own uninstaller, run before the footprint is removed
 	VersionFile *VersionFile `json:"version_file,omitempty"`
-	Footprint   []string     `json:"footprint"`    // npx-installer: globs (~ and {dir} expanded) snapshotted before changes
-	PostInstall [][]string   `json:"post_install"` // argv lists run after an install; argv[0] may name one of Binaries
-	ToolchainID string       `json:"toolchain_id"` // system: the internal/toolchain catalog entry
-	System      SystemSource `json:"system"`
-	Notes       string       `json:"notes"`
+	Footprint   []string     `json:"footprint"` // npx-installer: globs (~ and {dir} expanded) snapshotted before changes
+	// FootprintFrom adds the entries an installer records in its own manifest (BMAD lists every
+	// skill it installs in skill-manifest.csv), so skills with other prefixes are covered too.
+	FootprintFrom *FootprintList `json:"footprint_from,omitempty"`
+	PostInstall   [][]string     `json:"post_install"` // argv lists run after an install; argv[0] may name one of Binaries
+	ToolchainID   string         `json:"toolchain_id"` // system: the internal/toolchain catalog entry
+	System        SystemSource   `json:"system"`
+	Notes         string         `json:"notes"`
+}
+
+// FootprintList reads extra footprint entries from one column of an installer's CSV manifest:
+// each value is a single file or folder name joined to Prefix.
+type FootprintList struct {
+	CSV    string `json:"csv"`    // ~ or {dir} path of the CSV file
+	Column string `json:"column"` // header of the column holding the names
+	Prefix string `json:"prefix"` // ~ or {dir} folder the names live in
 }
 
 // Manifest is the parsed configs/packages.json.
@@ -260,6 +271,17 @@ func (s *Spec) validate() error {
 		}
 		if err := checkFootprintPattern(s.VersionFile.Path); err != nil {
 			return fmt.Errorf("version_file.path: %w", err)
+		}
+		if f := s.FootprintFrom; f != nil {
+			if f.Column == "" {
+				return errors.New("footprint_from.column is required")
+			}
+			if err := checkFootprintPattern(f.CSV); err != nil {
+				return fmt.Errorf("footprint_from.csv: %w", err)
+			}
+			if err := checkFootprintPattern(strings.TrimSuffix(f.Prefix, "/")); err != nil {
+				return fmt.Errorf("footprint_from.prefix: %w", err)
+			}
 		}
 	case KindClaudePlugin:
 		if s.Package == "" || !strings.Contains(s.Package, "@") {

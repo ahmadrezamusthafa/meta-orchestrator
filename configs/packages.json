@@ -6,11 +6,39 @@
     "description": "Runs the Claude Code CLI, npx-based installers and MCP connectors, and Playwright.",
     "docs": "https://nodejs.org/en/download",
     "kind": "system",
-    "binaries": ["node", "npm", "npx"],
+    "binaries": [
+      "node",
+      "npm",
+      "npx"
+    ],
     "required": true,
     "toolchain_id": "node",
-    "system": { "brew": "node", "apt": "nodejs npm" },
+    "system": {
+      "brew": "node",
+      "apt": "nodejs npm"
+    },
     "notes": "Installed by Homebrew (or apt, shown as a command). Rollback is not supported for system packages; use nvm or fnm to switch Node versions."
+  },
+  {
+    "id": "go",
+    "name": "Go",
+    "category": "Runtimes",
+    "description": "Builds the MCP server binaries that are installed with go install.",
+    "docs": "https://go.dev/doc/install",
+    "kind": "system",
+    "binaries": [
+      "go"
+    ],
+    "version_args": [
+      "version"
+    ],
+    "required": false,
+    "toolchain_id": "go",
+    "system": {
+      "brew": "go",
+      "apt": "golang-go"
+    },
+    "notes": "Installed by Homebrew (or apt, shown as a command). Rollback is not supported for system packages."
   },
   {
     "id": "git",
@@ -19,9 +47,14 @@
     "description": "Creates task worktrees, commits and pull request branches.",
     "docs": "https://git-scm.com/downloads",
     "kind": "system",
-    "binaries": ["git"],
+    "binaries": [
+      "git"
+    ],
     "required": true,
-    "system": { "brew": "git", "apt": "git" },
+    "system": {
+      "brew": "git",
+      "apt": "git"
+    },
     "notes": "macOS ships git with the Xcode Command Line Tools; that copy counts as installed, but `brew upgrade git` / `brew uninstall git` only work on a Homebrew copy."
   },
   {
@@ -32,9 +65,13 @@
     "docs": "https://docs.anthropic.com/en/docs/claude-code/setup",
     "kind": "npm-cli",
     "package": "@anthropic-ai/claude-code",
-    "binaries": ["claude"],
+    "binaries": [
+      "claude"
+    ],
     "required": true,
-    "requires": ["node"],
+    "requires": [
+      "node"
+    ],
     "notes": "Managed versions live under the orchestrator home and are linked from its bin folder, which the daemon puts first on PATH; a global install elsewhere is reported as the system copy and left alone."
   },
   {
@@ -45,10 +82,20 @@
     "docs": "https://playwright.dev/docs/intro",
     "kind": "npm-cli",
     "package": "playwright",
-    "binaries": ["playwright"],
+    "binaries": [
+      "playwright"
+    ],
     "required": false,
-    "requires": ["node"],
-    "post_install": [["playwright", "install", "chromium"]],
+    "requires": [
+      "node"
+    ],
+    "post_install": [
+      [
+        "playwright",
+        "install",
+        "chromium"
+      ]
+    ],
     "notes": "Recommended. After each install `playwright install chromium` downloads the browser into Playwright's shared cache (outside the orchestrator home); uninstall does not remove that cache."
   },
   {
@@ -58,10 +105,17 @@
     "description": "Transcodes recorded evidence to MP4.",
     "docs": "https://ffmpeg.org/download.html",
     "kind": "system",
-    "binaries": ["ffmpeg"],
-    "version_args": ["-version"],
+    "binaries": [
+      "ffmpeg"
+    ],
+    "version_args": [
+      "-version"
+    ],
     "required": false,
-    "system": { "brew": "ffmpeg", "apt": "ffmpeg" },
+    "system": {
+      "brew": "ffmpeg",
+      "apt": "ffmpeg"
+    },
     "notes": "Recommended: without it evidence videos stay in their recorded format."
   },
   {
@@ -71,7 +125,9 @@
     "description": "Runs the containers agents start for integration tests, and Docker-based MCP connectors.",
     "docs": "https://docs.docker.com/get-started/get-docker/",
     "kind": "system",
-    "binaries": ["docker"],
+    "binaries": [
+      "docker"
+    ],
     "required": false,
     "toolchain_id": "docker",
     "notes": "Optional. On macOS install Docker Desktop, OrbStack or Colima yourself; on Linux the apt command needs sudo, so it is shown rather than run."
@@ -85,13 +141,42 @@
     "kind": "npx-installer",
     "package": "bmad-method",
     "required": false,
-    "requires": ["node"],
+    "requires": [
+      "node"
+    ],
     "scope_dir": "~",
-    "install_args": ["install", "--directory", "{dir}", "--modules", "bmm", "--tools", "claude-code", "--yes"],
-    "update_args": ["install", "--directory", "{dir}", "--modules", "bmm", "--tools", "claude-code", "--yes", "--action", "update"],
-    "version_file": { "path": "{dir}/_bmad/_config/manifest.yaml", "regex": "(?m)^installation:\\s*\\n\\s+version:\\s*['\"]?([0-9A-Za-z.+_-]+)" },
-    "footprint": ["{dir}/_bmad", "{dir}/.claude/skills/bmad-*"],
-    "notes": "Installs into the home folder (_bmad/ and ~/.claude/skills/bmad-*). Snapshots cover those paths only: skills of other BMAD modules with another prefix (e.g. wds-*) and _bmad-output/ are not snapshotted or removed. Unverified: whether an update with --modules bmm keeps other modules installed earlier."
+    "install_args": [
+      "install",
+      "--directory",
+      "{dir}",
+      "--modules",
+      "bmm",
+      "--tools",
+      "claude-code",
+      "--yes"
+    ],
+    "update_args": [
+      "install",
+      "--directory",
+      "{dir}",
+      "--yes",
+      "--action",
+      "quick-update"
+    ],
+    "version_file": {
+      "path": "{dir}/_bmad/_config/manifest.yaml",
+      "regex": "(?m)^installation:\\s*\\n\\s+version:\\s*['\"]?([0-9A-Za-z.+_-]+)"
+    },
+    "footprint": [
+      "{dir}/_bmad",
+      "{dir}/.claude/skills/bmad-*"
+    ],
+    "notes": "Installs into the home folder: _bmad/ plus the Claude skills BMAD lists in _bmad/_config/skill-manifest.csv (bmad-*, wds-*, …), all of which are snapshotted. Update uses --action quick-update, which keeps every installed module and its settings (verified 2026-10-18 with core, bmm and cis: 6.12.3 → 6.12.4). A fresh install adds the bmm module.",
+    "footprint_from": {
+      "csv": "{dir}/_bmad/_config/skill-manifest.csv",
+      "column": "canonicalId",
+      "prefix": "{dir}/.claude/skills"
+    }
   },
   {
     "id": "gsd",
@@ -102,13 +187,36 @@
     "kind": "npx-installer",
     "package": "get-shit-done-cc",
     "required": false,
-    "requires": ["node"],
+    "requires": [
+      "node"
+    ],
     "scope_dir": "~",
-    "install_args": ["--claude", "--global"],
-    "update_args": ["--claude", "--global"],
-    "uninstall_args": ["--claude", "--global", "--uninstall"],
-    "version_file": { "path": "~/.claude/get-shit-done/VERSION", "regex": "^\\s*([0-9A-Za-z.+_-]+)" },
-    "footprint": ["~/.claude/get-shit-done", "~/.claude/gsd-file-manifest.json", "~/.claude/gsd-install-state.json", "~/.claude/.gsd-profile", "~/.claude/skills/gsd-*", "~/.claude/agents/gsd-*", "~/.claude/hooks/gsd-*"],
+    "install_args": [
+      "--claude",
+      "--global"
+    ],
+    "update_args": [
+      "--claude",
+      "--global"
+    ],
+    "uninstall_args": [
+      "--claude",
+      "--global",
+      "--uninstall"
+    ],
+    "version_file": {
+      "path": "~/.claude/get-shit-done/VERSION",
+      "regex": "^\\s*([0-9A-Za-z.+_-]+)"
+    },
+    "footprint": [
+      "~/.claude/get-shit-done",
+      "~/.claude/gsd-file-manifest.json",
+      "~/.claude/gsd-install-state.json",
+      "~/.claude/.gsd-profile",
+      "~/.claude/skills/gsd-*",
+      "~/.claude/agents/gsd-*",
+      "~/.claude/hooks/gsd-*"
+    ],
     "notes": "GSD also edits ~/.claude/settings.json (hooks, statusline) and writes ~/.claude/package.json; those shared files are not snapshotted, so a rollback restores GSD's own files only. Uninstall runs GSD's own --uninstall first, which removes its settings entries. npm marks get-shit-done-cc@1.42.3 as deprecated (observed 2026-10-18)."
   },
   {
@@ -120,7 +228,9 @@
     "kind": "claude-plugin",
     "package": "superpowers@claude-plugins-official",
     "required": false,
-    "requires": ["claude-code"],
+    "requires": [
+      "claude-code"
+    ],
     "notes": "Claude Code installs and updates plugins at their latest version only. Rollback restores a snapshot of the plugin's cache folder and its installed_plugins.json entry (best effort); restart Claude Code afterwards."
   },
   {
@@ -132,9 +242,14 @@
     "kind": "go-cli",
     "package": "github.com/github/github-mcp-server/cmd/github-mcp-server",
     "module": "github.com/github/github-mcp-server",
-    "binaries": ["github-mcp-server"],
+    "binaries": [
+      "github-mcp-server"
+    ],
     "required": false,
-    "notes": "Needs Go on PATH (not managed here). v1.14.0 declares go >= 1.26.8, so an older Go downloads a newer toolchain when GOTOOLCHAIN allows it. A `go install` build prints no release number for --version, so the version shown is the one the orchestrator installed."
+    "notes": "Built with Go (the go package is installed first). v1.14.0 declares go >= 1.26.8, so an older Go downloads a newer toolchain when GOTOOLCHAIN allows it. A `go install` build prints no release number for --version, so the version shown is the one the orchestrator installed.",
+    "requires": [
+      "go"
+    ]
   },
   {
     "id": "mcp-grafana",
@@ -145,8 +260,13 @@
     "kind": "go-cli",
     "package": "github.com/grafana/mcp-grafana/cmd/mcp-grafana",
     "module": "github.com/grafana/mcp-grafana",
-    "binaries": ["mcp-grafana"],
+    "binaries": [
+      "mcp-grafana"
+    ],
     "required": false,
-    "notes": "Needs Go on PATH (not managed here). v1.6.3 declares go >= 1.26.5, so an older Go downloads a newer toolchain when GOTOOLCHAIN allows it."
+    "notes": "Built with Go (the go package is installed first). v1.6.3 declares go >= 1.26.5, so an older Go downloads a newer toolchain when GOTOOLCHAIN allows it.",
+    "requires": [
+      "go"
+    ]
   }
 ]
