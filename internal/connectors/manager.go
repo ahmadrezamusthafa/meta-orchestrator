@@ -175,9 +175,15 @@ func (m *Manager) resolveTokenLocked(id, candidate string) (string, string) {
 		case "slack":
 			mcpEnvToken = existing.MCP.Env["SLACK_BOT_TOKEN"]
 		case "linear":
-			mcpEnvToken = existing.MCP.Env["LINEAR_API_KEY"]
+			mcpEnvToken = existing.MCP.Env["LINEAR_API_TOKEN"]
+			if mcpEnvToken == "" {
+				mcpEnvToken = existing.MCP.Env["LINEAR_API_KEY"] // before @tacticlaunch/mcp-linear
+			}
 		case "notion":
-			mcpEnvToken = existing.MCP.Env["NOTION_API_KEY"]
+			mcpEnvToken = existing.MCP.Env["NOTION_TOKEN"]
+			if mcpEnvToken == "" {
+				mcpEnvToken = existing.MCP.Env["NOTION_API_KEY"] // before the official Notion server
+			}
 		}
 	}
 
@@ -241,7 +247,7 @@ func (m *Manager) resolveTokenLocked(id, candidate string) (string, string) {
 			return v, src
 		}
 	case "linear":
-		if v, src := resolveEnvValue("LINEAR_API_KEY", "LINEAR_TOKEN"); v != "" {
+		if v, src := resolveEnvValue("LINEAR_API_KEY", "LINEAR_API_TOKEN", "LINEAR_TOKEN"); v != "" {
 			return v, src
 		}
 	case "notion":
@@ -916,16 +922,7 @@ func (m *Manager) ensureCatalogLocked() {
 			TargetEntity:  "",
 			TargetLabel:   "Team Prefix / Project",
 			Capabilities:  []string{"Identifier Detection", "Cycle Sync", "High-speed Import"},
-			MCP: &types.MCPConfig{
-				Enabled:   true,
-				Command:   "npx",
-				Args:      []string{"-y", "@modelcontextprotocol/server-linear"},
-				Transport: "stdio",
-				Env: map[string]string{
-					"LINEAR_API_KEY": linearToken,
-				},
-			},
-			LatencyMs: 0,
+			LatencyMs:     0,
 		}
 		if linearSrc != "" && linearSrc != "direct_input" && linearSrc != "saved_config" {
 			it.HasEnvAuth = true
@@ -944,18 +941,9 @@ func (m *Manager) ensureCatalogLocked() {
 			it.Status = "configured"
 			it.ErrorMessage = ""
 		}
-		if it.MCP == nil {
-			it.MCP = &types.MCPConfig{
-				Enabled:   true,
-				Command:   "npx",
-				Args:      []string{"-y", "@modelcontextprotocol/server-linear"},
-				Transport: "stdio",
-				Env: map[string]string{
-					"LINEAR_API_KEY": it.APIToken,
-				},
-			}
-		} else if it.MCP.Env != nil && it.APIToken != "" {
-			it.MCP.Env["LINEAR_API_KEY"] = it.APIToken
+		// The MCP server itself is set by ensureStackConnectorsLocked.
+		if it.MCP != nil && it.MCP.Env != nil && it.APIToken != "" {
+			it.MCP.Env["LINEAR_API_TOKEN"] = it.APIToken
 		}
 	}
 
@@ -983,16 +971,7 @@ func (m *Manager) ensureCatalogLocked() {
 			TargetEntity:  "",
 			TargetLabel:   "Database / Parent Page",
 			Capabilities:  []string{"Page Creation", "Database Row Sync", "Rich Text Blocks"},
-			MCP: &types.MCPConfig{
-				Enabled:   true,
-				Command:   "npx",
-				Args:      []string{"-y", "@modelcontextprotocol/server-notion"},
-				Transport: "stdio",
-				Env: map[string]string{
-					"NOTION_API_KEY": notionToken,
-				},
-			},
-			LatencyMs: 0,
+			LatencyMs:     0,
 		}
 		if notionSrc != "" && notionSrc != "direct_input" && notionSrc != "saved_config" {
 			it.HasEnvAuth = true
@@ -1011,18 +990,9 @@ func (m *Manager) ensureCatalogLocked() {
 			it.Status = "configured"
 			it.ErrorMessage = ""
 		}
-		if it.MCP == nil {
-			it.MCP = &types.MCPConfig{
-				Enabled:   true,
-				Command:   "npx",
-				Args:      []string{"-y", "@modelcontextprotocol/server-notion"},
-				Transport: "stdio",
-				Env: map[string]string{
-					"NOTION_API_KEY": it.APIToken,
-				},
-			}
-		} else if it.MCP.Env != nil && it.APIToken != "" {
-			it.MCP.Env["NOTION_API_KEY"] = it.APIToken
+		// The MCP server itself is set by ensureStackConnectorsLocked.
+		if it.MCP != nil && it.MCP.Env != nil && it.APIToken != "" {
+			it.MCP.Env["NOTION_TOKEN"] = it.APIToken
 		}
 	}
 
@@ -1374,7 +1344,7 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 	if merged == nil {
 		return types.TestConnectorResponse{Success: false, Message: fmt.Sprintf("Connector '%s' not found in catalog", id)}
 	}
-	if id != "github" {
+	if s, _ := lookupStack(id); !s.restCheck {
 		return m.testStackConnector(ctx, merged, item != nil)
 	}
 	res := m.testGenericConnector(ctx, id, item)
@@ -2103,7 +2073,7 @@ func (m *Manager) PingAll(ctx context.Context) *types.PingAllSummary {
 
 	for _, item := range targets {
 		var res types.TestConnectorResponse
-		if _, stack := lookupStack(item.ID); stack && item.ID != "github" {
+		if s, stack := lookupStack(item.ID); stack && !s.restCheck {
 			res = m.testStackConnector(ctx, item, false) // credentials only: never start servers every ping
 		} else if item.ConfigMode == "mcp" {
 			res = m.TestMCPConnector(ctx, item.ID, item.MCP)

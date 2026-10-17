@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
@@ -21,7 +22,9 @@ func isolate(t *testing.T, installed ...string) {
 		"GRAFANA_API_KEY", "GRAFANA_TOKEN", "CLOUDFLARE_API_TOKEN", "CF_API_TOKEN", "JIRA_API_TOKEN", "JIRA_TOKEN", "ATLASSIAN_API_TOKEN",
 		"CONFLUENCE_API_TOKEN", "CONFLUENCE_TOKEN", "BITBUCKET_APP_PASSWORD", "BITBUCKET_TOKEN", "BITBUCKET_API_TOKEN", "BITBUCKET_PASSWORD",
 		"GITLAB_TOKEN", "GITLAB_PERSONAL_ACCESS_TOKEN", "GITLAB_API_TOKEN", "GL_TOKEN", "SLACK_BOT_TOKEN", "SLACK_TOKEN", "LINEAR_API_KEY",
-		"LINEAR_TOKEN", "NOTION_API_KEY", "NOTION_TOKEN", "NOTION_INTEGRATION_TOKEN"} {
+		"LINEAR_TOKEN", "LINEAR_API_TOKEN", "NOTION_API_KEY", "NOTION_TOKEN", "NOTION_INTEGRATION_TOKEN", "CLICKUP_API_KEY", "CLICKUP_API_TOKEN", "CLICKUP_TOKEN",
+		"CLICKUP_TEAM_ID", "TRELLO_API_KEY", "TRELLO_TOKEN", "TRELLO_API_TOKEN", "ASANA_ACCESS_TOKEN", "ASANA_TOKEN", "ASANA_PAT",
+		"MONDAY_API_TOKEN", "MONDAY_TOKEN"} {
 		t.Setenv(k, "")
 	}
 	have := map[string]bool{}
@@ -275,5 +278,23 @@ func TestGrafanaCredentialCheck(t *testing.T) {
 	}
 	if got, _ := m.GetConnector("grafana"); got.Status != "connected" {
 		t.Fatalf("status after a good check = %s", got.Status)
+	}
+}
+
+func TestProbeStopsServersStartedByALauncher(t *testing.T) {
+	// Like npx: the launcher starts the real server as a child that inherits its pipes.
+	launcher := `sh -c 'read init; echo "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"serverInfo\":{\"name\":\"child\"}}}"; read a; read b; echo "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}"; sleep 30' & wait`
+	done := make(chan error, 1)
+	go func() {
+		_, err := ProbeMCP(context.Background(), types.MCPConfig{Command: "sh", Args: []string{"-c", launcher}})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the probe must not wait for the server's child to exit")
 	}
 }

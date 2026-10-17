@@ -63,7 +63,9 @@ const (
 	ConnectorCategoryVCS           ConnectorCategory = "vcs"
 	ConnectorCategoryObservability ConnectorCategory = "observability"
 	ConnectorCategoryCloud         ConnectorCategory = "cloud"
-	ConnectorCategoryCustom        ConnectorCategory = "custom"
+	// ConnectorCategoryProjectManagement covers task boards such as ClickUp, Trello, Asana and monday.com.
+	ConnectorCategoryProjectManagement ConnectorCategory = "project_management"
+	ConnectorCategoryCustom            ConnectorCategory = "custom"
 )
 
 // ConnectorItem represents any third-party connector in the modular catalog.

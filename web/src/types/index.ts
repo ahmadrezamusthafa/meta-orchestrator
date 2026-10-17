@@ -868,7 +868,7 @@ export interface ConfluenceConfig {
   error_message?: string
 }
 
-export type ConnectorCategory = 'issue_tracker' | 'documentation' | 'chatops' | 'vcs' | 'observability' | 'cloud' | 'custom'
+export type ConnectorCategory = 'issue_tracker' | 'project_management' | 'documentation' | 'chatops' | 'vcs' | 'observability' | 'cloud' | 'custom'
 
 export interface MCPConfig {
   enabled: boolean

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -29,6 +30,9 @@ type stackConnector struct {
 	tokenEnv []string
 	// legacyArgs marks older built-in launchers that are migrated to the current ones.
 	legacyArgs []string
+	// restCheck means the catalog's REST test checks the credential (testGenericConnector); the
+	// stack test only adds the MCP probe.
+	restCheck bool
 }
 
 func dockerLauncher(image string, env []string, args ...string) types.MCPConfig {
@@ -55,6 +59,7 @@ var stackConnectors = []stackConnector{
 		tokenKey:   "GITHUB_PERSONAL_ACCESS_TOKEN",
 		tokenEnv:   []string{"GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"},
 		legacyArgs: []string{"@modelcontextprotocol/server-github"},
+		restCheck:  true,
 	},
 	{
 		item: types.ConnectorItem{
@@ -101,6 +106,98 @@ var stackConnectors = []stackConnector{
 		},
 		tokenKey: "CLOUDFLARE_API_TOKEN",
 		tokenEnv: []string{"CLOUDFLARE_API_TOKEN", "CF_API_TOKEN"},
+	},
+
+	// ── Project management: agents read the ticket, its comments and its board ──
+	{
+		item: types.ConnectorItem{
+			ID: "clickup", Name: "ClickUp", Category: types.ConnectorCategoryProjectManagement, CategoryLabel: "Project Management",
+			Description: "Lets agents read ClickUp tasks with their comments, checklists, lists and docs — the acceptance criteria behind a change. Runs the server in read mode.",
+			Icon:        "clickup", Color: "pink", ConfigMode: "mcp", Status: "unconfigured",
+			BaseURL:      "https://api.clickup.com/api/v2",
+			TargetLabel:  "Workspace (team) ID",
+			Capabilities: []string{"Task Details & Comments", "Task Search", "Lists & Spaces", "Docs"},
+			AgentAccess:  "Read-only (CLICKUP_MCP_MODE=read): tasks, comments, lists, spaces and docs of the workspace",
+		},
+		launchers: []types.MCPConfig{
+			withEnv(types.MCPConfig{Enabled: true, Command: "npx", Args: []string{"-y", "@hauptsache.net/clickup-mcp"}, Transport: "stdio"},
+				map[string]string{"CLICKUP_MCP_MODE": "read"}),
+		},
+		tokenKey: "CLICKUP_API_KEY",
+		tokenEnv: []string{"CLICKUP_API_KEY", "CLICKUP_API_TOKEN", "CLICKUP_TOKEN"},
+	},
+	{
+		item: types.ConnectorItem{
+			ID: "trello", Name: "Trello", Category: types.ConnectorCategoryProjectManagement, CategoryLabel: "Project Management",
+			Description: "Lets agents read Trello boards, lists, cards, checklists and comments. Authorize the token with read scope so it cannot change boards.",
+			Icon:        "trello", Color: "blue", ConfigMode: "mcp", Status: "unconfigured",
+			BaseURL:      "https://api.trello.com/1",
+			TargetLabel:  "Default board ID (optional)",
+			Capabilities: []string{"Boards & Lists", "Card Details", "Checklists", "Comments"},
+			AgentAccess:  "Read-only when the token is authorized with scope=read: boards, lists, cards, checklists and comments",
+		},
+		launchers: []types.MCPConfig{
+			{Enabled: true, Command: "npx", Args: []string{"-y", "@delorenj/mcp-server-trello"}, Transport: "stdio"},
+		},
+		tokenKey: "TRELLO_TOKEN",
+		tokenEnv: []string{"TRELLO_TOKEN", "TRELLO_API_TOKEN"},
+	},
+	{
+		item: types.ConnectorItem{
+			ID: "asana", Name: "Asana", Category: types.ConnectorCategoryProjectManagement, CategoryLabel: "Project Management",
+			Description: "Lets agents read Asana tasks, projects, sections, comments and status updates. Runs the server in read-only mode.",
+			Icon:        "asana", Color: "rose", ConfigMode: "mcp", Status: "unconfigured",
+			BaseURL:      "https://app.asana.com/api/1.0",
+			TargetLabel:  "Default workspace (optional)",
+			Capabilities: []string{"Task Details & Stories", "Task Search", "Projects & Sections", "Status Updates"},
+			AgentAccess:  "Read-only (READ_ONLY_MODE): tasks, projects, sections, comments and status updates",
+		},
+		launchers: []types.MCPConfig{
+			withEnv(types.MCPConfig{Enabled: true, Command: "npx", Args: []string{"-y", "@roychri/mcp-server-asana"}, Transport: "stdio"},
+				map[string]string{"READ_ONLY_MODE": "true"}),
+		},
+		tokenKey: "ASANA_ACCESS_TOKEN",
+		tokenEnv: []string{"ASANA_ACCESS_TOKEN", "ASANA_TOKEN", "ASANA_PAT"},
+	},
+	{
+		item: types.ConnectorItem{
+			ID: "monday", Name: "monday.com", Category: types.ConnectorCategoryProjectManagement, CategoryLabel: "Project Management",
+			Description: "Lets agents read monday.com boards, items, updates and columns through monday.com's official MCP server, in read-only mode.",
+			Icon:        "monday", Color: "red", ConfigMode: "mcp", Status: "unconfigured",
+			BaseURL:      "https://api.monday.com/v2",
+			TargetLabel:  "Default board ID (optional)",
+			Capabilities: []string{"Boards & Items", "Item Updates", "Columns & Groups", "Users & Teams"},
+			AgentAccess:  "Read-only (--read-only): boards, items, updates, columns and groups",
+		},
+		launchers: []types.MCPConfig{
+			{Enabled: true, Command: "npx", Args: []string{"-y", "@mondaydotcomorg/monday-api-mcp@latest", "--read-only", "true"}, Transport: "stdio"}, // the flag takes a value
+		},
+		tokenKey: "MONDAY_TOKEN", // the server reads MONDAY_<ARG>, not the monday_token its README names
+		tokenEnv: []string{"MONDAY_API_TOKEN", "MONDAY_TOKEN"},
+	},
+	// Linear and Notion already have catalog entries; these move them to working MCP servers (the
+	// @modelcontextprotocol packages they named were never published).
+	{
+		item: types.ConnectorItem{ID: "linear", AgentAccess: "Read and write as the API key allows (create it with the Read permission only for read-only): issues, projects, cycles and comments"},
+		// A stdio server with the API key: Linear's hosted server falls back to a browser sign-in
+		// when the key is rejected, which an unattended agent turn cannot complete.
+		launchers: []types.MCPConfig{
+			{Enabled: true, Command: "npx", Args: []string{"-y", "@tacticlaunch/mcp-linear"}, Transport: "stdio"},
+		},
+		tokenKey:   "LINEAR_API_TOKEN",
+		tokenEnv:   []string{"LINEAR_API_KEY", "LINEAR_API_TOKEN", "LINEAR_TOKEN"},
+		legacyArgs: []string{"@modelcontextprotocol/server-linear"},
+		restCheck:  true,
+	},
+	{
+		item: types.ConnectorItem{ID: "notion", AgentAccess: "Only the pages and databases shared with the integration; read-only when the integration has only the Read content capability"},
+		launchers: []types.MCPConfig{
+			{Enabled: true, Command: "npx", Args: []string{"-y", "@notionhq/notion-mcp-server"}, Transport: "stdio"},
+		},
+		tokenKey:   "NOTION_TOKEN",
+		tokenEnv:   []string{"NOTION_API_KEY", "NOTION_TOKEN", "NOTION_INTEGRATION_TOKEN"},
+		legacyArgs: []string{"@modelcontextprotocol/server-notion"},
+		restCheck:  true,
 	},
 }
 
@@ -191,12 +288,34 @@ func (m *Manager) ensureStackConnectorsLocked() {
 			}
 			mcp := s.launcherFor()
 			mcp.Enabled = enabled
-			if s.tokenKey != "" && oldEnv != nil && oldEnv[s.tokenKey] != "" {
-				mcp.Env[s.tokenKey] = oldEnv[s.tokenKey]
+			if tok := carriedToken(s.tokenKey, oldEnv); tok != "" {
+				mcp.Env[s.tokenKey] = tok
 			}
 			it.MCP = &mcp
 		}
 	}
+}
+
+// carriedToken is the credential an older launcher held: under tokenKey, or for a migrated
+// server under the secret variable it used instead (e.g. NOTION_API_KEY → NOTION_TOKEN).
+func carriedToken(tokenKey string, oldEnv map[string]string) string {
+	if tokenKey == "" || oldEnv == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(oldEnv[tokenKey]); v != "" {
+		return v
+	}
+	keys := make([]string, 0, len(oldEnv))
+	for k := range oldEnv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if v := strings.TrimSpace(oldEnv[k]); v != "" && secretKey(k) {
+			return v
+		}
+	}
+	return ""
 }
 
 // stackTokenLocked resolves a stack connector's credential: the saved token, its MCP env, then
@@ -251,6 +370,9 @@ func (m *Manager) runtimeMCPLocked(it *types.ConnectorItem) (types.MCPConfig, bo
 		}
 		if it.ID == "azure" && it.TargetEntity != "" {
 			mcp.Env["AZURE_SUBSCRIPTION_ID"] = it.TargetEntity
+		}
+		if !projectSettings(it, mcp.Env) {
+			return types.MCPConfig{}, false
 		}
 	} else {
 		// Catalog connectors keep credentials in their MCP env; fill a missing one from the item.
@@ -441,9 +563,15 @@ func (m *Manager) testStackConnector(ctx context.Context, it *types.ConnectorIte
 		}
 		_ = json.Unmarshal(out, &acct)
 		who, info = acct.User.Name, "subscription "+acct.Name
-	case "github":
-		// The REST check stays in TestGenericConnector; only the MCP server is probed here.
-		who, info = it.Username, "api.github.com"
+	case "clickup", "trello", "asana", "monday":
+		var problem string
+		if who, info, problem = m.checkProjectCredential(ctx, it, token); problem != "" {
+			return fail(problem)
+		}
+	default:
+		// GitHub, Linear, Notion: the REST check stays in TestGenericConnector; only the MCP
+		// server is probed here.
+		who, info = it.Username, strings.TrimPrefix(strings.TrimPrefix(it.BaseURL, "https://"), "http://")
 	}
 
 	msg := fmt.Sprintf("%s credentials work (%s).", it.Name, info)
@@ -479,12 +607,24 @@ func orName(name, fallback string) string {
 }
 
 func (m *Manager) getJSON(ctx context.Context, url, token string) (int, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	return m.doJSON(ctx, http.MethodGet, url, map[string]string{"Authorization": "Bearer " + token}, "")
+}
+
+// doJSON sends a request with the given headers (and body, when set) and returns the status and
+// up to 64 KiB of the answer.
+func (m *Manager) doJSON(ctx context.Context, method, url string, headers map[string]string, body string) (int, string, error) {
+	var rd io.Reader
+	if body != "" {
+		rd = strings.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, rd)
 	if err != nil {
 		return 0, "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	resp, err := m.client.Do(req)
 	if err != nil {
 		return 0, "", err

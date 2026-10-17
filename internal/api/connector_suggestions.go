@@ -55,7 +55,29 @@ var connectorRules = []struct {
 	{"cloudflare", func(p stack.Profile) string {
 		return when(p.Has("cloudflare"), "uses Cloudflare (Workers logs and analytics)")
 	}},
+	{"clickup", tracker("clickup", "links ClickUp tasks (read the acceptance criteria and comments)")},
+	{"trello", tracker("trello", "links Trello cards (read the card, checklists and comments)")},
+	{"asana", tracker("asana", "links Asana tasks (read the task and its comments)")},
+	{"monday", tracker("monday", "links monday.com boards (read the item and its updates)")},
+	{"linear", tracker("linear", "links Linear issues (read the issue and its comments)")},
+	{"notion", tracker("notion", "links Notion pages (read the specs they hold)")},
 }
+
+// tracker matches a repository that links the project-management tool id (stack.Profile.Trackers).
+func tracker(id, reason string) func(stack.Profile) string {
+	return func(p stack.Profile) string {
+		for _, t := range p.Trackers {
+			if t == id {
+				return reason
+			}
+		}
+		return ""
+	}
+}
+
+// npxConnectors start their MCP server through npx, so they need Node.js.
+var npxConnectors = map[string]bool{"azure": true, "cloudflare": true, "clickup": true, "trello": true, "asana": true,
+	"monday": true, "linear": true, "notion": true}
 
 func hasHost(p stack.Profile, host string) bool {
 	for _, h := range p.Hosts {
@@ -189,7 +211,7 @@ func (r *Router) connectorToolNeeds() []toolchain.Requirement {
 		"azure":   {Tool: "azure-cli", Reasons: []string{"Azure connector: signs in with `az login`"}},
 	}
 	var out []toolchain.Requirement
-	npx := false
+	var npx []string
 	for _, it := range r.cfg.ConnectorsManager.ListConnectors() {
 		if !it.Enabled || (it.Status != "connected" && it.Status != "configured") {
 			continue // only connectors the operator actually set up
@@ -197,10 +219,12 @@ func (r *Router) connectorToolNeeds() []toolchain.Requirement {
 		if req, ok := needs[it.ID]; ok {
 			out = append(out, req)
 		}
-		npx = npx || it.ID == "azure" || it.ID == "cloudflare"
+		if npxConnectors[it.ID] {
+			npx = append(npx, it.Name)
+		}
 	}
-	if npx {
-		out = append(out, toolchain.Requirement{Tool: "node", Reasons: []string{"Azure and Cloudflare connectors start through npx"}})
+	if len(npx) > 0 {
+		out = append(out, toolchain.Requirement{Tool: "node", Reasons: []string{"Started through npx: " + strings.Join(npx, ", ")}})
 	}
 	return out
 }

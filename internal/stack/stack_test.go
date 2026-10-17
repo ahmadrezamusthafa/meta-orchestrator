@@ -235,3 +235,22 @@ func writeFile(t *testing.T, root, rel, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestTrackerRefs(t *testing.T) {
+	root := writeRepo(t, map[string]string{
+		"README.md":                        "Board: https://trello.com/b/AbCd1234/payments\n",
+		".github/pull_request_template.md": "Task: https://app.clickup.com/t/86c2xyz\n",
+		"docs/notes.md":                    "https://app.asana.com/0/123/456 (not a place teams link their board)\n",
+		".git/logs/HEAD": "0000 1111 Dev <dev@example.com> 1700000000 +0700\tcheckout: moving from main to feature/ENG-1\n" +
+			"1111 2222 Dev <dev@example.com> 1700000001 +0700\tcommit: fix totals, see https://acme.monday.com/boards/123456\n",
+	})
+	if got := Detect(root, Quick).Trackers; strings.Join(got, ",") != "clickup,trello,monday" {
+		t.Fatalf("trackers = %v", got)
+	}
+	if got := Detect(writeRepo(t, map[string]string{"main.go": "package main"}), Quick).Trackers; len(got) != 0 {
+		t.Fatalf("a repository without links has no trackers: %v", got)
+	}
+	if got := recentReflog(root); strings.Contains(got, "dev@example.com") {
+		t.Fatal("only reflog messages are read, never the author")
+	}
+}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/connectors"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/stack"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
@@ -83,5 +84,18 @@ func TestConnectorSuggestionsAndBrief(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("an enabled Grafana connector recommends mcp-grafana")
+	}
+}
+
+func TestProjectManagementToolsAreSuggestedFromTheirLinks(t *testing.T) {
+	p := stack.Profile{Trackers: []string{"clickup", "notion"}}
+	var got []string
+	for _, rule := range connectorRules {
+		if rule.match(p) != "" {
+			got = append(got, rule.connector)
+		}
+	}
+	if strings.Join(got, ",") != "clickup,notion" {
+		t.Fatalf("suggested = %v", got)
 	}
 }

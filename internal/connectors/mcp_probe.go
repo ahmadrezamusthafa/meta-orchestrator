@@ -58,12 +58,16 @@ func ProbeMCP(ctx context.Context, cfg types.MCPConfig) (*ProbeResult, error) {
 	}
 	stderr := &tailBuffer{max: 4 << 10}
 	cmd.Stderr = stderr
+	ownProcessGroup(cmd)
+	cmd.Cancel = func() error { killGroup(cmd); return nil }
+	// A server started through npx can outlive npx and hold the pipes open; never wait on it.
+	cmd.WaitDelay = 3 * time.Second
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("could not start `%s`: %w", cfg.Command, err)
 	}
 	defer func() {
 		_ = stdin.Close()
-		_ = cmd.Process.Kill()
+		killGroup(cmd)
 		_ = cmd.Wait()
 	}()
 

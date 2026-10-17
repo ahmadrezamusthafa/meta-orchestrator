@@ -8,33 +8,43 @@ import (
 	"strings"
 )
 
-// gitHosts reads the hosts of the repository's remotes (github.com, bitbucket.org, …) from its git
-// config without running git. A worktree's .git file points at its main repository's config.
-func gitHosts(root string) []string {
+// gitDirs returns the repository's git folder and the folder holding its shared config (they
+// differ for a worktree, whose .git file points at a folder inside its main repository).
+func gitDirs(root string) (gitdir, common string, ok bool) {
 	gitPath := filepath.Join(root, ".git")
 	st, err := os.Stat(gitPath)
 	if err != nil {
+		return "", "", false
+	}
+	if st.IsDir() {
+		return gitPath, gitPath, true
+	}
+	b, err := os.ReadFile(gitPath)
+	if err != nil {
+		return "", "", false
+	}
+	gitdir = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(b)), "gitdir:"))
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(root, gitdir)
+	}
+	common = gitdir
+	if c, err := os.ReadFile(filepath.Join(gitdir, "commondir")); err == nil {
+		common = strings.TrimSpace(string(c))
+		if !filepath.IsAbs(common) {
+			common = filepath.Join(gitdir, common)
+		}
+	}
+	return gitdir, common, true
+}
+
+// gitHosts reads the hosts of the repository's remotes (github.com, bitbucket.org, …) from its git
+// config without running git.
+func gitHosts(root string) []string {
+	_, common, ok := gitDirs(root)
+	if !ok {
 		return nil
 	}
-	config := filepath.Join(gitPath, "config")
-	if !st.IsDir() {
-		b, err := os.ReadFile(gitPath)
-		if err != nil {
-			return nil
-		}
-		gitdir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(b)), "gitdir:"))
-		if !filepath.IsAbs(gitdir) {
-			gitdir = filepath.Join(root, gitdir)
-		}
-		common := gitdir
-		if c, err := os.ReadFile(filepath.Join(gitdir, "commondir")); err == nil {
-			common = strings.TrimSpace(string(c))
-			if !filepath.IsAbs(common) {
-				common = filepath.Join(gitdir, common)
-			}
-		}
-		config = filepath.Join(common, "config")
-	}
+	config := filepath.Join(common, "config")
 	f, err := os.Open(config)
 	if err != nil {
 		return nil

@@ -141,12 +141,19 @@ Agents can read live state from third-party services through MCP servers. Each c
 | Grafana | `mcp-grafana`, else Docker `mcp/grafana` | Dashboards, alerts, Prometheus/Loki/Tempo queries (Viewer role) | Service account token |
 | Azure | `@azure/mcp` with `--read-only` | Resources and Container Apps | `az login` |
 | Cloudflare | Cloudflare Observability server via `mcp-remote` | Workers logs and analytics | Read-only API token |
-| Jira, Confluence, Bitbucket, GitLab, Slack, Linear, Notion | as configured | as configured | as configured |
+| ClickUp | `@hauptsache.net/clickup-mcp` with `CLICKUP_MCP_MODE=read` | Tasks, comments, lists, spaces, docs | Personal API token (`pk_…`) + workspace ID |
+| Trello | `@delorenj/mcp-server-trello` | Boards, lists, cards, checklists, comments (read-only via the token's `scope=read`) | API key + token |
+| Asana | `@roychri/mcp-server-asana` with `READ_ONLY_MODE=true` | Tasks, projects, sections, comments, status updates | Personal access token |
+| monday.com | `@mondaydotcomorg/monday-api-mcp` with `--read-only` | Boards, items, updates, columns | API token |
+| Linear | `@tacticlaunch/mcp-linear` | Issues, projects, cycles, comments (read-only when the key has only the Read permission) | Personal API key |
+| Notion | `@notionhq/notion-mcp-server` | Pages and databases shared with the integration | Internal integration secret (Read content) |
+| Jira, Confluence, Bitbucket, GitLab, Slack | as configured | as configured | as configured |
 
-* **Suggested from the stack:** a GitHub/GitLab/Bitbucket remote, GitHub Actions, OpenTelemetry/Grafana, Azure Container Apps and Cloudflare each suggest their connector. Suggestions appear in *Tool Hub* and *Task → Workspace & Repos*, and **Connect** opens the connector's setup with step-by-step instructions.
+* **Suggested from the stack:** a GitHub/GitLab/Bitbucket remote, GitHub Actions, OpenTelemetry/Grafana, Azure Container Apps and Cloudflare each suggest their connector. Project-management tools are suggested from the links a repository already has: ClickUp, Trello, Asana, monday.com, Linear and Notion URLs (and ClickUp `CU-…` task IDs) in the README, CONTRIBUTING, PR/MR templates, CI workflows or recent commit and branch names in the reflog. Git is not run, and only reflog messages are read, never authors. Suggestions appear in *Tool Hub* and *Task → Workspace & Repos*, and **Connect** opens the connector's setup with step-by-step instructions.
 * **Into every agent turn:** enabled connectors that are connected or configured, and have their credentials, are passed to the Claude CLI with `--mcp-config` in a private per-turn file (mode 0600 in a 0700 folder) that is deleted when the turn ends. The agent brief lists them as `mcp__<id>__*` with their access, plus the suggested connectors that are not connected yet. Tool calls that write still ask the operator.
-* **Real tests:** *Test MCP* on a stack connector checks its credential against the service's API, then starts the MCP server, performs the `initialize` handshake and lists its tools. The periodic ping only checks credentials.
+* **Real tests:** *Test MCP* on a stack connector checks its credential against the service's API (ClickUp also lists the workspaces the token reaches, and Trello warns when the token can write), then starts the MCP server, performs the `initialize` handshake and lists its tools. The periodic ping only checks credentials.
 * **Secrets:** API responses and WebSocket events carry masked credentials only (`••••last4`). Saving a masked value keeps the stored secret, and `connectors.json`, `.mcp.json` and `.sdlc/mcp.json` are written with mode 0600.
+* **Migration:** Linear and Notion used to name `@modelcontextprotocol/server-linear` and `server-notion`, which were never published. They now start `@tacticlaunch/mcp-linear` and Notion's official server, and the saved token carries over.
 * **Launchers:** the native MCP server is used once installed (Tool Hub offers `go install` for `github-mcp-server` and `mcp-grafana`, and Homebrew for the Azure CLI); otherwise Docker is used. A command you customise is never replaced.
 
 **Adding a connector** means adding one `stackConnectors` entry (`internal/connectors/stack_connectors.go`) and, for a suggestion, one `connectorRules` entry (`internal/api/connector_suggestions.go`).
