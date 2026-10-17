@@ -57,6 +57,8 @@ type RouterConfig struct {
 	// Toolchain checks and installs the tools the repositories' stacks need. Nil checks this
 	// machine (toolchain.New).
 	Toolchain *toolchain.Toolchain
+	// ProfileRegistry holds the stage roles. Nil loads RootDir/configs/profiles.json.
+	ProfileRegistry *registry.ProfileRegistry
 }
 
 // Router provides the HTTP REST API handler for the Mission Control frontend.
@@ -97,6 +99,11 @@ type Router struct {
 	lastPersisted []byte
 	stop          chan struct{}
 	closeOnce     sync.Once
+
+	toolMgrOnce  sync.Once
+	toolMgr      *tools.ToolManager // Tool Hub: the tools the orchestrator itself needs
+	profilesOnce sync.Once
+	profiles     *registry.ProfileRegistry // stage roles (configs/profiles.json)
 }
 
 // NewRouter constructs a new REST API router.

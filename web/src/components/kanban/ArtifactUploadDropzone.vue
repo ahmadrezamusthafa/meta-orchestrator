@@ -11,13 +11,13 @@ const emit = defineEmits<{
   (e: 'file-selected', file: File): void
 }>()
 
-const fileName = ref<string | null>(null)
+const fileNames = ref<string[]>([])
 
 function onFileChange(e: Event) {
   const target = e.target as HTMLInputElement
-  if (target.files && target.files[0]) {
-    fileName.value = target.files[0].name
-    emit('file-selected', target.files[0])
+  for (const file of Array.from(target.files || [])) {
+    if (!fileNames.value.includes(file.name)) fileNames.value.push(file.name)
+    emit('file-selected', file)
   }
 }
 </script>
@@ -39,17 +39,18 @@ function onFileChange(e: Event) {
     </div>
 
     <div>
-      <label class="block text-[11px] text-slate-400 mb-1">External TASK_PLAN.md or PRD.md (Optional)</label>
+      <label class="block text-[11px] text-slate-400 mb-1">PRD.md, TECH_DOC.md or TASK_PLAN.md for the stages this slice skips (Optional)</label>
       <label
         class="border border-dashed border-slate-700 hover:border-emerald-500/80 rounded-lg p-3 flex items-center justify-center gap-2 cursor-pointer bg-slate-950/50 transition-colors"
       >
         <UploadCloud class="w-4 h-4 text-slate-400" />
         <span class="text-xs text-slate-300">
-          {{ fileName || 'Click or drag external markdown plan here' }}
+          {{ fileNames.length ? fileNames.join(', ') : 'Click to add markdown documents' }}
         </span>
         <input
           type="file"
           accept=".md,.markdown"
+          multiple
           @change="onFileChange"
           class="hidden"
         />

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 )
 
@@ -68,6 +69,22 @@ func (r *ProfileRegistry) GetProfile(roleOrID string) (*AgentProfile, error) {
 	return p, nil
 }
 
+// ListProfiles returns every profile once (they are indexed by both role and ID), sorted by ID.
+func (r *ProfileRegistry) ListProfiles() []*AgentProfile {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	seen := map[*AgentProfile]bool{}
+	var out []*AgentProfile
+	for _, p := range r.profiles {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 // CheckPermission verifies whether a profile is allowed to execute a given skill.
 func (r *ProfileRegistry) CheckPermission(roleOrID string, skillName string) (bool, error) {
 	profile, err := r.GetProfile(roleOrID)
@@ -95,4 +112,20 @@ func (r *ProfileRegistry) CheckPermission(roleOrID string, skillName string) (bo
 	}
 
 	return false, nil
+}
+
+// IsDenied reports whether the profile explicitly denies skillName (by name or "*"). Unlike
+// CheckPermission it does not treat "not in allowed_skills" as a denial: allowed_skills names
+// abstract capabilities (read_ast_node, …), not installed skills, so only denies are enforceable.
+func (r *ProfileRegistry) IsDenied(roleOrID string, skillName string) bool {
+	profile, err := r.GetProfile(roleOrID)
+	if err != nil {
+		return false
+	}
+	for _, denied := range profile.DeniedSkills {
+		if denied == skillName || denied == "*" {
+			return true
+		}
+	}
+	return false
 }

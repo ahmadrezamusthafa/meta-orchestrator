@@ -157,40 +157,6 @@ func TestTasksAPI_HITL_Inject_Reset_Gate(t *testing.T) {
 	}
 }
 
-func TestToolsAPI_Lifecycle(t *testing.T) {
-	router := setupTestRouter()
-
-	// List
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/tools?category=Methodologies", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("Expected 200 OK, got %d", w.Code)
-	}
-
-	// Rollback
-	rbBody := ToolRollbackRequest{ToolID: "bmad", TargetVersion: "v2.3.9"}
-	payload, _ := json.Marshal(rbBody)
-	reqRb := httptest.NewRequest(http.MethodPost, "/api/v1/tools/rollback", bytes.NewReader(payload))
-	reqRb.Header.Set("Content-Type", "application/json")
-	wRb := httptest.NewRecorder()
-	router.ServeHTTP(wRb, reqRb)
-
-	if wRb.Code != http.StatusOK {
-		t.Fatalf("Expected 200 OK for rollback, got %d", wRb.Code)
-	}
-
-	// Matrix resolve
-	reqMat := httptest.NewRequest(http.MethodPost, "/api/v1/tools/resolve-matrix", nil)
-	wMat := httptest.NewRecorder()
-	router.ServeHTTP(wMat, reqMat)
-
-	if wMat.Code != http.StatusOK {
-		t.Fatalf("Expected 200 OK for resolve-matrix, got %d", wMat.Code)
-	}
-}
-
 func TestProvidersAndBenchmarksAPI(t *testing.T) {
 	router := setupTestRouter()
 

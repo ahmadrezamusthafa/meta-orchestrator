@@ -474,16 +474,59 @@ export interface OrchestratorEvent {
   payload: any
 }
 
+export interface ToolManualInstall {
+  docs: string
+  commands?: string[]
+  note?: string
+}
+
+/** A tool the orchestrator itself relies on (configs/tools.json), as its health check found it here. */
 export interface ToolDTO {
   id: string
   name: string
   category: string
-  current_version: string
-  latest_version: string
-  best_fit_version: string
-  status: 'HEALTHY' | 'UPDATE_AVAILABLE' | 'ERROR' | 'NOT_INSTALLED'
   description: string
-  past_versions: string[]
+  status: 'INSTALLED' | 'NOT_INSTALLED' | 'ERROR'
+  installed_version?: string
+  path?: string
+  problem?: string
+  health_check_cmd: string
+  required_runtimes?: Record<string, string>
+  /** Set when the toolchain catalog can install it (one click where the package manager allows). */
+  toolchain_id?: string
+  install: ToolManualInstall
+  job?: ToolchainJob
+  checked_at: string
+}
+
+/** POST /tools/install answer: a toolchain job (202) or how to install it yourself (501). */
+export type ToolInstallResult =
+  | { kind: 'job'; job: ToolchainJob }
+  | { kind: 'manual'; reason: string; install: ToolManualInstall }
+
+export interface ToolRuntimeCheck {
+  runtime: string
+  constraint: string
+  found?: string
+  satisfied: boolean
+  problem?: string
+}
+
+export interface ToolCompatibility {
+  tool_id: string
+  name: string
+  status: ToolDTO['status']
+  installed_version?: string
+  runtimes: ToolRuntimeCheck[]
+  compatible: boolean
+}
+
+export interface ToolMatrix {
+  host_os: string
+  host_arch: string
+  matrix_status: 'compatible' | 'conflicts'
+  tools: ToolCompatibility[]
+  conflicts: string[]
 }
 
 export interface ProviderDTO {
@@ -753,6 +796,30 @@ export interface HookItemDTO {
   type: string
   command: string
   policy: string
+  /** .sdlc/hooks.json or the convention script's path */
+  source?: string
+}
+
+export interface MethodItemDTO {
+  id: string
+  name: string
+  description: string
+  execution_pattern: string
+  allowed_roles: string[]
+  max_consecutive_iterations: number
+}
+
+export interface ProfileItemDTO {
+  id: string
+  name: string
+  role: string
+  description: string
+  allowed_skills: string[]
+  denied_skills: string[]
+  system_prompt_template: string
+  max_token_budget: number
+  /** Pipeline stages that run with this role. */
+  stages: string[]
 }
 
 export interface RegistryDTO {
@@ -762,10 +829,23 @@ export interface RegistryDTO {
     source: string
     format: string
     description: string
+    location?: string
+    enabled?: boolean
     repo_url?: string
   }>
   prompts: PromptItemDTO[]
   hooks: HookItemDTO[]
+  methods?: MethodItemDTO[]
+  profiles?: ProfileItemDTO[]
+  /** Registry files that exist but could not be read. */
+  problems?: string[]
+}
+
+/** A repository a draft task likely touches (POST /projects/{id}/suggest-repos). */
+export interface RepoSuggestion {
+  name: string
+  score: number
+  reasons: string[]
 }
 
 export type ProjectRole = 'frontend' | 'backend' | 'automation-test' | 'contracts' | 'artifact' | 'infrastructure' | 'other'
@@ -1074,6 +1154,17 @@ export interface UniversalSkillDTO {
   args?: string[]
   env?: Record<string, string>
   metadata?: Record<string, any>
+}
+
+/** POST /skills/{name}/run: one test run of a command-based skill. */
+export interface SkillRunResult {
+  skill: string
+  role: string
+  ok: boolean
+  exit_code: number
+  output: string
+  error?: string
+  duration_ms: number
 }
 
 export interface SkillSourceDTO {

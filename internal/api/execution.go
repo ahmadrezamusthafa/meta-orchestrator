@@ -268,7 +268,7 @@ func (r *Router) executeStage(run *stageRun) {
 		"▶ Running %s — %s. Routed by %s: %s", stageLabel(task.CurrentStageID), triggerText(run.trigger), decision.Strategy, decision.Reasoning)})
 
 	if r.budgetTracker != nil {
-		r.budgetTracker.SetTaskBudget(taskID, decision.TokenBudget)
+		r.budgetTracker.SetTaskBudget(taskID, r.stageTokenBudget(task.CurrentStageID, decision.TokenBudget))
 	}
 	if r.telemetry != nil {
 		r.telemetry.ttr.StartRun(taskRunMeta(task, decision, complexity, taskType))
@@ -281,7 +281,7 @@ func (r *Router) executeStage(run *stageRun) {
 	canContinue := sessionID != "" && c.sessionStage == task.CurrentStageID
 	r.console.mu.Unlock()
 
-	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method) + r.stackBrief(task) + r.connectorsBrief(task)}}, history...)
+	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method) + r.stageContext(task) + r.stackBrief(task) + r.connectorsBrief(task)}}, history...)
 	message := run.trigger == "message"
 	rejected := run.trigger == "gate_rejected"
 	evidenceOnly := run.trigger == "evidence" // record test evidence for the implementation already done

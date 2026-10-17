@@ -1,12 +1,12 @@
 import { useToolchainStore } from '../stores/toolchain'
 import type { 
-  Task, TaskProcessDTO, ToolDTO, ProviderDTO, ProviderUsage, ProviderUsageWindow, ProviderQuota, ProviderConnection, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
+  Task, TaskProcessDTO, ToolDTO, ToolInstallResult, ToolMatrix, ProviderDTO, ProviderUsage, ProviderUsageWindow, ProviderQuota, ProviderConnection, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
   Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse,
   ConnectorsConfig, JiraConfig, ConfluenceConfig, JiraIssueDTO, ImportJiraIssueRequest,
   JiraSyncConfig, JiraSyncSettings,
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
-  UniversalSkillDTO, SkillSourceDTO, CheckPathCompatibilityResponse,
+  UniversalSkillDTO, SkillSourceDTO, SkillRunResult, RepoSuggestion, CheckPathCompatibilityResponse,
   PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
   OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO, RoutePreviewDTO, TierAssignmentDTO,
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
@@ -367,27 +367,26 @@ export const api = {
     return res.json()
   },
 
-  async installTool(toolId: string, version: string): Promise<any> {
+  async installTool(toolId: string): Promise<ToolInstallResult> {
     const res = await fetch(`${BASE_URL}/tools/install`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tool_id: toolId, version })
+      body: JSON.stringify({ tool_id: toolId })
     })
-    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to install tool')
+    const body = await res.json().catch(() => null)
+    if (res.status === 501 && body?.install) return { kind: 'manual', reason: body.error, install: body.install }
+    if (res.status === 409 && body?.job) return { kind: 'job', job: body.job } // already installing: follow it
+    if (!res.ok) throw new Error(body?.error || 'Failed to install tool')
+    return { kind: 'job', job: body }
+  },
+
+  async recheckTools(): Promise<ToolDTO[]> {
+    const res = await fetch(`${BASE_URL}/tools/recheck`, { method: 'POST' })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to re-check tools')
     return res.json()
   },
 
-  async rollbackTool(toolId: string, targetVersion: string): Promise<any> {
-    const res = await fetch(`${BASE_URL}/tools/rollback`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tool_id: toolId, target_version: targetVersion })
-    })
-    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to roll back tool')
-    return res.json()
-  },
-
-  async resolveBestFitMatrix(): Promise<any> {
+  async resolveBestFitMatrix(): Promise<ToolMatrix> {
     const res = await fetch(`${BASE_URL}/tools/resolve-matrix`, { method: 'POST' })
     if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to resolve tool matrix')
     return res.json()
@@ -532,6 +531,30 @@ export const api = {
     })
     if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to save workflow')
     return res.json()
+  },
+
+  /** Runs a command-based skill once in the project root as a stage role. */
+  async runSkill(name: string, role: string): Promise<SkillRunResult> {
+    const res = await fetch(`${BASE_URL}/skills/${encodeURIComponent(name)}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role })
+    })
+    const body = await res.json().catch(() => null)
+    if (res.status === 403 && body?.skill) return body // refused for the role: show why
+    if (!res.ok) throw new Error(body?.error || `Skill run failed (HTTP ${res.status})`)
+    return body
+  },
+
+  /** Ranks the project's repositories by how strongly a draft task points at them. */
+  async suggestRepos(projectId: string, title: string, description: string): Promise<RepoSuggestion[]> {
+    const res = await fetch(`${BASE_URL}/projects/${encodeURIComponent(projectId)}/suggest-repos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, description })
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to suggest repositories')
+    return (await res.json()).suggested_repos
   },
 
   async getRegistries(): Promise<RegistryDTO> {

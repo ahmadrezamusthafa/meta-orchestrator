@@ -43,3 +43,19 @@ func TestProfileRegistryAndRBAC(t *testing.T) {
 		t.Errorf("expected docker_compose_up to be ALLOWED for devops_superpower")
 	}
 }
+
+func TestProfileIsDeniedOnlyHonoursExplicitDenies(t *testing.T) {
+	reg := NewProfileRegistry()
+	if err := reg.LoadFromFile(filepath.Join("..", "..", "configs", "profiles.json")); err != nil {
+		t.Fatal(err)
+	}
+	if !reg.IsDenied("lead_developer", "execute_shell_host") {
+		t.Error("an explicit deny must be reported")
+	}
+	if reg.IsDenied("lead_developer", "bmad-dev-story") {
+		t.Error("a skill absent from allowed_skills is not denied")
+	}
+	if reg.IsDenied("no_such_role", "anything") {
+		t.Error("an unknown role denies nothing")
+	}
+}

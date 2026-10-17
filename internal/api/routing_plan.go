@@ -190,7 +190,7 @@ func (r *Router) validatePlan(plan []types.StageRoute) ([]types.StageRoute, erro
 			return nil, fmt.Errorf("model %q for %s is not enabled in your router chain", s.Model, s.StageID)
 		}
 		var err error
-		if s.Skills, err = normalizeStageSkills(s.StageID, s.Skills, skills); err != nil {
+		if s.Skills, err = r.normalizeStageSkills(s.StageID, s.Skills, skills); err != nil {
 			return nil, err
 		}
 		if s.Evidence, err = normalizeStageEvidence(s.StageID, s.Evidence, skills); err != nil {

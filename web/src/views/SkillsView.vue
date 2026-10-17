@@ -7,6 +7,7 @@ import { api } from '../services/api'
 import type { UniversalSkillDTO, PromptItemDTO, HookItemDTO, PromptSourceDTO } from '../types'
 import SkillCard from '../components/skills/SkillCard.vue'
 import CompatibilityModal from '../components/skills/CompatibilityModal.vue'
+import SkillRunModal from '../components/skills/SkillRunModal.vue'
 import RegisterSourceModal from '../components/skills/RegisterSourceModal.vue'
 import RegisterPromptModal from '../components/registries/RegisterPromptModal.vue'
 import PromptTemplatesTab from '../components/registries/PromptTemplatesTab.vue'
@@ -72,6 +73,7 @@ const selectedCompat = ref<'all' | 'compatible' | 'issues'>('all')
 
 // Modals
 const activeSkillModal = ref<UniversalSkillDTO | null>(null)
+const runSkillModal = ref<UniversalSkillDTO | null>(null)
 const showRegisterModal = ref(false)
 const showRegisterPromptModal = ref(false)
 const showAddRemoteModal = ref(false)
@@ -612,6 +614,7 @@ async function handleRescan() {
             :skill="s"
             @toggle="handleToggleSkill(s, $event)"
             @inspect-compatibility="activeSkillModal = s"
+            @test-run="runSkillModal = s"
           />
         </div>
       </div>
@@ -824,6 +827,8 @@ async function handleRescan() {
       @close="activeSkillModal = null"
       @toggle="handleToggleSkill(activeSkillModal, $event); activeSkillModal.enabled = $event"
     />
+
+    <SkillRunModal v-if="runSkillModal" :skill="runSkillModal" @close="runSkillModal = null" />
 
     <RegisterSourceModal
       v-if="showRegisterModal"

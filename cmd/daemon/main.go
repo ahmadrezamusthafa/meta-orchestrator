@@ -19,7 +19,6 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/localaccess"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/toolchain"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
@@ -74,7 +73,9 @@ func main() {
 	// 2. Registries Initialization
 	workflowReg := fsm.NewWorkflowRegistry()
 	profileReg := registry.NewProfileRegistry()
-	_ = profileReg.LoadFromFile("configs/profiles.json")
+	if err := profileReg.LoadFromFile(filepath.Join(cwd, "configs", "profiles.json")); err != nil {
+		fmt.Printf("[Profiles] Stage roles not loaded: %v\n", err)
+	}
 
 	promptReg := registry.NewPromptRegistry(cwd)
 	skillResolver := skills.NewMultiSourceSkillResolver(cwd)
@@ -85,18 +86,17 @@ func main() {
 	fmt.Printf("[Projects] Loaded %d registered multi-repo workspaces\n", len(projectMgr.List()))
 
 	// 3. Tool Lifecycle Manager
-	toolMgr := tools.NewToolManager("", func(toolID string, stage string, pct int, msg string) {
-		fmt.Printf("[Tool Progress] [%s] %s (%d%%): %s\n", toolID, stage, pct, msg)
-	})
-	fmt.Printf("[Tools] Registered %d installable packages\n", len(toolMgr.ListPackages()))
+	toolchainSvc := toolchain.New()
+	toolMgr, err := tools.Load(filepath.Join(cwd, "configs", "tools.json"), toolchainSvc)
+	if err != nil {
+		fmt.Printf("[Tools] Tool Hub manifest not loaded: %v\n", err)
+	}
+	fmt.Printf("[Tools] Tool Hub tracks %d tools\n", toolMgr.Count())
 
 	// 4. WebSocket Streaming Hub
 	wsHub := ws.NewHub()
 	go wsHub.Run()
 
-	// 6. Router & Task Profiler
-	taskProfiler := router.NewTaskProfiler(cfg, cwd)
-	_ = taskProfiler
 	_ = skillResolver
 	_ = hookEngine
 
@@ -129,6 +129,8 @@ func main() {
 		TaskStore:         taskStore,
 		WorkflowReg:       workflowReg,
 		ToolManager:       toolMgr,
+		Toolchain:         toolchainSvc,
+		ProfileRegistry:   profileReg,
 		ArtifactManager:   artifactMgr,
 		ConfigResolver:    configResolver,
 		ProjectManager:    projectMgr,
