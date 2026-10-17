@@ -3,7 +3,7 @@ package circuitbreaker
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -13,90 +13,105 @@ import (
 // FrustrationListener is invoked when the breaker trips.
 type FrustrationListener func(payload *types.FrustrationHaltPayload)
 
-// CircuitBreaker monitors task iterations and halts repetitive loops.
+// CircuitBreaker halts a task that keeps failing the same way.
 type CircuitBreaker struct {
-	mu           sync.Mutex
-	maxThreshold int
-	failures     map[string]*failureRecord
-	listener     FrustrationListener
+	mu               sync.Mutex
+	defaultThreshold int
+	failures         map[string]*failureRecord
+	listener         FrustrationListener
 }
 
 type failureRecord struct {
 	consecutiveCount int
 	lastSignature    string
-	lastStackTrace   string
 }
 
-// NewCircuitBreaker creates a circuit breaker with specified failure threshold.
-func NewCircuitBreaker(threshold int, listener FrustrationListener) *CircuitBreaker {
-	if threshold <= 0 {
-		threshold = 3
+// NewCircuitBreaker creates a circuit breaker. defaultThreshold applies when RecordFailure is not
+// given one of its own; a non-positive value means 3.
+func NewCircuitBreaker(defaultThreshold int, listener FrustrationListener) *CircuitBreaker {
+	if defaultThreshold <= 0 {
+		defaultThreshold = 3
 	}
 	return &CircuitBreaker{
-		maxThreshold: threshold,
-		failures:     make(map[string]*failureRecord),
-		listener:     listener,
+		defaultThreshold: defaultThreshold,
+		failures:         make(map[string]*failureRecord),
+		listener:         listener,
 	}
 }
 
-// ComputeSignature calculates a stable SHA-256 hash of error details and tool calls.
-func ComputeSignature(toolName string, rawArgs string, errorMessage string, exitCode int) string {
-	hasher := sha256.New()
-	normError := strings.TrimSpace(errorMessage)
-	normArgs := strings.TrimSpace(rawArgs)
-	hasher.Write([]byte(fmt.Sprintf("%s:%s:%d:%s", toolName, normArgs, exitCode, normError)))
-	return hex.EncodeToString(hasher.Sum(nil))
+// volatile matches the parts of an error message that change between otherwise identical failures:
+// UUIDs, hex ids, timestamps, durations, line:column positions and other numbers.
+var volatile = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	{regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`), "<id>"},
+	{regexp.MustCompile(`\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}:\d{2}(\.\d+)?(z|[+-]\d{2}:?\d{2})?`), "<time>"},
+	{regexp.MustCompile(`\b\d{1,2}:\d{2}:\d{2}(\.\d+)?\b`), "<time>"},
+	{regexp.MustCompile(`\b[0-9a-f]{7,}\b`), "<hex>"},
+	{regexp.MustCompile(`\b\d+(\.\d+)?\s*(ns|µs|us|ms|s|m|h|sec|secs|seconds|minutes)\b`), "<dur>"},
+	{regexp.MustCompile(`\d+`), "<n>"},
 }
 
-// RecordFailure records a failure instance. If threshold is reached, trips breaker.
-func (cb *CircuitBreaker) RecordFailure(taskID string, stageID string, signature string, stackTrace string) (bool, *types.FrustrationHaltPayload) {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
+// NormalizeError strips the volatile bits of an error message so repeats of one failure compare equal.
+func NormalizeError(msg string) string {
+	s := strings.ToLower(strings.TrimSpace(msg))
+	for _, v := range volatile {
+		s = v.re.ReplaceAllString(s, v.repl)
+	}
+	return strings.Join(strings.Fields(s), " ")
+}
 
+// ComputeSignature is a stable hash of where a failure happened and its normalized error.
+func ComputeSignature(stageID, errorMessage string) string {
+	sum := sha256.Sum256([]byte(stageID + "\x00" + NormalizeError(errorMessage)))
+	return hex.EncodeToString(sum[:])
+}
+
+// RecordFailure records a failure. A different signature than the previous failure restarts the
+// count. When the count reaches threshold (non-positive uses the default) the breaker trips: the
+// listener is called, the count restarts, and the halt payload is returned.
+func (cb *CircuitBreaker) RecordFailure(taskID, stageID, signature, detail string, threshold int) (bool, *types.FrustrationHaltPayload) {
+	if threshold <= 0 {
+		threshold = cb.defaultThreshold
+	}
+	cb.mu.Lock()
 	rec, exists := cb.failures[taskID]
-	if !exists {
-		rec = &failureRecord{
-			consecutiveCount: 1,
-			lastSignature:    signature,
-			lastStackTrace:   stackTrace,
-		}
+	if !exists || rec.lastSignature != signature {
+		rec = &failureRecord{lastSignature: signature}
 		cb.failures[taskID] = rec
-	} else {
-		if rec.lastSignature == signature {
-			rec.consecutiveCount++
-		} else {
-			// Different error signature, reset consecutive counter
-			rec.consecutiveCount = 1
-			rec.lastSignature = signature
-		}
-		rec.lastStackTrace = stackTrace
 	}
-
-	if rec.consecutiveCount >= cb.maxThreshold {
-		payload := &types.FrustrationHaltPayload{
-			TaskID:           taskID,
-			StageID:          stageID,
-			ConsecutiveFails: rec.consecutiveCount,
-			ErrorSignature:   signature,
-			LastStackTrace:   stackTrace,
-		}
-		if cb.listener != nil {
-			cb.listener(payload)
-		}
-		return true, payload
+	rec.consecutiveCount++
+	if rec.consecutiveCount < threshold {
+		cb.mu.Unlock()
+		return false, nil
 	}
-
-	return false, nil
+	payload := &types.FrustrationHaltPayload{
+		TaskID:           taskID,
+		StageID:          stageID,
+		ConsecutiveFails: rec.consecutiveCount,
+		ErrorSignature:   signature,
+		LastStackTrace:   detail,
+	}
+	delete(cb.failures, taskID) // the operator's next attempt starts a fresh count
+	cb.mu.Unlock()
+	if cb.listener != nil {
+		cb.listener(payload)
+	}
+	return true, payload
 }
 
-// RecordSuccess clears failure count for a task upon a successful iteration.
-func (cb *CircuitBreaker) RecordSuccess(taskID string) {
+// Count returns the consecutive identical failures recorded for a task.
+func (cb *CircuitBreaker) Count(taskID string) int {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-	delete(cb.failures, taskID)
+	if rec, ok := cb.failures[taskID]; ok {
+		return rec.consecutiveCount
+	}
+	return 0
 }
 
-// Reset clears state for a specific task.
+// Reset clears the failure count of a task, after a success or an operator decision.
 func (cb *CircuitBreaker) Reset(taskID string) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
