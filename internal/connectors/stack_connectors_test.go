@@ -207,6 +207,118 @@ func TestBrowsersOnlySeeMaskedSecrets(t *testing.T) {
 	}
 }
 
+func TestMCPExportForBrowsersIsMasked(t *testing.T) {
+	isolate(t, "npx")
+	m := newTestManager(t, nil)
+	cf, _ := m.GetConnector("cloudflare")
+	cp := *cf
+	cp.Enabled, cp.Status, cp.APIToken = true, "configured", "cf_token_abcdef123456"
+	if _, err := m.UpdateConnector(cp); err != nil {
+		t.Fatal(err)
+	}
+	sl, _ := m.GetConnector("slack")
+	cp = *sl
+	cp.Enabled = true
+	cp.MCP = &types.MCPConfig{Enabled: true, Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-slack"}, Transport: "stdio",
+		Env: map[string]string{"SLACK_BOT_TOKEN": "xoxb-slack-secret-7890", "SLACK_TEAM_ID": "T123"}}
+	if _, err := m.UpdateConnector(cp); err != nil {
+		t.Fatal(err)
+	}
+
+	shown := mustJSON(m.MaskedMCPExportConfig())
+	for _, secret := range []string{"cf_token_abcdef123456", "xoxb-slack-secret-7890"} {
+		if strings.Contains(shown, secret) {
+			t.Fatalf("the browser export leaks %q: %s", secret[:6], shown)
+		}
+	}
+	if !strings.Contains(shown, "T123") || !strings.Contains(shown, "Authorization: Bearer ••••3456") {
+		t.Fatalf("only credentials are masked: %s", shown)
+	}
+
+	// The internal export (skills, .mcp.json) keeps live values, on copies of the saved settings.
+	live := m.GetMCPExportConfig()["mcpServers"].(map[string]interface{})
+	env := live["slack"].(map[string]interface{})["env"].(map[string]string)
+	if env["SLACK_BOT_TOKEN"] != "xoxb-slack-secret-7890" {
+		t.Fatalf("live export = %+v", env)
+	}
+	env["SLACK_BOT_TOKEN"] = "changed"
+	if saved, _ := m.GetConnector("slack"); saved.MCP.Env["SLACK_BOT_TOKEN"] != "xoxb-slack-secret-7890" {
+		t.Fatal("the export must not alias the saved connector")
+	}
+}
+
+func TestMaskEnvCoversCommonCredentialNames(t *testing.T) {
+	env := map[string]string{"ASANA_PAT": "1/12345:abcdefgh", "OPENAPI_MCP_HEADERS": `{"Authorization":"Bearer ntn_abcdefgh"}`,
+		"SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/T/B/xyzxyzxyz", "PATH": "/usr/bin", "SLACK_TEAM_ID": "T1"}
+	got := MaskEnv(env)
+	for _, k := range []string{"ASANA_PAT", "OPENAPI_MCP_HEADERS", "SLACK_WEBHOOK_URL"} {
+		if !masked(got[k]) {
+			t.Errorf("%s is shown in clear", k)
+		}
+	}
+	if got["PATH"] != "/usr/bin" || got["SLACK_TEAM_ID"] != "T1" {
+		t.Errorf("settings stay readable: %+v", got)
+	}
+	if env["ASANA_PAT"] != "1/12345:abcdefgh" {
+		t.Error("MaskEnv must not change its input")
+	}
+	msg := RedactSecrets("server exited: auth failed for 1/12345:abcdefgh", env)
+	if strings.Contains(msg, "abcdefgh") {
+		t.Fatalf("redacted = %q", msg)
+	}
+}
+
+func TestCredentialFilesArePrivateAndReplacedWhole(t *testing.T) {
+	isolate(t)
+	m := newTestManager(t, &types.ConnectorsConfig{}) // connectors.json starts out 0644
+	if _, err := m.ToggleConnector("slack", true); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{m.configPath, filepath.Join(m.rootDir, ".mcp.json"), filepath.Join(m.rootDir, ".sdlc", "mcp.json")} {
+		st, err := os.Stat(p)
+		if err != nil || st.Mode().Perm() != 0o600 {
+			t.Errorf("%s: mode %v err %v, want 0600", filepath.Base(p), st.Mode().Perm(), err)
+		}
+	}
+	entries, _ := os.ReadDir(filepath.Dir(m.configPath))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".connectors.json-") || strings.HasPrefix(e.Name(), ".mcp.json-") {
+			t.Errorf("temporary file left behind: %s", e.Name())
+		}
+	}
+	var saved types.ConnectorsConfig
+	if b, _ := os.ReadFile(m.configPath); json.Unmarshal(b, &saved) != nil || len(saved.Items) == 0 {
+		t.Fatal("connectors.json is not a complete config")
+	}
+}
+
+// Handlers read connectors while toggles and status probes change them: readers get copies.
+func TestConnectorReadsDoNotRaceWithUpdates(t *testing.T) {
+	isolate(t)
+	m := newTestManager(t, nil)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 30; i++ {
+			_, _ = m.ToggleConnector("grafana", i%2 == 0)
+			m.updateItemStatus("grafana", i%2 == 0, int64(i), "probe")
+		}
+	}()
+	for i := 0; i < 30; i++ {
+		if it, err := m.GetConnector("grafana"); err == nil {
+			_ = mustJSON(Masked(it))
+		}
+		_ = mustJSON(MaskedList(m.ListConnectors()))
+		_ = mustJSON(m.MaskedConfig())
+	}
+	<-done
+	it, _ := m.GetConnector("grafana")
+	it.MCP.Env["X"] = "changed"
+	if again, _ := m.GetConnector("grafana"); again.MCP.Env["X"] == "changed" {
+		t.Fatal("GetConnector must return a copy")
+	}
+}
+
 func mustJSON(v interface{}) string {
 	b, _ := json.Marshal(v)
 	return string(b)

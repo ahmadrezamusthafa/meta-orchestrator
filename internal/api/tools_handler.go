@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -30,6 +31,9 @@ type ToolRollbackRequest struct {
 	ToolID        string `json:"tool_id"`
 	TargetVersion string `json:"target_version"`
 }
+
+// defaultToolsMu guards defaultTools, which rollback requests change.
+var defaultToolsMu sync.Mutex
 
 var defaultTools = []ToolDTO{
 	{
@@ -99,6 +103,8 @@ func (r *Router) handleTools(w http.ResponseWriter, req *http.Request) {
 	search := strings.ToLower(req.URL.Query().Get("search"))
 
 	var result []ToolDTO
+	defaultToolsMu.Lock()
+	defer defaultToolsMu.Unlock()
 	for _, tool := range defaultTools {
 		if category != "" && category != "All" && tool.Category != category {
 			continue
@@ -166,6 +172,7 @@ func (r *Router) handleToolAction(w http.ResponseWriter, req *http.Request) {
 		}
 
 		// Simulate atomic symlink swap
+		defaultToolsMu.Lock()
 		for i, t := range defaultTools {
 			if t.ID == body.ToolID {
 				defaultTools[i].CurrentVersion = body.TargetVersion
@@ -173,6 +180,7 @@ func (r *Router) handleToolAction(w http.ResponseWriter, req *http.Request) {
 				break
 			}
 		}
+		defaultToolsMu.Unlock()
 
 		r.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"status":         "rollback_success",
@@ -186,10 +194,13 @@ func (r *Router) handleToolAction(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
+		defaultToolsMu.Lock()
+		tools := append([]ToolDTO(nil), defaultTools...)
+		defaultToolsMu.Unlock()
 		r.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"matrix_status": "optimal",
 			"host_os":       "darwin_arm64",
-			"tools":         defaultTools,
+			"tools":         tools,
 			"conflicts":     []string{},
 		})
 

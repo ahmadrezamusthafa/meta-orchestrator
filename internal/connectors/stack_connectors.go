@@ -588,7 +588,8 @@ func (m *Manager) testStackConnector(ctx context.Context, it *types.ConnectorIte
 			if mcp.Command == "docker" {
 				hint = " Is Docker running? Installing the native server from Tool Hub avoids Docker."
 			}
-			return fail(fmt.Sprintf("%s credentials work, but its MCP server did not start: %v.%s", it.Name, err, hint))
+			// The server's stderr may echo its arguments or environment: never pass a credential on.
+			return fail(RedactSecrets(fmt.Sprintf("%s credentials work, but its MCP server did not start: %v.%s", it.Name, err, hint), mcp.Env))
 		}
 		msg = fmt.Sprintf("%s is ready for agents: %s started with %d tools (%s).", it.Name, orName(probe.Server, mcp.Command), probe.Tools,
 			strings.Join(probe.ToolNames, ", "))
@@ -670,6 +671,68 @@ func secretKey(k string) bool {
 	return false
 }
 
+// maskKey reports whether a browser sees the variable's value masked: every credential secretKey
+// knows, and variables that commonly carry one (personal access tokens, auth headers, webhook
+// URLs, connection strings). It is wider than secretKey, which also gates starting a server.
+func maskKey(k string) bool {
+	if secretKey(k) {
+		return true
+	}
+	u := strings.ToUpper(k)
+	if u == "PAT" || strings.HasSuffix(u, "_PAT") {
+		return true
+	}
+	for _, w := range []string{"AUTH", "CREDENTIAL", "WEBHOOK", "HEADER", "COOKIE", "DSN", "CONNECTION_STRING", "PASSWD"} {
+		if strings.Contains(u, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// MaskEnv returns a copy of env with every credential masked, for browsers.
+func MaskEnv(env map[string]string) map[string]string {
+	if env == nil {
+		return nil
+	}
+	out := make(map[string]string, len(env))
+	for k, v := range env {
+		if maskKey(k) {
+			v = mask(v)
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// RedactSecrets replaces every credential value of env that appears in s (an argument, a
+// server's stderr) by its mask.
+func RedactSecrets(s string, env map[string]string) string {
+	var secrets []string
+	for k, v := range env {
+		if v = strings.TrimSpace(v); maskKey(k) && len(v) >= 4 && !masked(v) {
+			secrets = append(secrets, v)
+		}
+	}
+	sort.Slice(secrets, func(i, j int) bool { return len(secrets[i]) > len(secrets[j]) })
+	for _, v := range secrets {
+		s = strings.ReplaceAll(s, v, mask(v))
+	}
+	return s
+}
+
+// RedactArgs is RedactSecrets for each argument.
+func RedactArgs(args []string, env map[string]string) []string {
+	if args == nil {
+		return nil
+	}
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = RedactSecrets(a, env)
+	}
+	return out
+}
+
 // mask shows only that a secret is set and its last four characters.
 func mask(v string) string {
 	if v == "" || masked(v) {
@@ -691,11 +754,7 @@ func Masked(it *types.ConnectorItem) *types.ConnectorItem {
 	cp.APIToken = mask(it.APIToken)
 	if it.MCP != nil {
 		mcp := cloneMCP(*it.MCP)
-		for k, v := range mcp.Env {
-			if secretKey(k) {
-				mcp.Env[k] = mask(v)
-			}
-		}
+		mcp.Env = MaskEnv(mcp.Env)
 		cp.MCP = &mcp
 	}
 	return &cp

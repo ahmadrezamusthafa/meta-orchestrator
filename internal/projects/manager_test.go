@@ -90,3 +90,88 @@ func TestProjectManager_CreateAndSymlink(t *testing.T) {
 		t.Fatalf("Expected provisioned after resync, got %s", resynced.Status)
 	}
 }
+
+// A project folder may be an existing folder of the operator's: syncing links never deletes
+// what the manager did not create, and repository names cannot leave the folder.
+func TestProjectLinksNeverDeleteTheOperatorsFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	repo := filepath.Join(tempDir, "src", "svc")
+	_ = os.MkdirAll(repo, 0o755)
+	_ = os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module svc"), 0o644)
+	mgr := NewProjectManager(tempDir)
+
+	root := filepath.Join(tempDir, "my-workspaces", "payments") // contains "workspaces", not managed
+	_ = os.MkdirAll(filepath.Join(root, "docs"), 0o755)
+	_ = os.WriteFile(filepath.Join(root, "notes.txt"), []byte("keep me"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "svc2"), []byte("a file named like a repo"), 0o644)
+	_ = os.Symlink(repo, filepath.Join(root, "old-link"))
+
+	p, err := mgr.Create(&types.Project{ID: "payments", Name: "Payments", RootDir: root,
+		Repos: []types.ProjectRepo{{Name: "svc", Path: repo}, {Name: "svc2", Path: repo}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, keep := range []string{"notes.txt", "docs", "svc2"} {
+		if _, err := os.Lstat(filepath.Join(root, keep)); err != nil {
+			t.Errorf("%s was deleted: %v", keep, err)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(root, "old-link")); !os.IsNotExist(err) {
+		t.Error("a stale link the project no longer lists is removed")
+	}
+	if fi, err := os.Lstat(filepath.Join(root, "svc")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("svc should be linked: %v", err)
+	}
+	if p.Repos[1].Status != "error" || p.Status != "degraded" {
+		t.Errorf("a real file in the way is reported, not replaced: %+v", p.Repos[1])
+	}
+	if _, err := mgr.ResyncSymlinks("payments"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "notes.txt")); string(b) != "keep me" {
+		t.Error("resync deleted the operator's file")
+	}
+
+	// Deleting a project outside the managed workspaces folder keeps the folder.
+	if err := mgr.Delete("payments"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "notes.txt")); err != nil {
+		t.Fatalf("deleting the project removed the operator's folder: %v", err)
+	}
+
+	for _, bad := range []string{"../escape", "a/b", "..", "."} {
+		if _, err := mgr.Create(&types.Project{Name: "Bad", Repos: []types.ProjectRepo{{Name: bad, Path: repo}}}); err == nil {
+			t.Errorf("repository name %q must be rejected", bad)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(tempDir, "workspaces", "escape")); !os.IsNotExist(err) {
+		t.Error("a repository name escaped the project folder")
+	}
+}
+
+func TestProjectReadsDoNotRaceWithResync(t *testing.T) {
+	tempDir := t.TempDir()
+	repo := filepath.Join(tempDir, "svc")
+	_ = os.MkdirAll(repo, 0o755)
+	mgr := NewProjectManager(tempDir)
+	if _, err := mgr.Create(&types.Project{ID: "p", Name: "P", Repos: []types.ProjectRepo{{Name: "svc", Path: repo}}}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 20; i++ {
+			_, _ = mgr.ResyncSymlinks("p")
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		for _, p := range mgr.List() {
+			_ = p.Status + p.Repos[0].Status
+		}
+		if p, err := mgr.Get("p"); err == nil {
+			_ = p.UpdatedAt.String() + p.Repos[0].GitBranch
+		}
+	}
+	<-done
+}
