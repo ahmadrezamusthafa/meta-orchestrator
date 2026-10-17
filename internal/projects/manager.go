@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -73,7 +74,23 @@ func (m *ProjectManager) saveProjectsLocked() error {
 		return fmt.Errorf("failed to serialize projects: %w", err)
 	}
 
-	return os.WriteFile(m.storeFile, data, 0644)
+	// Write a sibling file and rename it over the store, so a crash never leaves it half written.
+	tmp, err := os.CreateTemp(filepath.Dir(m.storeFile), ".projects-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), m.storeFile)
 }
 
 func (m *ProjectManager) seedDefaultProjects() {
@@ -153,7 +170,7 @@ func (m *ProjectManager) List() []*types.Project {
 
 	result := make([]*types.Project, 0, len(m.projects))
 	for _, p := range m.projects {
-		result = append(result, p)
+		result = append(result, cloneProject(p))
 	}
 	return result
 }
@@ -167,7 +184,7 @@ func (m *ProjectManager) Get(id string) (*types.Project, error) {
 	if !exists {
 		return nil, fmt.Errorf("project '%s' not found", id)
 	}
-	return p, nil
+	return cloneProject(p), nil
 }
 
 // Create registers a project, provisions its root folder, and establishes symlinks.
@@ -178,6 +195,11 @@ func (m *ProjectManager) Create(p *types.Project) (*types.Project, error) {
 
 	if p.ID == "" {
 		p.ID = slugify(p.Name)
+	}
+	for _, r := range p.Repos {
+		if err := validRepoName(r.Name); err != nil {
+			return nil, err
+		}
 	}
 
 	if p.RootDir == "" {
@@ -206,21 +228,7 @@ func (m *ProjectManager) Create(p *types.Project) (*types.Project, error) {
 	projSDLCDir := filepath.Join(p.RootDir, ".sdlc")
 	_ = os.MkdirAll(projSDLCDir, 0755)
 
-	// Clean up any orphaned symlinks in project root that are no longer part of p.Repos
-	activeNames := make(map[string]bool)
-	for _, r := range p.Repos {
-		activeNames[r.Name] = true
-	}
-	if entries, err := os.ReadDir(p.RootDir); err == nil {
-		for _, entry := range entries {
-			if entry.Name() == ".sdlc" || strings.HasPrefix(entry.Name(), ".") {
-				continue
-			}
-			if !activeNames[entry.Name()] {
-				_ = os.Remove(filepath.Join(p.RootDir, entry.Name()))
-			}
-		}
-	}
+	removeStaleLinks(p)
 
 	// Process and link each repository
 	hasErrors := false
@@ -246,9 +254,6 @@ func (m *ProjectManager) Create(p *types.Project) (*types.Project, error) {
 		symlinkTarget := filepath.Join(p.RootDir, repo.Name)
 		repo.SymlinkPath = symlinkTarget
 
-		// Clean up existing symlink or path at destination
-		_ = os.Remove(symlinkTarget)
-
 		// Check if source path exists
 		if _, err := os.Stat(repo.Path); os.IsNotExist(err) {
 			repo.Status = "missing_source"
@@ -257,8 +262,7 @@ func (m *ProjectManager) Create(p *types.Project) (*types.Project, error) {
 			continue
 		}
 
-		// Create atomic symlink
-		if err := os.Symlink(repo.Path, symlinkTarget); err != nil {
+		if err := linkRepo(repo.Path, symlinkTarget); err != nil {
 			repo.Status = "error"
 			repo.Error = fmt.Sprintf("Failed to create symlink: %v", err)
 			hasErrors = true
@@ -279,9 +283,74 @@ func (m *ProjectManager) Create(p *types.Project) (*types.Project, error) {
 	m.mu.Lock()
 	m.projects[p.ID] = p
 	_ = m.saveProjectsLocked()
+	out := cloneProject(p)
 	m.mu.Unlock()
 
-	return p, nil
+	return out, nil
+}
+
+// validRepoName accepts a repository name that is one entry inside the project folder.
+func validRepoName(name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) || !filepath.IsLocal(name) {
+		return fmt.Errorf("invalid repository name %q: it names the link inside the project folder", name)
+	}
+	return nil
+}
+
+// removeStaleLinks deletes the links in the project folder that no repository uses any more.
+// Only links are removed: the folder may also hold the operator's own files.
+func removeStaleLinks(p *types.Project) {
+	active := make(map[string]bool)
+	for _, r := range p.Repos {
+		active[r.Name] = true
+	}
+	entries, err := os.ReadDir(p.RootDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") || active[entry.Name()] || entry.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		_ = os.Remove(filepath.Join(p.RootDir, entry.Name()))
+	}
+}
+
+// linkRepo points link at the repository. It replaces an earlier link but never a real file or
+// folder; a repository that already lives at link needs no link.
+func linkRepo(source, link string) error {
+	if err := validRepoName(filepath.Base(link)); err != nil {
+		return err
+	}
+	if fi, err := os.Lstat(link); err == nil {
+		if fi.Mode()&os.ModeSymlink == 0 {
+			if filepath.Clean(source) == filepath.Clean(link) {
+				return nil
+			}
+			return fmt.Errorf("%s already exists and is not a link; rename it or the repository", link)
+		}
+		if err := os.Remove(link); err != nil {
+			return err
+		}
+	}
+	return os.Symlink(source, link)
+}
+
+// managedRoot reports whether dir is a project folder under the manager's workspaces folder —
+// the only kind of project folder it deletes.
+func (m *ProjectManager) managedRoot(dir string) bool {
+	rel, err := filepath.Rel(filepath.Join(m.rootDir, "workspaces"), dir)
+	return err == nil && rel != "." && filepath.IsLocal(rel)
+}
+
+// cloneProject copies p, so callers never share the manager's project.
+func cloneProject(p *types.Project) *types.Project {
+	cp := *p
+	cp.Repos = slices.Clone(p.Repos)
+	for i := range cp.Repos {
+		cp.Repos[i].Stack = slices.Clone(cp.Repos[i].Stack)
+	}
+	return &cp
 }
 
 // ResyncSymlinks re-establishes filesystem symlinks for an existing project.
@@ -298,20 +367,7 @@ func (m *ProjectManager) ResyncSymlinks(id string) (*types.Project, error) {
 		return nil, fmt.Errorf("failed to create project root directory %s: %w", p.RootDir, err)
 	}
 
-	activeNames := make(map[string]bool)
-	for _, r := range p.Repos {
-		activeNames[r.Name] = true
-	}
-	if entries, err := os.ReadDir(p.RootDir); err == nil {
-		for _, entry := range entries {
-			if entry.Name() == ".sdlc" || strings.HasPrefix(entry.Name(), ".") {
-				continue
-			}
-			if !activeNames[entry.Name()] {
-				_ = os.Remove(filepath.Join(p.RootDir, entry.Name()))
-			}
-		}
-	}
+	removeStaleLinks(p)
 
 	hasErrors := false
 	for i := range p.Repos {
@@ -326,8 +382,6 @@ func (m *ProjectManager) ResyncSymlinks(id string) (*types.Project, error) {
 		symlinkTarget := filepath.Join(p.RootDir, repo.Name)
 		repo.SymlinkPath = symlinkTarget
 
-		_ = os.Remove(symlinkTarget)
-
 		if _, err := os.Stat(repo.Path); os.IsNotExist(err) {
 			repo.Status = "missing_source"
 			repo.Error = fmt.Sprintf("Source path not found: %s", repo.Path)
@@ -335,7 +389,7 @@ func (m *ProjectManager) ResyncSymlinks(id string) (*types.Project, error) {
 			continue
 		}
 
-		if err := os.Symlink(repo.Path, symlinkTarget); err != nil {
+		if err := linkRepo(repo.Path, symlinkTarget); err != nil {
 			repo.Status = "error"
 			repo.Error = fmt.Sprintf("Symlink failed: %v", err)
 			hasErrors = true
@@ -358,7 +412,7 @@ func (m *ProjectManager) ResyncSymlinks(id string) (*types.Project, error) {
 	_ = os.WriteFile(filepath.Join(projSDLCDir, "project.json"), metaData, 0644)
 
 	_ = m.saveProjectsLocked()
-	return p, nil
+	return cloneProject(p), nil
 }
 
 // Update updates project metadata and re-links repos.
@@ -371,6 +425,11 @@ func (m *ProjectManager) Update(id string, updated *types.Project) (*types.Proje
 		return nil, fmt.Errorf("project '%s' not found", id)
 	}
 
+	for _, r := range updated.Repos {
+		if err := validRepoName(r.Name); err != nil {
+			return nil, err // before the old folder is touched
+		}
+	}
 	updated.ID = id
 	if updated.CreatedAt.IsZero() {
 		updated.CreatedAt = existing.CreatedAt
@@ -380,7 +439,7 @@ func (m *ProjectManager) Update(id string, updated *types.Project) (*types.Proje
 	}
 
 	// If root directory changed, clean up old root dir if it was under workspaces/
-	if existing.RootDir != "" && updated.RootDir != existing.RootDir && strings.Contains(existing.RootDir, "workspaces") {
+	if existing.RootDir != "" && updated.RootDir != existing.RootDir && m.managedRoot(existing.RootDir) {
 		_ = os.RemoveAll(existing.RootDir)
 	}
 
@@ -398,7 +457,7 @@ func (m *ProjectManager) Delete(id string) error {
 	}
 
 	// Remove project directory
-	if p.RootDir != "" && strings.Contains(p.RootDir, "workspaces") {
+	if p.RootDir != "" && m.managedRoot(p.RootDir) {
 		_ = os.RemoveAll(p.RootDir)
 	}
 
