@@ -219,3 +219,26 @@ func TestFinalApprovalCompletesAndStartsDependents(t *testing.T) {
 	}
 	waitState(t, r, "TASK-D", types.TaskStateWaitingGateApproval) // started automatically and ran prd_discovery
 }
+
+// Approving into a stage that cannot start (here: a code stage with no repositories) must not leave
+// the task "awaiting review" of a stage that never ran — a second approve would skip it.
+func TestApprovalIntoUnstartableStageLeavesItPendingNotInReview(t *testing.T) {
+	r := hermeticRouter(t)
+	r.mu.Lock()
+	r.tasks["TASK-G"] = &types.Task{ID: "TASK-G", Title: "x", CurrentStageID: "task_breakdown",
+		State: types.TaskStateWaitingGateApproval, Metadata: map[string]string{}}
+	r.mu.Unlock()
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-G/gate", `{"approved":true}`); w.Code != http.StatusOK {
+		t.Fatalf("approve → %d %s", w.Code, w.Body.String())
+	}
+	s := r.taskSnapshot("TASK-G")
+	if s.CurrentStageID != "task_implementation" || s.State != types.TaskStatePending {
+		t.Fatalf("after approve: stage %s state %s, want task_implementation PENDING", s.CurrentStageID, s.State)
+	}
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-G/gate", `{"approved":true}`); w.Code != http.StatusConflict {
+		t.Fatalf("second approve → %d, want 409 (nothing to review)", w.Code)
+	}
+	if s := r.taskSnapshot("TASK-G"); s.CurrentStageID != "task_implementation" {
+		t.Fatalf("stage skipped to %s", s.CurrentStageID)
+	}
+}

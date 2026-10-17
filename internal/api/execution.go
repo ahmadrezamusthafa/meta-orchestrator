@@ -699,6 +699,11 @@ func (r *Router) reviewStage(taskID string, approved bool, feedback string) (*ty
 	}
 	task.CurrentStageID = next
 	task.CurrentStageIndex = stageIndexOf(next)
+	// The approved output is settled: the next stage has not run, so it is pending until it starts.
+	// Left in review, a stage that cannot start (no repositories, busy, missing tools) would be
+	// skipped by the next approve.
+	r.setTaskState(task, types.TaskStatePending)
+	task.UpdatedAt = time.Now()
 	r.mu.Unlock()
 	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf("Approved %s → moving to %s.", stage, next)})
 	if err := r.startStage(taskID, "gate_approved", ""); err != nil {
