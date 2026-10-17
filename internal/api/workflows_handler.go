@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -53,14 +54,20 @@ var defaultWorkflows = []types.WorkflowDefinition{
 	},
 }
 
+// workflowsMu guards defaultWorkflows, which POST /workflows appends to.
+var workflowsMu sync.RWMutex
+
 func (r *Router) handleWorkflows(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
-		r.writeJSON(w, http.StatusOK, defaultWorkflows)
+		workflowsMu.RLock()
+		list := append([]types.WorkflowDefinition(nil), defaultWorkflows...)
+		workflowsMu.RUnlock()
+		r.writeJSON(w, http.StatusOK, list)
 
 	case http.MethodPost:
 		var wf types.WorkflowDefinition
-		if err := json.NewDecoder(req.Body).Decode(&wf); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 1<<20)).Decode(&wf); err != nil {
 			r.writeError(w, http.StatusBadRequest, "Invalid workflow JSON")
 			return
 		}
@@ -69,7 +76,16 @@ func (r *Router) handleWorkflows(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
+		workflowsMu.Lock()
+		for _, existing := range defaultWorkflows {
+			if existing.ID == wf.ID {
+				workflowsMu.Unlock()
+				r.writeError(w, http.StatusConflict, "Workflow "+wf.ID+" already exists")
+				return
+			}
+		}
 		defaultWorkflows = append(defaultWorkflows, wf)
+		workflowsMu.Unlock()
 		r.writeJSON(w, http.StatusCreated, map[string]interface{}{
 			"status":      "created",
 			"workflow_id": wf.ID,
