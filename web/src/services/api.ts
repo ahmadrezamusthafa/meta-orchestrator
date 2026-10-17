@@ -53,24 +53,6 @@ export const api = {
     return res.json()
   },
 
-  async executeTaskProcessCommand(taskId: string, command: string): Promise<any> {
-    const res = await fetch(`${BASE_URL}/tasks/${taskId}/process/execute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command })
-    })
-    if (!res.ok) throw new Error('Failed to execute command in background process')
-    return res.json()
-  },
-
-  async clearTaskProcessLogs(taskId: string): Promise<any> {
-    const res = await fetch(`${BASE_URL}/tasks/${taskId}/process/clear`, {
-      method: 'POST'
-    })
-    if (!res.ok) throw new Error('Failed to clear process logs')
-    return res.json()
-  },
-
   // Agent Console (structured activity transcript)
   async getTaskActivity(taskId: string, after?: string): Promise<TaskActivityResponse> {
     const query = new URLSearchParams()
