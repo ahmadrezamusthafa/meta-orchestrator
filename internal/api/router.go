@@ -16,6 +16,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/hooks"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/packages"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/pullrequest"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/quota"
@@ -25,7 +26,6 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/telemetry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/toolchain"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/worker"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -33,9 +33,11 @@ import (
 
 // RouterConfig holds dependencies required by the REST API router.
 type RouterConfig struct {
-	TaskStore         fsm.TaskStateStore
-	WorkflowReg       *fsm.WorkflowRegistry
-	ToolManager       *tools.ToolManager
+	TaskStore   fsm.TaskStateStore
+	WorkflowReg *fsm.WorkflowRegistry
+	// Packages installs and tracks the tools the orchestrator itself needs. Nil loads
+	// RootDir/configs/packages.json with its state in packages.DefaultHome().
+	Packages          *packages.Manager
 	ArtifactManager   *artifacts.ArtifactManager
 	ConfigResolver    *config.CascadingConfigResolver
 	ProjectManager    *projects.ProjectManager
@@ -116,8 +118,8 @@ type Router struct {
 	stop          chan struct{}
 	closeOnce     sync.Once
 
-	toolMgrOnce  sync.Once
-	toolMgr      *tools.ToolManager // Tool Hub: the tools the orchestrator itself needs
+	pkgOnce      sync.Once
+	pkgMgr       *packages.Manager // the tools the orchestrator itself needs (packages_handler.go)
 	profilesOnce sync.Once
 	profiles     *registry.ProfileRegistry // stage roles (configs/profiles.json)
 }
@@ -244,8 +246,8 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/tasks/{id}/outline", r.handleTaskOutline)
 	r.mux.HandleFunc("/api/v1/toolchain", r.handleToolchain)
 	r.mux.HandleFunc("/api/v1/toolchain/", r.handleToolchainAction)
-	r.mux.HandleFunc("/api/v1/tools", r.handleTools)
-	r.mux.HandleFunc("/api/v1/tools/", r.handleToolAction)
+	r.mux.HandleFunc("/api/v1/packages", r.handlePackages)
+	r.mux.HandleFunc("/api/v1/packages/", r.handlePackageAction)
 	r.mux.HandleFunc("/api/v1/providers", r.handleProviders)
 	r.mux.HandleFunc("/api/v1/providers/test", r.handleProviderTest)
 	r.mux.HandleFunc("/api/v1/providers/usage", r.handleProviderUsage)

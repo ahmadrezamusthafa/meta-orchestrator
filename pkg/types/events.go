@@ -15,6 +15,7 @@ const (
 	EventFrustrationHalt     EventType = "event.frustration_halt"
 	EventHITLRequired        EventType = "hitl.required"
 	EventToolProgress        EventType = "tool.install.progress"
+	EventPackageJob          EventType = "package.job" // payload: packages.Job
 	EventConnectorStatus     EventType = "connector.status"
 	EventTelemetryTokens     EventType = "telemetry.tokens.consumed"
 	EventRouterMatrixUpdated EventType = "router.matrix.updated"
