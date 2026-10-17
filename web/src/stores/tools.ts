@@ -36,7 +36,7 @@ export const useToolsStore = defineStore('tools', () => {
 
   function initProgressSubscription() {
     wsService.subscribe((event) => {
-      if (event.type === 'tool.progress' && event.payload) {
+      if (event.type === 'tool.install.progress' && event.payload) {
         installProgress.value = event.payload
       }
     })

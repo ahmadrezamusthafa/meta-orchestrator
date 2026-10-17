@@ -339,7 +339,7 @@ export const useTaskStore = defineStore('tasks', () => {
       } else if (event.type === 'jira.sync' && event.payload) {
         if (jiraSync.value) jiraSync.value = { ...jiraSync.value, status: event.payload }
         else fetchJiraSync()
-      } else if (event.type === 'frustration.halt' && event.task_id) {
+      } else if (event.type === 'event.frustration_halt' && event.task_id) {
         const task = tasks.value.find((t) => t.id === event.task_id)
         if (task) {
           task.state = 'BLOCKED_FRUSTRATION'

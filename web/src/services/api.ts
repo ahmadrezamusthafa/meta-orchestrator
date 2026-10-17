@@ -332,7 +332,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     })
-    if (!res.ok) throw new Error('Failed to create task')
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to create task')
     return res.json()
   },
 
@@ -343,7 +343,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ instruction })
     })
-    if (!res.ok) throw new Error('Failed to inject context')
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to inject context')
     return res.json()
   },
 
@@ -351,7 +351,11 @@ export const api = {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/reset`, {
       method: 'POST'
     })
-    if (!res.ok) throw new Error('Failed to reset workspace')
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      if (askForTools(taskId, errData, 'run')) return errData
+      throw new Error(errData?.error || 'Failed to reset workspace')
+    }
     return res.json()
   },
 
@@ -361,7 +365,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ approved, feedback })
     })
-    if (!res.ok) throw new Error('Failed to update gate')
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to update gate')
     return res.json()
   },
 
@@ -591,7 +595,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(project)
     })
-    if (!res.ok) throw new Error(`Failed to update project ${id}`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `Failed to update project ${id}`)
     return res.json()
   },
 
