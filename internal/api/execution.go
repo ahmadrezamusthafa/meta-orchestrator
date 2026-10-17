@@ -52,10 +52,10 @@ func stageIndexOf(stage string) int {
 	return -1
 }
 
+// stageLabel names a stage in console and prompt text. It carries no "stage N of M" position:
+// a task's workflow decides its stages, and the default pipeline's numbering would be wrong for
+// custom workflows.
 func stageLabel(stage string) string {
-	if i := stageIndexOf(stage); i >= 0 {
-		return fmt.Sprintf("%s (stage %d of %d)", stage, i+1, len(stagePipeline))
-	}
 	return stage
 }
 
