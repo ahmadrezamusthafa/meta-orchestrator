@@ -12,8 +12,9 @@ import (
 func TestHeavyDockerCommand(t *testing.T) {
 	heavy := []string{"docker build -t app .", "docker compose up -d", "docker-compose -f e2e.yml up --build",
 		"cd web && docker compose -p e2e build api", "sudo docker run --rm node:20 npm test", "DOCKER_BUILDKIT=1 docker build .",
-		"docker pull postgres:16", "docker exec app rails db:migrate", "podman run alpine", "docker logs -f app"}
-	light := []string{"docker ps", "docker compose ps", "docker compose -f x.yml config", "docker images | grep app",
+		"docker pull postgres:16", "docker exec app rails db:migrate", "podman run alpine", "docker logs -f app",
+		"sleep 1 & docker build .", "docker ps & docker compose up"}
+	light := []string{"docker ps", "docker ps 2>&1", "docker compose ps", "docker compose -f x.yml config", "docker images | grep app",
 		"docker inspect app", "git status", "echo docker build", "grep -r docker ."}
 	for _, c := range heavy {
 		if !heavyDockerCommand(c) {
