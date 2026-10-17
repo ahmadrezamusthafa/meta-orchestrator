@@ -1,8 +1,8 @@
 # Meta-Orchestrator REST API & WebSocket Protocol Reference
 
 **Version:** 1.0.0  
-**Base URL:** `http://localhost:8080/api/v1`  
-**WebSocket Endpoint:** `ws://localhost:8080/ws`  
+**Base URL:** `http://127.0.0.1:8080/api/v1`  
+**WebSocket Endpoint:** `ws://127.0.0.1:8080/ws`  
 
 ---
 
@@ -10,7 +10,8 @@
 
 The Meta-Orchestrator Daemon provides a high-throughput, low-latency REST and WebSocket interface:
 * **REST API:** Handles CRUD operations for autonomous tasks, mid-process stage slicing, dependency lifecycle actions, AI provider credentials, benchmark matrices, and artifact inspection.
-* **WebSocket Server:** Multiplexes streaming stdout/stderr terminal chunks, agent reasoning vectors, state transitions, and frustration circuit-breaker interrupts with sub-100ms latency.
+* **WebSocket Server:** Streams agent console entries, state transitions, approvals, evidence and frustration-halt events.
+* **Access:** loopback only. Requests with a non-loopback `Host` or browser `Origin` get `403` (extra names via `MO_ALLOWED_HOSTS`); CORS is reflected for allowed origins only; bodies are capped at 32 MiB.
 
 ---
 
@@ -191,10 +192,11 @@ Submit human operator approval or rejection at a gated SDLC boundary (e.g. `tech
 
 ### 2.3 Tool Hub & Dependency Lifecycle
 
-* `GET /api/v1/tools?category={category}&search={search}`: Catalog of tools (`BMAD`, `Superpower`, `Playwright`, `Tree-sitter`, `xterm.js`, `ffmpeg`) with active vs latest versions and health diagnostics.
-* `POST /api/v1/tools/install`: Trigger step-by-step guided installation (`{"tool_id": "playwright", "version": "v1.49.0"}`).
-* `POST /api/v1/tools/rollback`: Instant atomic rollback via symlink swap (`{"tool_id": "bmad", "target_version": "v1.0.0"}`).
-* `POST /api/v1/tools/resolve-matrix`: Compute and apply the optimal conflict-free toolchain matrix for the host OS and CPU architecture.
+* `GET /api/v1/tools`: Tools from `configs/tools.json` with real status (`INSTALLED` + parsed version, `NOT_INSTALLED`, or `ERROR`) from each `health_check_cmd`, run without a shell and cached for a minute.
+* `POST /api/v1/tools/install` `{"tool_id"}`: `202` with a toolchain job when the tool maps to a toolchain catalog entry that can be installed here; `501` with the manual commands and docs otherwise. Version pinning is rejected (`400`).
+* `POST /api/v1/tools/recheck`: Clears the cache and re-runs the health checks.
+* `POST /api/v1/tools/resolve-matrix`: Compatibility of each tool's `required_runtimes` with the runtimes detected on this host (OS/arch from the daemon).
+* `POST /api/v1/tools/rollback`: `501` — package managers keep no previous versions to switch to.
 
 ---
 
@@ -207,20 +209,23 @@ Submit human operator approval or rejection at a gated SDLC boundary (e.g. `tech
 
 ---
 
-### 2.5 Workflows & Multi-Source Registries
+### 2.5 Workflows, Hooks & Registries
 
-* `GET /api/v1/workflows`: Returns installed SDLC workflows (General AI SDLC, Hotfix Fast-Track, Microservice API).
-* `POST /api/v1/workflows`: Ingests or updates a bespoke SDLC workflow definition matching `.sdlc/workflow.yaml`.
-* `GET /api/v1/registries`: Returns multi-source discovery results:
-  * **Skills:** Remote Git repos, Project Local (`.sdlc/skills/`), System (`~/.config/meta-orchestrator/skills/`), and Built-in tools.
-  * **Prompts:** Cascading templates with slot variable schemas and source precedence flags.
-  * **Hooks:** Event interceptors (`pre-stage`, `on-gate`, `pre-commit`) with policies (`BLOCK` vs `WARN`).
+* `GET /api/v1/workflows`: Built-in workflows (`general_ai_sdlc`, hotfix, microservice; read-only) and custom ones. A task's `workflow_id` decides its stages.
+* `POST /api/v1/workflows`, `PUT /api/v1/workflows/{id}`: Create or update a custom workflow. Every stage must be runnable (`400` otherwise); built-ins return `409`. Saved to `.sdlc/workflows.json`; `.sdlc/workflow.yaml` is loaded at startup.
+* `GET /api/v1/workflows/stages`: Stage IDs a workflow may use.
+* `GET /api/v1/hooks`: Configured lifecycle hooks (`.sdlc/hooks.json` and `.sdlc/hooks/<event>.sh`); webhook URLs show scheme and host only.
+* `GET /api/v1/registries`: The skills, hooks, methods (`configs/methods.json`) and stage roles (`configs/profiles.json`) actually loaded, with unreadable files under `problems`.
+* `POST /api/v1/skills/{name}/run` `{"role"}`: Runs a command-based skill once in the project root (60 s, 64 KiB of output) as a stage role; refused (`403`) when the role is not allowed or denies the skill.
 
 ---
 
-### 2.6 Artifacts Vault
+### 2.6 Artifacts, Evidence & Outline
 
-* `GET /api/v1/artifacts/{taskId}/{filename}`: Retrieve parsed markdown schema artifact or media asset (`PRD.md`, `ATDD_SUITE.md`, `TECH_DOC_RFC.md`, `TASK_PLAN.md`, `UAT_PREPARATION.md`, `EVIDENCE.md`, `run_final.mp4`).
+* `GET /api/v1/artifacts/{taskId}/{path}`: A task artifact — stage documents, `atdd/acceptance.spec.ts`, and evidence files (videos, screenshots, `evidence.json`, `EVIDENCE.md`, `evidence-manifest.json`). Paths and symlinks must stay inside the task's artifact directory.
+* `GET|POST /api/v1/tasks/{id}/evidence`: Evidence setting and recorded files; POST records evidence for the implementation already in the worktree.
+* `GET /api/v1/tasks/{id}/evidence/verify`: Recomputes every file's SHA-256 and the manifest's HMAC-SHA256; lists changed, missing and added files.
+* `GET /api/v1/tasks/{id}/outline?repo={repo}&path={file}`: Declarations in one file of the task worktree (regex outline for Go, TS/JS/Vue, PHP, Python; `415` for other types).
 
 ---
 
@@ -231,14 +236,15 @@ Submit human operator approval or rejection at a gated SDLC boundary (e.g. `tech
 * `GET /api/v1/projects/{id}`: Retrieve project topology, mapped repositories, manifest types, and symlink statuses.
 * `POST /api/v1/projects/{id}/resync`: Re-evaluate repository source paths and re-create symlinks.
 * `DELETE /api/v1/projects/{id}`: Delete a project and remove its ephemeral workspace root.
+* `POST /api/v1/projects/{id}/suggest-repos` `{"title","description"}`: Ranks the project's repositories by whole-word evidence in the draft task; nothing is selected automatically.
 * `POST /api/v1/projects/scan`: Auto-scan a directory path, discover child repositories, identify language manifests (`package.json`, `go.mod`, `playwright.config.ts`, `openapi.yaml`), and suggest roles (`frontend`, `backend`, `automation-test`, `contracts`, `artifact`).
 
 ---
 
 ## 3. WebSocket Streaming Protocol
 
-* **URL:** `ws://localhost:8080/ws`
-* **Filter by Task:** `ws://localhost:8080/ws?task_id=TASK-8942`
+* **URL:** `ws://127.0.0.1:8080/ws`
+* **Filter by Task:** `ws://127.0.0.1:8080/ws?task_id=TASK-8942`
 
 ### Message Schema
 ```json

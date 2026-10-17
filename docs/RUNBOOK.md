@@ -27,7 +27,7 @@ From the repository root:
 make dev
 ```
 This automatically starts:
-* **Go Daemon:** Listening on `http://localhost:8080` (REST API & WebSockets)
+* **Go Daemon:** Listening on `http://127.0.0.1:8080` (REST API & WebSockets)
 * **Vite Dev Server:** Listening on `http://localhost:5173` (Frontend Mission Control)
 
 ### Method B: Separate Terminals
@@ -162,8 +162,8 @@ Click on any task card on the Kanban board to enter the **Active Task Detail Vie
 
 ### Q2: Frontend shows "Daemon Offline" or "Reconnecting..."
 * Ensure the Go daemon is running (`go run cmd/daemon/main.go`).
-* Verify health check responds: `curl http://localhost:8080/healthz`. Should return `{"status":"healthy","version":"1.0.0"}`.
-* In browser DevTools, verify the WebSocket connection to `ws://localhost:8080/ws` or `ws://localhost:5173/ws` is open.
+* Verify health check responds: `curl http://127.0.0.1:8080/healthz`. Should return `{"status":"healthy","version":"1.0.0"}`.
+* In browser DevTools, verify the WebSocket connection to `ws://127.0.0.1:8080/ws` or `ws://localhost:5173/ws` is open.
 
 ### Q3: Terminal Canvas does not resize properly
 * Click the "Resume Scroll" button or resize your browser window; `@xterm/addon-fit` automatically recalculates column and row geometries on window resize events.

@@ -4,11 +4,10 @@
 [![Vue 3](https://img.shields.io/badge/Vue-3.5+-4FC08D?style=flat&logo=vue.js)](https://vuejs.org/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4+-38B2AC?style=flat&logo=tailwind-css)](https://tailwindcss.com/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Phases_1--3_100%25_Verified-emerald)](#roadmap--milestones)
 
 The **AI-Driven SDLC Meta-Orchestrator** is an autonomous, event-driven software development factory designed to automate complex, multi-repository feature lifecycles under a zero-trust software factory paradigm.
 
-It unifies multi-agent methodologies (**BMAD**, **Supervisor**, **ReAct**, **Superpower**), shifts left through rigorous Acceptance Test-Driven Development (**ATDD**) with OS-level write-locking, captures cryptographic rich-media evidence (including automated Playwright `.mp4` recordings), and provides an interactive Vue 3 Mission Control dashboard with real-time terminal emulation and Human-in-the-Loop (**HITL**) steering.
+It runs Claude Code agents stage by stage through a configurable SDLC workflow, shifts left with Acceptance Test-Driven Development (**ATDD**) under a red-phase write lock, records signed test evidence (Playwright videos, screenshots and an HMAC-SHA256 manifest), and provides a Vue 3 Mission Control dashboard with a live agent console and Human-in-the-Loop (**HITL**) approvals.
 
 ---
 
@@ -30,9 +29,9 @@ Open your web browser and navigate to:
 http://localhost:5173
 ```
 * **Frontend UI:** `http://localhost:5173`
-* **Daemon REST API:** `http://localhost:8080/api/v1`
-* **WebSocket Streaming Hub:** `ws://localhost:8080/ws`
-* **Health Check:** `http://localhost:8080/healthz`
+* **Daemon REST API:** `http://127.0.0.1:8080/api/v1`
+* **WebSocket Streaming Hub:** `ws://127.0.0.1:8080/ws`
+* **Health Check:** `http://127.0.0.1:8080/healthz`
 
 ---
 
@@ -43,28 +42,26 @@ http://localhost:5173
 │                       VUE 3 FRONTEND MISSION CONTROL (:5173)                      │
 ├────────────────────┬────────────────────┬───────────────────┬─────────────────────┤
 │  Kanban Board      │  Execution Split   │ Tool Hub Catalog  │ Settings & Pipeline │
-│  Dynamic Columns   │  @xterm/xterm Canvas│ 4-Step Installer  │ Custom Workflows    │
-│  Mid-Process Slice │  Thought Stream    │ 1-Click Rollback  │ Multi-Source Skills │
-│  Token Burn Pill   │  Evidence Vault    │ Best-Fit Matrix   │ Benchmark Table     │
+│  Dynamic Columns   │  Agent Console     │ Health Checks     │ Custom Workflows    │
+│  Mid-Process Slice │  Approvals         │ Toolchain Install │ Multi-Source Skills │
+│  Token Burn Pill   │  Evidence Tab      │ Host Compat Check │ Benchmark Table     │
 └─────────▲──────────┴─────────▲──────────┴─────────▲─────────┴──────────▲──────────┘
           │ (HTTP REST /api/v1)│                    │                    │
           │ (WebSocket ws://)  │                    │                    │
 ┌─────────▼────────────────────▼────────────────────▼────────────────────▼──────────┐
 │                         GO DAEMON CORE ENGINE (:8080)                             │
 ├───────────────────────────────────────────────────────────────────────────────────┤
-│ • Concurrency Loop: 10 parallel workers, BullMQ compatible, <5s RTO crash recovery│
-│ • Custom SDLC FSM: 9-stage General AI SDLC or arbitrary .sdlc/workflow.yaml       │
-│ • Mid-Process Slice Hydrator: Execute arbitrary stage slices (e.g. Stage 5 to 6)  │
-│ • Anti-Loop Circuit Breaker: Tripped on >= 3 consecutive failures to BLOCKED_FRUST│
-│ • Universal Skill Adapters: Claude SKILL.md, BMAD, Superpower, MCP stdio/SSE     │
-│ • Multi-Source Discovery: Remote Git Repos, Project Local, User System, Built-in  │
-│ • Tool Lifecycle Engine: 4-stage installer, <1s atomic symlink rollback           │
-│ • Dynamic Task Profiler: Traverses package.json, go.mod, composer.json            │
-│ • Dual-Strategy Router: Best Practice Heuristics vs. Custom Rule-Based Router    │
-│ • AST Code Sharder: Tree-sitter parsers (TS, Go, PHP, Py) with >90% token saving  │
-│ • Shift-Left ATDD Engine: Codebase-grounded Playwright spec generator             │
-│ • Strict Write-Lock Guard: Read-only locks on source code until Red Phase passes  │
-│ • Rich Media Evidence: Playwright .mp4 video recorder, screenshots & HMAC-SHA256  │
+│ • Stage Pool: bounded concurrent stage runs (MO_MAX_CONCURRENT_STAGES, default 10)│
+│ • Workflows: 8-stage default SDLC, built-in variants, custom workflows (API/YAML) │
+│ • Mid-Process Slicing: start at any stage, uploaded PRD/RFC/plan fill skipped ones│
+│ • Frustration Breaker: 3 identical stage failures → BLOCKED_FRUSTRATION           │
+│ • ATDD Red Phase: test-only write lock, red-phase verification, Playwright scaffold│
+│ • Lifecycle Hooks: shell / webhook / Docker on stage, gate and commit events      │
+│ • Skills & MCP: Claude SKILL.md, BMAD, Superpower, MCP connectors (read-only)     │
+│ • Stack Awareness & Toolchain: detected stacks, verified installs, agent brief    │
+│ • Routing: complexity analysis, best-practice or custom rules, fallback chains    │
+│ • Evidence: per-case videos (MP4 via ffmpeg), screenshots, signed manifest        │
+│ • Local-only API: loopback bind, Host/Origin checks, no wildcard CORS             │
 └───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -81,13 +78,15 @@ http://localhost:5173
 * Ingests external git feature branches and `TASK_PLAN.md` / `PRD.md` files directly via the UI dropzone.
 
 ### 3. Active Task Split-Pane Workspace (60/40)
-* **Canvas Terminal (`xterm.js`):** High-density canvas rendering live stdout/stderr streams from ephemeral containers with `requestAnimationFrame` debouncing, autoscroll pause, and transcript downloads.
-* **Virtualized Thought Stream:** Real-time stream of agent reasoning, tools invoked (`read_ast_node`, `generate_playwright_specs`), parameters, and execution timings.
+* **Agent Console:** the live transcript of each turn — the agent's text and thinking, every tool call with its input and result, permission requests to approve or deny, and transcript downloads.
+* **File Outline:** `GET /api/v1/tasks/{id}/outline?repo=&path=` lists a file's declarations (Go, TypeScript/JavaScript/Vue, PHP, Python) from the task worktree. It is a regex outline, not a parser.
 * **Workspace Topology Visualizer:** SVG dependency graph displaying dynamically linked multi-repo mounts with animated dataflow dashes.
-* **Evidence Media Vault:** Built-in HTML5 player for Playwright `.mp4` recordings (with 1x/1.5x/2x speed controls), side-by-side screenshot diffs, and tabbed Markdown artifact viewer.
+* **Evidence Tab:** plays each test case's recording, shows step screenshots and coverage of the acceptance cases, and **Verify** recomputes every file hash and the manifest signature (`GET /api/v1/tasks/{id}/evidence/verify`). The signing key comes from `MO_EVIDENCE_SIGNING_KEY`, or is generated once at `.sdlc/evidence-signing.key` (mode 0600).
 
 ### 4. Human-In-The-Loop (HITL) Controls
-* **Anti-Loop Frustration Circuit Breaker:** Execution halts upon $\ge 3$ consecutive errors into `BLOCKED_FRUSTRATION`, displaying failing stack traces and halting token burn.
+* **Anti-Loop Frustration Circuit Breaker:** 3 identical stage failures in a row (fewer if the task's method sets a stricter limit) move the task to `BLOCKED_FRUSTRATION` and show the failure; Continue, a message or a reset resumes it. Within a turn, a shell command that keeps failing the same way is refused.
+* **ATDD Red Phase:** during `atdd_creation` the agent may edit only test files; other writes are refused. The stage records whether the acceptance tests failed for the right reason (`red_phase`) and writes a Playwright scaffold (`atdd/acceptance.spec.ts`) whose unimplemented steps fail.
+* **Lifecycle Hooks:** `.sdlc/hooks.json` and `.sdlc/hooks/<event>.sh` run on `pre-stage`, `post-stage`, `on-failure`, `on-gate`, `pre-commit` and `post-commit`; blocking hooks can stop the step.
 * **Live Prompt Steering Dock (`ContextInput`):** Inject corrective guidance directly into the agent's context (Cmd+Enter) to steer or unblock the agent.
 * **One-Click Workspace Reset:** Safely purges Docker volumes, runs `git clean -fd && git reset --hard`, and restarts the stage cleanly.
 * **Human Approval Gates:** Dedicated gate approval bars to authorize or request revisions for architecture RFCs and releases.
@@ -159,6 +158,27 @@ Agents can read live state from third-party services through MCP servers. Each c
 **Adding a connector** means adding one `stackConnectors` entry (`internal/connectors/stack_connectors.go`) and, for a suggestion, one `connectorRules` entry (`internal/api/connector_suggestions.go`).
 
 
+### 10. Tool Hub (`internal/tools`)
+Tools come from `configs/tools.json`. Each one's `health_check_cmd` runs without a shell (20 s timeout, cached for a minute) to show whether it is installed and which version. **Install** runs a real toolchain job when the tool maps to a toolchain catalog entry; otherwise the hub shows the manual install command and docs. The compatibility check compares each tool's `required_runtimes` with the runtimes found on this machine. There is no version rollback.
+
+### 11. Local-Only Access & Security
+The daemon runs agents with shell access and holds provider and connector credentials, so it accepts only local requests:
+* It binds `127.0.0.1:8080`. `MO_LISTEN_ADDR` overrides the address.
+* Requests whose `Host` is not a loopback name are refused, which stops DNS rebinding.
+* Browser requests and WebSocket upgrades whose `Origin` is not loopback are refused. CORS is answered only for allowed origins, never `*`.
+* `MO_ALLOWED_HOSTS` (comma-separated) adds hostnames deliberately, e.g. a LAN name.
+* Request bodies are capped at 32 MiB.
+
+| Variable | Effect |
+|---|---|
+| `MO_LISTEN_ADDR` | Listen address (default `127.0.0.1:8080`) |
+| `MO_ALLOWED_HOSTS` | Extra hostnames allowed in `Host`/`Origin` |
+| `MO_MAX_CONCURRENT_STAGES` | Stage runs at once (default 10; up to 100 more wait in a queue) |
+| `MO_EVIDENCE_SIGNING_KEY` | HMAC key for evidence manifests (default: generated `.sdlc/evidence-signing.key`) |
+| `MO_DOCKER_MAX_CONCURRENT`, `MO_DOCKER_CPUS` | Limits on Docker work agents run |
+| `MO_SHADOW_ENABLED` | Opt-in shadow benchmarking (makes paid LLM calls) |
+| `REDIS_ADDR` | Routing weights and a task-snapshot mirror used to restore tasks at startup |
+
 ---
 
 ## 🛠️ Make Commands Reference
@@ -177,17 +197,5 @@ Agents can read live state from third-party services through MCP servers. Each c
 
 ## 📚 Complete Documentation
 
-* **[Operator Runbook (`docs/RUNBOOK.md`)](file:///Users/rezamekari/Projects/go/src/github.com/ahmadrezamusthafa/meta-orchestrator/docs/RUNBOOK.md):** Complete step-by-step operating procedures, troubleshooting guide, and edge-case handling.
-* **[REST & WebSocket API Reference (`docs/API.md`)](file:///Users/rezamekari/Projects/go/src/github.com/ahmadrezamusthafa/meta-orchestrator/docs/API.md):** Full documentation for all HTTP REST endpoints, JSON payload schemas, and WebSocket message types.
-* **[Product Requirements Document (`PRD001.md`)](file:///Users/rezamekari/Projects/go/src/github.com/ahmadrezamusthafa/meta-orchestrator/.sdlc/prds/PRD001.md):** Architectural pillars, security blast-radius constraints, and system specifications.
-* **[Master Execution Plan (`00_MASTER_EXECUTION_PLAN.md`)](file:///Users/rezamekari/Projects/go/src/github.com/ahmadrezamusthafa/meta-orchestrator/.sdlc/tasks/plan/00_MASTER_EXECUTION_PLAN.md):** 5-phase execution plan and status matrix.
-
----
-
-## 🚦 Roadmap & Milestones
-
-* **Phase 1: Foundation Daemon, Registries & AST Core** — **`[COMPLETED & 100% VERIFIED]`** (18/18 Tasks)
-* **Phase 2: Multi-Repo Workspace & ATDD Engine** — **`[COMPLETED & 100% VERIFIED]`** (13/13 Tasks)
-* **Phase 3: Frontend Mission Control & HITL Observability** — **`[COMPLETED & 100% VERIFIED]`** (21/21 Tasks)
-* **Phase 4: Telemetry, Shadow Benchmarking & Routing** — *`[Next Up]`* (12 Tasks)
-* **Phase 5: Security, Deployment & E2E Factory Verification** — *`[Planned]`* (12 Tasks)
+* **[Operator Runbook (`docs/RUNBOOK.md`)](docs/RUNBOOK.md):** operating procedures, troubleshooting and edge cases.
+* **[REST & WebSocket API Reference (`docs/API.md`)](docs/API.md):** HTTP endpoints, JSON payloads and WebSocket message types.
