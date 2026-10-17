@@ -100,7 +100,7 @@ func TestContainerMonitorRunLoopStopsOnCancel(t *testing.T) {
 	mon := NewContainerMonitor(NewDockerStatsSampler(runner), SpikeThresholds{})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { mon.Run(ctx, "c1", 5*time.Millisecond); close(done) }()
+	go func() { mon.Run(ctx, StaticContainers("c1"), 5*time.Millisecond); close(done) }()
 	time.Sleep(30 * time.Millisecond)
 	cancel()
 	select {

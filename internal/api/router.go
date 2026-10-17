@@ -154,6 +154,7 @@ func NewRouter(cfg RouterConfig) *Router {
 	if r.toolchain == nil {
 		r.toolchain = toolchain.New()
 	}
+	r.docker.onStats = r.reportContainerStats
 	r.connections = newConnectionChecker(r.quota)
 	stratRouter.SetAvailability(r.connections.Usable)
 	if saved := savedRouterSettings(); saved != nil {

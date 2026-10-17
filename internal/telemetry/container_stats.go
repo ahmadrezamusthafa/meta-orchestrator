@@ -37,9 +37,11 @@ type ResourceSpike struct {
 	At        time.Time `json:"at"`
 }
 
-// ResourceSummary aggregates samples collected during a build or test run.
+// ResourceSummary aggregates samples collected during a build or test run. With several
+// containers, each sample is their total CPU and memory at that moment.
 type ResourceSummary struct {
 	Samples        int             `json:"samples"`
+	Containers     int             `json:"containers"` // distinct containers seen
 	PeakCPUPercent float64         `json:"peak_cpu_percent"`
 	PeakMemoryMB   float64         `json:"peak_memory_mb"`
 	Spikes         []ResourceSpike `json:"spikes,omitempty"`
@@ -64,12 +66,17 @@ func NewDockerStatsSampler(runner CommandRunner) *DockerStatsSampler {
 	return &DockerStatsSampler{run: runner}
 }
 
-// Sample returns the current usage of one container.
-func (s *DockerStatsSampler) Sample(ctx context.Context, containerID string) (ContainerSample, error) {
-	out, err := s.run(ctx, "docker", "stats", "--no-stream", "--format", "{{json .}}", containerID)
-	if err != nil {
-		return ContainerSample{}, fmt.Errorf("docker stats %s: %w", containerID, err)
+// Sample returns the current usage of the given containers, one `docker stats` call for all.
+func (s *DockerStatsSampler) Sample(ctx context.Context, containerIDs ...string) ([]ContainerSample, error) {
+	if len(containerIDs) == 0 {
+		return nil, nil
 	}
+	args := append([]string{"stats", "--no-stream", "--format", "{{json .}}"}, containerIDs...)
+	out, err := s.run(ctx, "docker", args...)
+	if err != nil {
+		return nil, fmt.Errorf("docker stats: %w", err)
+	}
+	var samples []ContainerSample
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -78,12 +85,60 @@ func (s *DockerStatsSampler) Sample(ctx context.Context, containerID string) (Co
 		}
 		sample, err := ParseDockerStatsLine(line)
 		if err != nil {
-			return ContainerSample{}, err
+			return nil, err
 		}
 		sample.SampledAt = time.Now()
-		return sample, nil
+		samples = append(samples, sample)
 	}
-	return ContainerSample{}, fmt.Errorf("docker stats %s: empty output", containerID)
+	if len(samples) == 0 {
+		return nil, fmt.Errorf("docker stats: empty output")
+	}
+	return samples, nil
+}
+
+// ContainerInfo is one running container as `docker ps` lists it.
+type ContainerInfo struct {
+	ID        string
+	CreatedAt time.Time
+	Labels    map[string]string
+}
+
+type dockerPSJSON struct {
+	ID        string `json:"ID"`
+	CreatedAt string `json:"CreatedAt"`
+	Labels    string `json:"Labels"`
+}
+
+// dockerTimeLayout is how `docker ps` prints CreatedAt.
+const dockerTimeLayout = "2006-01-02 15:04:05 -0700 MST"
+
+// ListContainers returns the running containers.
+func (s *DockerStatsSampler) ListContainers(ctx context.Context) ([]ContainerInfo, error) {
+	out, err := s.run(ctx, "docker", "ps", "--no-trunc", "--format", "{{json .}}")
+	if err != nil {
+		return nil, fmt.Errorf("docker ps: %w", err)
+	}
+	var list []ContainerInfo
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var raw dockerPSJSON
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			return nil, fmt.Errorf("invalid docker ps line: %w", err)
+		}
+		c := ContainerInfo{ID: raw.ID, Labels: map[string]string{}}
+		c.CreatedAt, _ = time.Parse(dockerTimeLayout, raw.CreatedAt)
+		for _, kv := range strings.Split(raw.Labels, ",") {
+			if k, v, ok := strings.Cut(kv, "="); ok {
+				c.Labels[strings.TrimSpace(k)] = v
+			}
+		}
+		list = append(list, c)
+	}
+	return list, nil
 }
 
 type dockerStatsJSON struct {
@@ -140,7 +195,15 @@ func parseMemUsageMB(s string) (float64, error) {
 
 // Sampler abstracts container resource sampling.
 type Sampler interface {
-	Sample(ctx context.Context, containerID string) (ContainerSample, error)
+	Sample(ctx context.Context, containerIDs ...string) ([]ContainerSample, error)
+}
+
+// ContainerLister returns the containers to sample now.
+type ContainerLister func(ctx context.Context) ([]string, error)
+
+// StaticContainers always samples the given containers.
+func StaticContainers(ids ...string) ContainerLister {
+	return func(context.Context) ([]string, error) { return ids, nil }
 }
 
 // ContainerMonitor samples a container periodically, tracking peaks and spikes.
@@ -149,26 +212,35 @@ type ContainerMonitor struct {
 	sampler    Sampler
 	thresholds SpikeThresholds
 	summary    ResourceSummary
+	seen       map[string]bool
 	inCPUSpike bool
 	inMemSpike bool
 }
 
 // NewContainerMonitor creates a monitor.
 func NewContainerMonitor(sampler Sampler, thresholds SpikeThresholds) *ContainerMonitor {
-	return &ContainerMonitor{sampler: sampler, thresholds: thresholds}
+	return &ContainerMonitor{sampler: sampler, thresholds: thresholds, seen: map[string]bool{}}
 }
 
-// SampleOnce takes one sample and folds it into the summary.
-func (m *ContainerMonitor) SampleOnce(ctx context.Context, containerID string) error {
-	s, err := m.sampler.Sample(ctx, containerID)
+// SampleOnce samples the containers together and folds their total into the summary. No
+// containers is not a sample.
+func (m *ContainerMonitor) SampleOnce(ctx context.Context, containerIDs ...string) error {
+	if len(containerIDs) == 0 {
+		return nil
+	}
+	samples, err := m.sampler.Sample(ctx, containerIDs...)
 	if err != nil {
 		return err
 	}
-	if s.SampledAt.IsZero() {
-		s.SampledAt = time.Now()
-	}
+	s := ContainerSample{SampledAt: time.Now()}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, c := range samples {
+		s.CPUPercent += c.CPUPercent
+		s.MemoryMB += c.MemoryMB
+		m.seen[c.ContainerID] = true
+	}
+	m.summary.Containers = len(m.seen)
 	m.summary.Samples++
 	if s.CPUPercent > m.summary.PeakCPUPercent {
 		m.summary.PeakCPUPercent = s.CPUPercent
@@ -190,21 +262,26 @@ func (m *ContainerMonitor) SampleOnce(ctx context.Context, containerID string) e
 	return nil
 }
 
-// Run samples every interval until ctx is cancelled. Sampling errors are skipped
-// (the container may not be up yet or may have exited).
-func (m *ContainerMonitor) Run(ctx context.Context, containerID string, interval time.Duration) {
+// Run samples the listed containers every interval until ctx is cancelled. Listing and sampling
+// errors are skipped (a container may not be up yet or may have exited).
+func (m *ContainerMonitor) Run(ctx context.Context, list ContainerLister, interval time.Duration) {
 	if interval <= 0 {
 		interval = 2 * time.Second
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	_ = m.SampleOnce(ctx, containerID)
+	tick := func() {
+		if ids, err := list(ctx); err == nil {
+			_ = m.SampleOnce(ctx, ids...)
+		}
+	}
+	tick()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = m.SampleOnce(ctx, containerID)
+			tick()
 		}
 	}
 }
