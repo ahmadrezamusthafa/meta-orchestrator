@@ -8,6 +8,7 @@ import InstallWizardModal from '../components/tools/InstallWizardModal.vue'
 import RollbackConfirmModal from '../components/tools/RollbackConfirmModal.vue'
 import BestFitMatrixModal from '../components/tools/BestFitMatrixModal.vue'
 import ToolchainSection from '../components/toolchain/ToolchainSection.vue'
+import ConnectorSuggestions from '../components/toolchain/ConnectorSuggestions.vue'
 import { Search, Sparkles, Wrench, X, RefreshCw } from 'lucide-vue-next'
 
 const toolsStore = useToolsStore()
@@ -139,6 +140,10 @@ async function handleRefresh() {
           title="Stack toolchain"
           empty-text="No registered repository needs command-line tools yet. Register projects in Projects, or show every supported tool."
         />
+      </div>
+
+      <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+        <ConnectorSuggestions :scope="{}" title="Connectors your repositories use" />
       </div>
 
       <h2 class="text-xs uppercase tracking-wider text-slate-500 font-semibold">Orchestrator packages</h2>

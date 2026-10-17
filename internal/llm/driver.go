@@ -47,6 +47,9 @@ type LLMRequest struct {
 	WorkDir string `json:"work_dir,omitempty"`
 	// AddDirs are extra directories an agentic provider may read (Claude Code CLI --add-dir).
 	AddDirs []string `json:"add_dirs,omitempty"`
+	// MCPConfig is a file of MCP servers the agent may use this turn (Claude Code CLI
+	// --mcp-config), on top of the ones the agent already has configured.
+	MCPConfig string `json:"-"`
 	// PermissionMode for agentic providers; empty means read-only ("plan").
 	PermissionMode string `json:"permission_mode,omitempty"`
 	// Timeout bounds agentic turns; zero uses the driver default.

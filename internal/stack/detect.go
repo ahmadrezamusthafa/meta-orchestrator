@@ -53,6 +53,8 @@ type Profile struct {
 	Techs []Tech `json:"techs"`
 	// Truncated is set when the scan hit its file limit, so a technology may be missing.
 	Truncated bool `json:"truncated,omitempty"`
+	// Hosts are the hosts of the repository's git remotes, e.g. "github.com".
+	Hosts []string `json:"hosts,omitempty"`
 
 	nodePkgs  map[string]nodePkg // folder → package.json facts
 	lints     map[string]bool    // folders holding a golangci-lint config
@@ -295,6 +297,7 @@ func Detect(root string, opt Options) Profile {
 		}
 	}
 	p.jvmBuilds = jvmBuildRoots(files)
+	p.Hosts = gitHosts(root)
 	return p
 }
 

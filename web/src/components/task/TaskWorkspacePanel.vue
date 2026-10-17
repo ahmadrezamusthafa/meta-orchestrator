@@ -6,6 +6,7 @@ import { useTaskStore } from '../../stores/tasks'
 import { useToastStore } from '../../stores/toast'
 import type { Task, TaskWorktreeDTO, RepoDiffDTO } from '../../types'
 import ToolchainSection from '../toolchain/ToolchainSection.vue'
+import ConnectorSuggestions from '../toolchain/ConnectorSuggestions.vue'
 import {
   FolderGit2, GitBranch, Copy, Check, AlertCircle, FileDiff, RefreshCw, Pencil, ShieldCheck, CircleDashed,
 } from 'lucide-vue-next'
@@ -252,6 +253,12 @@ onMounted(async () => {
         class="pt-2 border-t border-slate-800"
         :scope="{ task: task.id }"
         title="Toolchain on this machine"
+      />
+      <ConnectorSuggestions
+        v-if="task.assigned_repos?.length"
+        :key="'conn-' + task.assigned_repos.join(',')"
+        class="pt-2 border-t border-slate-800"
+        :scope="{ task: task.id }"
       />
     </div>
   </div>

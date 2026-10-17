@@ -110,7 +110,13 @@ func TestToolchainEndpoints(t *testing.T) {
 		t.Fatalf("catalog view = %d %v", w.Code, out)
 	}
 	w, out = tcDo(t, r, http.MethodGet, "/api/v1/tasks/TASK-9/toolchain", "")
-	if w.Code != http.StatusOK || len(out["items"].([]interface{})) != 2 {
+	stackTools := 0
+	for _, raw := range out["items"].([]interface{}) {
+		if id := raw.(map[string]interface{})["id"]; id == "tofu" || id == "terragrunt" {
+			stackTools++
+		}
+	}
+	if w.Code != http.StatusOK || stackTools != 2 || out["ready"] != true {
 		t.Fatalf("task view = %d %v", w.Code, out)
 	}
 	if w, _ := tcDo(t, r, http.MethodPost, "/api/v1/toolchain/recheck?project=platform", ""); w.Code != http.StatusOK {

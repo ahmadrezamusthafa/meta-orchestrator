@@ -35,6 +35,26 @@ func Requirements(repos []stack.Repo) []Requirement {
 	return out
 }
 
+// Merge combines requirement lists: a tool is required when any list requires it, and keeps every
+// reason.
+func Merge(lists ...[]Requirement) []Requirement {
+	var out []Requirement
+	index := map[string]int{}
+	for _, list := range lists {
+		for _, r := range list {
+			if i, ok := index[r.Tool]; ok {
+				out[i].Required = out[i].Required || r.Required
+				out[i].Reasons = append(out[i].Reasons, r.Reasons...)
+				continue
+			}
+			index[r.Tool] = len(out)
+			r.Reasons = append([]string(nil), r.Reasons...)
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // MethodView is an install method as this machine sees it.
 type MethodView struct {
 	Index     int    `json:"index"`

@@ -25,7 +25,7 @@ func (e *toolsMissingError) Error() string {
 
 // toolchainFor reports the tools the named repositories need (and every catalog tool with all).
 func (r *Router) toolchainFor(repos []string, all bool) toolchain.Report {
-	return r.toolchain.Report(toolchain.Requirements(r.repoStacks(repos)), all)
+	return r.toolchain.Report(toolchain.Merge(toolchain.Requirements(r.repoStacks(repos)), r.connectorToolNeeds()), all)
 }
 
 // toolchainGate stops a code stage whose verification tools are missing, unless the operator

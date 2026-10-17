@@ -132,6 +132,25 @@ Every detected stack declares the command-line tools its checks need: required t
 
 API: `GET /api/v1/toolchain[?task=|?project=][&all=1]`, `POST /api/v1/toolchain/recheck`, `POST /api/v1/toolchain/install {"tool","method"}`, `GET /api/v1/toolchain/jobs/{id}`, `GET /api/v1/tasks/{id}/toolchain`, `POST /api/v1/tasks/{id}/toolchain/ack`. A blocked stage start answers `409 {"status":"needs_tools","missing":[…],"toolchain":{…}}` and broadcasts the `toolchain.needed` WebSocket event. **Adding a tool** means adding one `Catalog` entry (`internal/toolchain/catalog.go`) and asking for it from `Profile.Needs` (`internal/stack/needs.go`).
 
+### 9. Connectors for the Stack (`internal/connectors`)
+Agents can read live state from third-party services through MCP servers. Each connector is opt-in, its access is described in the UI and in the agent brief, and it defaults to read-only.
+
+| Connector | MCP server | Agent access | Credential |
+|---|---|---|---|
+| GitHub | GitHub's official server (`github-mcp-server`, else its Docker image) | Read-only: repos, issues, PRs, Actions runs and logs | Fine-grained PAT (Read) or `GITHUB_TOKEN` |
+| Grafana | `mcp-grafana`, else Docker `mcp/grafana` | Dashboards, alerts, Prometheus/Loki/Tempo queries (Viewer role) | Service account token |
+| Azure | `@azure/mcp` with `--read-only` | Resources and Container Apps | `az login` |
+| Cloudflare | Cloudflare Observability server via `mcp-remote` | Workers logs and analytics | Read-only API token |
+| Jira, Confluence, Bitbucket, GitLab, Slack, Linear, Notion | as configured | as configured | as configured |
+
+* **Suggested from the stack:** a GitHub/GitLab/Bitbucket remote, GitHub Actions, OpenTelemetry/Grafana, Azure Container Apps and Cloudflare each suggest their connector. Suggestions appear in *Tool Hub* and *Task → Workspace & Repos*, and **Connect** opens the connector's setup with step-by-step instructions.
+* **Into every agent turn:** enabled connectors that are connected or configured, and have their credentials, are passed to the Claude CLI with `--mcp-config` in a private per-turn file (mode 0600 in a 0700 folder) that is deleted when the turn ends. The agent brief lists them as `mcp__<id>__*` with their access, plus the suggested connectors that are not connected yet. Tool calls that write still ask the operator.
+* **Real tests:** *Test MCP* on a stack connector checks its credential against the service's API, then starts the MCP server, performs the `initialize` handshake and lists its tools. The periodic ping only checks credentials.
+* **Secrets:** API responses and WebSocket events carry masked credentials only (`••••last4`). Saving a masked value keeps the stored secret, and `connectors.json`, `.mcp.json` and `.sdlc/mcp.json` are written with mode 0600.
+* **Launchers:** the native MCP server is used once installed (Tool Hub offers `go install` for `github-mcp-server` and `mcp-grafana`, and Homebrew for the Azure CLI); otherwise Docker is used. A command you customise is never replaced.
+
+**Adding a connector** means adding one `stackConnectors` entry (`internal/connectors/stack_connectors.go`) and, for a suggestion, one `connectorRules` entry (`internal/api/connector_suggestions.go`).
+
 
 ---
 

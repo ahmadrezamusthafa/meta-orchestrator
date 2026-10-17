@@ -22,13 +22,11 @@ func (r *Router) handleConnectors(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	cfg := r.cfg.ConnectorsManager.GetConfig()
-	items := r.cfg.ConnectorsManager.ListConnectors()
-
+	cfg := r.cfg.ConnectorsManager.MaskedConfig()
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"jira":       cfg.Jira,
 		"confluence": cfg.Confluence,
-		"items":      items,
+		"items":      cfg.Items,
 	})
 }
 
@@ -39,8 +37,7 @@ func (r *Router) handleConnectorCatalog(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	items := r.cfg.ConnectorsManager.ListConnectors()
-	r.writeJSON(w, http.StatusOK, items)
+	r.writeJSON(w, http.StatusOK, connectors.MaskedList(r.cfg.ConnectorsManager.ListConnectors()))
 }
 
 // handleConnectorItemAction routes actions for a specific connector item (/api/v1/connectors/items/{id}...).
@@ -70,7 +67,7 @@ func (r *Router) handleConnectorItemAction(w http.ResponseWriter, req *http.Requ
 			r.writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		r.writeJSON(w, http.StatusOK, updated)
+		r.writeJSON(w, http.StatusOK, connectors.Masked(updated))
 		return
 	}
 
@@ -108,6 +105,15 @@ func (r *Router) handleConnectorItemAction(w http.ResponseWriter, req *http.Requ
 				mcpCfg = *item.MCP
 			}
 		}
+		if connectors.IsStackConnector(id) {
+			// Start the server for real (initialize + tools/list) with the saved credentials.
+			if item, err := r.cfg.ConnectorsManager.GetConnector(id); err == nil {
+				cp := *item
+				cp.MCP = &mcpCfg
+				r.writeJSON(w, http.StatusOK, r.cfg.ConnectorsManager.TestGenericConnector(req.Context(), id, &cp))
+				return
+			}
+		}
 		res := r.cfg.ConnectorsManager.TestMCPConnector(req.Context(), id, &mcpCfg)
 		r.writeJSON(w, http.StatusOK, res)
 		return
@@ -121,7 +127,7 @@ func (r *Router) handleConnectorItemAction(w http.ResponseWriter, req *http.Requ
 			r.writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		r.writeJSON(w, http.StatusOK, item)
+		r.writeJSON(w, http.StatusOK, connectors.Masked(item))
 
 	case http.MethodPut, http.MethodPost:
 		var item types.ConnectorItem
@@ -135,7 +141,7 @@ func (r *Router) handleConnectorItemAction(w http.ResponseWriter, req *http.Requ
 			r.writeError(w, http.StatusInternalServerError, "Failed to update connector: "+err.Error())
 			return
 		}
-		r.writeJSON(w, http.StatusOK, updated)
+		r.writeJSON(w, http.StatusOK, connectors.Masked(updated))
 
 	default:
 		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -160,7 +166,7 @@ func (r *Router) handleConnectorJira(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.writeJSON(w, http.StatusOK, r.cfg.ConnectorsManager.GetConfig().Jira)
+	r.writeJSON(w, http.StatusOK, r.cfg.ConnectorsManager.MaskedConfig().Jira)
 }
 
 // handleConnectorConfluence updates Confluence configuration.
@@ -181,7 +187,7 @@ func (r *Router) handleConnectorConfluence(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
-	r.writeJSON(w, http.StatusOK, r.cfg.ConnectorsManager.GetConfig().Confluence)
+	r.writeJSON(w, http.StatusOK, r.cfg.ConnectorsManager.MaskedConfig().Confluence)
 }
 
 // handleConnectorTest tests connectivity to JIRA or Confluence.

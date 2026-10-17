@@ -1,4 +1,4 @@
-import type { ToolchainJob, ToolchainReport } from '../types'
+import type { ConnectorSuggestion, ToolchainJob, ToolchainReport } from '../types'
 
 const BASE_URL = '/api/v1'
 
@@ -52,6 +52,11 @@ export const toolchainApi = {
   },
   async taskReport(taskId: string): Promise<ToolchainReport> {
     return json(await fetch(`${BASE_URL}/tasks/${encodeURIComponent(taskId)}/toolchain`), 'Loading the task toolchain')
+  },
+  /** Connectors the scope's repositories would use (GitHub, Grafana, Azure, …) and whether agents get them. */
+  async connectorSuggestions(scope?: ToolchainScope): Promise<ConnectorSuggestion[]> {
+    const q = query({ task: scope?.task, project: scope?.project })
+    return json(await fetch(`${BASE_URL}/connectors/suggestions${q}`), 'Loading connector suggestions')
   },
   /** Lets the task's code stages run without the tools that are missing right now. */
   async acknowledge(taskId: string): Promise<ToolchainReport> {

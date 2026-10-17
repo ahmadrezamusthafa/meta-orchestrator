@@ -206,3 +206,32 @@ func TestBrief(t *testing.T) {
 		t.Error("no detected stack means no brief")
 	}
 }
+
+func TestGitHosts(t *testing.T) {
+	root := writeRepo(t, map[string]string{".git/config": "[remote \"origin\"]\n\turl = git@github.com:acme/billing.git\n[remote \"mirror\"]\n\turl = https://user@bitbucket.org/acme/billing.git\n"})
+	if got := Detect(root, Quick).Hosts; strings.Join(got, ",") != "github.com,bitbucket.org" {
+		t.Fatalf("hosts = %v", got)
+	}
+	// A worktree's .git file points at the main repository's config.
+	wt := writeRepo(t, map[string]string{".git": "gitdir: " + root + "/.git/worktrees/x\n"})
+	writeFile(t, root, ".git/worktrees/x/commondir", "../..\n")
+	if got := Detect(wt, Quick).Hosts; strings.Join(got, ",") != "github.com,bitbucket.org" {
+		t.Fatalf("worktree hosts = %v", got)
+	}
+	for in, want := range map[string]string{"ssh://git@gitlab.com:22/a/b.git": "gitlab.com", "https://GitHub.com/a/b": "github.com", "/local/path": ""} {
+		if got := remoteHost(in); got != want {
+			t.Errorf("remoteHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func writeFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	p := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

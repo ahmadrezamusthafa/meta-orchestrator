@@ -61,6 +61,8 @@ const (
 	ConnectorCategoryDocumentation ConnectorCategory = "documentation"
 	ConnectorCategoryChatOps       ConnectorCategory = "chatops"
 	ConnectorCategoryVCS           ConnectorCategory = "vcs"
+	ConnectorCategoryObservability ConnectorCategory = "observability"
+	ConnectorCategoryCloud         ConnectorCategory = "cloud"
 	ConnectorCategoryCustom        ConnectorCategory = "custom"
 )
 
@@ -89,6 +91,16 @@ type ConnectorItem struct {
 	ErrorMessage  string                 `json:"error_message,omitempty"`
 	HasEnvAuth    bool                   `json:"has_env_auth,omitempty"`
 	EnvAuthSource string                 `json:"env_auth_source,omitempty"`
+	// AgentAccess tells the operator and the agents what the connector's MCP server may do, e.g.
+	// "Read-only: dashboards, Prometheus, Loki and Tempo queries".
+	AgentAccess string `json:"agent_access,omitempty"`
+}
+
+// AgentConnector is a connector whose MCP server agents get in their turns.
+type AgentConnector struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Access string `json:"access,omitempty"`
 }
 
 // ToggleConnectorRequest represents a quick toggle enable/disable command.

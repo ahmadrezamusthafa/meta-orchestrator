@@ -868,7 +868,7 @@ export interface ConfluenceConfig {
   error_message?: string
 }
 
-export type ConnectorCategory = 'issue_tracker' | 'documentation' | 'chatops' | 'vcs' | 'custom'
+export type ConnectorCategory = 'issue_tracker' | 'documentation' | 'chatops' | 'vcs' | 'observability' | 'cloud' | 'custom'
 
 export interface MCPConfig {
   enabled: boolean
@@ -903,6 +903,8 @@ export interface ConnectorItem {
   error_message?: string
   has_env_auth?: boolean
   env_auth_source?: string
+  /** What the connector's MCP server may do for agents, e.g. "Read-only: dashboards and queries". */
+  agent_access?: string
 }
 
 export interface ToggleConnectorRequest {
@@ -1347,4 +1349,16 @@ export interface ToolchainReport {
   ready: boolean
   /** Task reports only: tools the operator chose to run without. */
   acknowledged?: string[]
+}
+
+/** A connector the repositories' stacks would use, and whether agents already get it. */
+export interface ConnectorSuggestion {
+  id: string
+  name: string
+  reasons: string[]
+  status: ConnectorItem['status']
+  enabled: boolean
+  /** Agents get it in their turns (enabled, connected or configured, credentials set). */
+  ready: boolean
+  access?: string
 }
