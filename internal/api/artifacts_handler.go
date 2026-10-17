@@ -51,6 +51,24 @@ func (r *Router) resolveArtifactPath(taskID, name string) (string, error) {
 	return full, nil
 }
 
+// realArtifactPath resolves symlinks in path (from resolveArtifactPath) and reports whether the file
+// it names is still inside the task's artifact directory.
+func (r *Router) realArtifactPath(taskID, path string) (string, bool) {
+	base, err := filepath.EvalSymlinks(r.artifactDir(taskID))
+	if err != nil {
+		return "", false
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(base, real)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", false
+	}
+	return real, true
+}
+
 // handleArtifacts serves GET /api/v1/artifacts/{task_id}/{path}: media files are streamed, text
 // files are returned as JSON. Only files that exist are served — nothing is synthesized.
 func (r *Router) handleArtifacts(w http.ResponseWriter, req *http.Request) {
@@ -66,6 +84,14 @@ func (r *Router) handleArtifacts(w http.ResponseWriter, req *http.Request) {
 	path, err := r.resolveArtifactPath(taskID, name)
 	if err != nil {
 		r.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Agents write into the artifact directory: never follow a symlink out of it.
+	reqPath := path
+	if real, ok := r.realArtifactPath(taskID, path); ok {
+		path = real
+	} else {
+		r.writeError(w, http.StatusNotFound, fmt.Sprintf("%s has no artifact %s", taskID, name))
 		return
 	}
 	st, err := os.Stat(path)
@@ -88,7 +114,7 @@ func (r *Router) handleArtifacts(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'")
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", taskID+"-"+filepath.Base(path)))
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", taskID+"-"+filepath.Base(reqPath)))
 		http.ServeFile(w, req, path)
 		return
 	}
@@ -103,7 +129,7 @@ func (r *Router) handleArtifacts(w http.ResponseWriter, req *http.Request) {
 	}
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"task_id":     taskID,
-		"filename":    filepath.ToSlash(strings.TrimPrefix(path, r.artifactDir(taskID)+string(filepath.Separator))),
+		"filename":    filepath.ToSlash(strings.TrimPrefix(reqPath, r.artifactDir(taskID)+string(filepath.Separator))),
 		"content":     string(content),
 		"modified_at": st.ModTime(),
 	})
