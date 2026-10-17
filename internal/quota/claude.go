@@ -42,10 +42,25 @@ func NewClaudeFetcher() *ClaudeFetcher {
 
 var errNoLogin = errors.New("no local login found")
 
+// keychainTimeout bounds the keychain read: `security` can block on an access prompt, and the
+// caller (a provider-card HTTP request) must not hang on it.
+var keychainTimeout = 5 * time.Second
+
+// keychainCommand builds the macOS keychain read; a variable so tests can substitute it.
+var keychainCommand = func(ctx context.Context) *exec.Cmd {
+	return exec.CommandContext(ctx, "security", "find-generic-password", "-s", "Claude Code-credentials", "-w")
+}
+
+func readKeychain() ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
+	defer cancel()
+	return keychainCommand(ctx).Output()
+}
+
 func loadClaudeCodeCredentials() (ClaudeCredentials, error) {
 	var raw []byte
 	if runtime.GOOS == "darwin" {
-		if out, err := exec.Command("security", "find-generic-password", "-s", "Claude Code-credentials", "-w").Output(); err == nil {
+		if out, err := readKeychain(); err == nil {
 			raw = out
 		}
 	}
