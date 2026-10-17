@@ -225,7 +225,7 @@ func (d *AnthropicDriver) completeViaCLI(ctx context.Context, req *LLMRequest, m
 	cmdCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cmdCtx, claudePath, "-p", promptStr, "--print")
+	cmd := exec.CommandContext(cmdCtx, claudePath, "-p", positionalArg(promptStr), "--print")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("claude CLI execution error: %v (output: %s)", err, string(output))
