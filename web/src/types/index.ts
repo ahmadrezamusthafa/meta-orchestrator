@@ -781,6 +781,30 @@ export interface HookItemDTO {
   type: string
   command: string
   policy: string
+  /** .sdlc/hooks.json or the convention script's path */
+  source?: string
+}
+
+export interface MethodItemDTO {
+  id: string
+  name: string
+  description: string
+  execution_pattern: string
+  allowed_roles: string[]
+  max_consecutive_iterations: number
+}
+
+export interface ProfileItemDTO {
+  id: string
+  name: string
+  role: string
+  description: string
+  allowed_skills: string[]
+  denied_skills: string[]
+  system_prompt_template: string
+  max_token_budget: number
+  /** Pipeline stages that run with this role. */
+  stages: string[]
 }
 
 export interface RegistryDTO {
@@ -790,10 +814,16 @@ export interface RegistryDTO {
     source: string
     format: string
     description: string
+    location?: string
+    enabled?: boolean
     repo_url?: string
   }>
   prompts: PromptItemDTO[]
   hooks: HookItemDTO[]
+  methods?: MethodItemDTO[]
+  profiles?: ProfileItemDTO[]
+  /** Registry files that exist but could not be read. */
+  problems?: string[]
 }
 
 export type ProjectRole = 'frontend' | 'backend' | 'automation-test' | 'contracts' | 'artifact' | 'infrastructure' | 'other'
