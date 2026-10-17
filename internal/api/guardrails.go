@@ -31,7 +31,6 @@ const (
 	atddStage = "atdd_creation"
 	// defaultFrustrationThreshold applies when the task's method sets no sane limit.
 	defaultFrustrationThreshold = 3
-	maxFrustrationThreshold     = 100
 	redPhaseScaffold            = "atdd/acceptance.spec.ts"
 )
 
@@ -55,10 +54,12 @@ func (r *Router) initGuardrails() {
 	r.redPhase = atdd.NewRedPhaseVerifier(r.writeLocks)
 }
 
-// frustrationThreshold is the task method's max_consecutive_iterations when set and sane.
+// frustrationThreshold is how many identical stage failures in a row block the task: 3, or the
+// task method's max_consecutive_iterations when that is stricter. The methods' limits count agent
+// iterations, so a looser limit (the shipped ones are 10–30) must not delay the halt.
 func (r *Router) frustrationThreshold(method string) int {
 	if m, err := r.methods.Get(strings.ToLower(method)); err == nil && m.MaxConsecutiveIterations > 0 &&
-		m.MaxConsecutiveIterations <= maxFrustrationThreshold {
+		m.MaxConsecutiveIterations < defaultFrustrationThreshold {
 		return m.MaxConsecutiveIterations
 	}
 	return defaultFrustrationThreshold
