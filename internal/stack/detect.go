@@ -63,6 +63,7 @@ type Profile struct {
 	lints     map[string]bool    // folders holding a golangci-lint config
 	jvmBuilds []jvmBuild         // Gradle/Maven build roots, shallowest first
 	dartPkgs  []dartPkg          // pubspec.yaml packages, shallowest first
+	others    []Package          // Ruby and Python manifests (packages.go), shallowest first
 }
 
 // Get returns the technology with id, if it was detected.
@@ -297,6 +298,8 @@ func Detect(root string, opt Options) Profile {
 			p.lints[dirOf(rel)] = true
 		case base == "pubspec.yaml" && len(p.dartPkgs) < maxDirs:
 			p.dartPkgs = append(p.dartPkgs, readDartPkg(root, rel, reader))
+		default:
+			p.addOtherManifest(rel)
 		}
 	}
 	p.jvmBuilds = jvmBuildRoots(files)

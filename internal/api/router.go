@@ -272,6 +272,7 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/projects", r.handleProjects)
 	r.mux.HandleFunc("/api/v1/projects/scan", r.handleProjectScan)
 	r.mux.HandleFunc("/api/v1/projects/", r.handleProjectItem)
+	r.mux.HandleFunc("/api/v1/dependencies/jobs/", r.handleDependencyJob)
 	r.mux.HandleFunc("/api/v1/fs/browse", r.handleFSBrowse)
 	r.mux.HandleFunc("/api/v1/fs/mkdir", r.handleFSMkdir)
 
