@@ -1,22 +1,12 @@
 package atdd
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
-
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ast"
 )
 
-// ATDDTestCase defines an individual test scenario mapped to PRD criteria.
-type ATDDTestCase struct {
-	ScenarioName  string   `json:"scenario_name"`
-	TargetRoute   string   `json:"target_route"`
-	ActionSteps   []string `json:"action_steps"`
-	AssertElement string   `json:"assert_element"`
-	ExpectedText  string   `json:"expected_text"`
-}
-
-// ATDDGenerator builds executable Playwright end-to-end test suites.
+// ATDDGenerator builds Playwright acceptance-test scaffolds from ATDD cases.
 type ATDDGenerator struct{}
 
 // NewATDDGenerator creates a generator.
@@ -24,31 +14,51 @@ func NewATDDGenerator() *ATDDGenerator {
 	return &ATDDGenerator{}
 }
 
-// GeneratePlaywrightSpec constructs Playwright TypeScript test file.
-func (g *ATDDGenerator) GeneratePlaywrightSpec(featureName string, cases []ATDDTestCase, astSlice *ast.ASTContextSlice) string {
+// jsString renders s as a JavaScript string literal. JSON strings are valid JS literals, and
+// encoding/json escapes quotes, backslashes, newlines, U+2028/U+2029 and </script>-like markup.
+func jsString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// IsWebCase reports whether a case is driven through a browser (not API or mobile).
+func IsWebCase(c Case) bool {
+	return !c.IsAPI() && !c.IsMobile()
+}
+
+// GeneratePlaywrightSpec writes a Playwright scaffold with one test per case. Every step and
+// expected result becomes a test.step that throws "not implemented", so the scaffold fails until
+// each step is written — it can never pass by accident.
+func (g *ATDDGenerator) GeneratePlaywrightSpec(featureName string, cases []Case) string {
 	var b strings.Builder
-
-	b.WriteString("import { test, expect } from '@playwright/test';\n\n")
-	b.WriteString(fmt.Sprintf("test.describe('%s Acceptance Suite (ATDD)', () => {\n", featureName))
-
+	b.WriteString("import { test } from '@playwright/test';\n\n")
+	b.WriteString("// Scaffold generated from the ATDD cases. Replace each notImplemented() with the real\n")
+	b.WriteString("// interaction or assertion; until then every test fails.\n")
+	b.WriteString("function notImplemented(what: string): never {\n  throw new Error('Not implemented: ' + what);\n}\n\n")
+	fmt.Fprintf(&b, "test.describe(%s, () => {\n", jsString(featureName+" acceptance suite (ATDD)"))
 	for _, c := range cases {
-		b.WriteString(fmt.Sprintf("  test('%s', async ({ page }) => {\n", c.ScenarioName))
-		if c.TargetRoute != "" {
-			b.WriteString(fmt.Sprintf("    await page.goto('%s');\n", c.TargetRoute))
+		name := c.ID
+		if c.Title != "" {
+			name += ": " + c.Title
 		}
-		for _, step := range c.ActionSteps {
-			b.WriteString(fmt.Sprintf("    // %s\n", step))
+		fmt.Fprintf(&b, "  test(%s, async () => {\n", jsString(name))
+		for _, p := range c.Preconditions {
+			fmt.Fprintf(&b, "    test.info().annotations.push({ type: 'precondition', description: %s });\n", jsString(p))
 		}
-		if c.AssertElement != "" {
-			b.WriteString(fmt.Sprintf("    const el = page.locator('%s');\n", c.AssertElement))
-			b.WriteString("    await expect(el).toBeVisible();\n")
-			if c.ExpectedText != "" {
-				b.WriteString(fmt.Sprintf("    await expect(el).toContainText('%s');\n", c.ExpectedText))
-			}
+		steps := 0
+		for _, s := range c.Steps {
+			fmt.Fprintf(&b, "    await test.step(%s, async () => notImplemented(%s));\n", jsString(s), jsString(s))
+			steps++
+		}
+		for _, e := range c.ExpectedResults {
+			fmt.Fprintf(&b, "    await test.step(%s, async () => notImplemented(%s));\n", jsString("Expect: "+e), jsString("assertion: "+e))
+			steps++
+		}
+		if steps == 0 {
+			fmt.Fprintf(&b, "    notImplemented(%s);\n", jsString("case "+c.ID+" has no steps"))
 		}
 		b.WriteString("  });\n\n")
 	}
-
 	b.WriteString("});\n")
 	return b.String()
 }

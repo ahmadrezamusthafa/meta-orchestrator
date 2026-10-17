@@ -173,6 +173,9 @@ type agentTurn struct {
 	Approver llm.Approver
 	// AddDirs are extra directories the agent may read, such as attached skills.
 	AddDirs []string
+	// OnTool observes the turn's tool calls and results; OnDecision every permission decision.
+	OnTool     func(llm.StreamEvent)
+	OnDecision func(llm.ApprovalRequest, llm.ApprovalDecision)
 }
 
 // beginTurn marks the task console busy. It fails if a turn is already running.
@@ -273,11 +276,17 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 			r.appendDelta(taskID, thinkID, types.ConsoleKindThinking, ev.Text)
 		case llm.StreamToolUse:
 			closeStreams(types.ConsoleDone) // text after a tool call is a new assistant block
+			if t.OnTool != nil {
+				t.OnTool(ev)
+			}
 			guard.toolUse(ev.ToolID, ev.ToolName, ev.ToolInput)
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindToolUse, TurnID: t.TurnID,
 				Tool: &types.ConsoleTool{ID: ev.ToolID, Name: ev.ToolName, Input: ev.ToolInput}})
 		case llm.StreamToolResult:
 			guard.toolResult(ev.ToolID, ev.IsError)
+			if t.OnTool != nil {
+				t.OnTool(ev)
+			}
 			r.docker.release(ev.ToolID)
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindToolResult, TurnID: t.TurnID, Content: ev.Text,
 				Tool: &types.ConsoleTool{ID: ev.ToolID, IsError: ev.IsError}})
@@ -325,6 +334,13 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 	approver = r.docker.wrap(approver, taskID, t.TurnID, func(msg string) {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: t.TurnID, Content: msg})
 	})
+	if next := approver; next != nil && t.OnDecision != nil {
+		approver = func(ctx context.Context, req llm.ApprovalRequest) llm.ApprovalDecision {
+			d := next(ctx, req)
+			t.OnDecision(req, d)
+			return d
+		}
+	}
 	req := &llm.LLMRequest{Messages: t.Messages, MaxTokens: t.MaxTokens, SessionID: t.SessionID, WorkDir: t.WorkDir, AddDirs: t.AddDirs,
 		PermissionMode: t.PermissionMode, Approver: approver, AllowedTools: readOnlyCommands}
 	// Connected connectors (GitHub, Grafana, Jira, …) reach the agent through a private per-turn
@@ -645,13 +661,13 @@ func (r *Router) startChatTurn(task *types.Task, message, model string) (string,
 		defer cancel()
 		// The operator is at the console, so the agent may act; anything gated asks them first.
 		workDir := r.resolveWorkDir(task)
-		mode := r.editMode(task.ID, workDir)
-		system := taskSystemPrompt(task, decision.Method) + r.stackBrief(task) + r.connectorsBrief(task) + "\n" + permissionBrief(mode)
+		mode, lock := r.chatGuard(task, turnID, r.editMode(task.ID, workDir))
+		system := taskSystemPrompt(task, decision.Method) + r.stackBrief(task) + r.connectorsBrief(task) + "\n" + permissionBrief(mode) + lock.brief()
 		msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: system}}, history...)
 		msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: message})
 		resp, used, _ := r.runAgentTurn(ctx, agentTurn{Source: "chat", TurnID: turnID, Task: task, Decision: decision,
 			TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, MaxTokens: defaultChatMaxToken,
-			PermissionMode: mode, Approver: r.approverFor(task.ID, turnID, mode)})
+			PermissionMode: mode, Approver: lock.approver(r.approverFor(task.ID, turnID, mode)), OnTool: lock.onTool, OnDecision: lock.decided})
 		r.endTurn(task.ID, turnID, resp, used)
 		r.notePRSync(task.ID, turnID)
 	}()

@@ -13,7 +13,6 @@ import (
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/api"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/artifacts"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/circuitbreaker"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/hooks"
@@ -95,22 +94,9 @@ func main() {
 	wsHub := ws.NewHub()
 	go wsHub.Run()
 
-	// 5. Anti-Loop Frustration Circuit Breaker
-	circuitBreaker := circuitbreaker.NewCircuitBreaker(3, func(payload *types.FrustrationHaltPayload) {
-		fmt.Printf("[Circuit Breaker] Tripped for task %s at stage %s (consecutive fails: %d)\n",
-			payload.TaskID, payload.StageID, payload.ConsecutiveFails)
-		wsHub.BroadcastEvent(&types.OrchestratorEvent{
-			Type:    types.EventFrustrationHalt,
-			TaskID:  payload.TaskID,
-			StageID: payload.StageID,
-			Payload: payload,
-		})
-	})
-
 	// 6. Router & Task Profiler
 	taskProfiler := router.NewTaskProfiler(cfg, cwd)
 	_ = taskProfiler
-	_ = circuitBreaker
 	_ = skillResolver
 	_ = artifactMgr
 	_ = hookEngine

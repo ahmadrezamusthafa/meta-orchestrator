@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/artifacts"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/atdd"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/circuitbreaker"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/connectors"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
@@ -16,6 +18,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/quota"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/security"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/telemetry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/toolchain"
@@ -81,6 +84,14 @@ type Router struct {
 	busyOps       sync.Map             // "pr:<task>" / "uat:<task>" while a delivery job runs
 	prClient      *pullrequest.Client  // opens pull requests; tests point it at a fake API
 	uatRunner     uatScreenshotRunner  // captures UAT screenshots; tests stub it
+
+	// Guardrails on the stage flow (guardrails.go).
+	methods     *registry.MethodRegistry           // per-method limits (configs/methods.json)
+	breaker     *circuitbreaker.CircuitBreaker     // halts a stage that keeps failing the same way
+	writeLocks  *security.WriteLockManager         // ATDD red-phase write lock
+	interceptor *security.PolyglotSkillInterceptor // enforces writeLocks on tool calls
+	redPhase    *atdd.RedPhaseVerifier             // judges the ATDD test run
+
 	lastPersisted []byte
 	stop          chan struct{}
 	closeOnce     sync.Once
@@ -156,6 +167,7 @@ func NewRouter(cfg RouterConfig) *Router {
 		stratRouter.SetSettings(*saved)
 	}
 	r.initTelemetry()
+	r.initGuardrails()
 	r.loadBoard()
 	r.loadConsoles()
 	r.reconcileIdleRunning()

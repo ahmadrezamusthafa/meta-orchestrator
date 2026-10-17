@@ -344,7 +344,8 @@ export const useTaskStore = defineStore('tasks', () => {
         if (task) {
           task.state = 'BLOCKED_FRUSTRATION'
           if (!task.metadata) task.metadata = {}
-          task.metadata.failing_trace = event.payload?.failing_trace || 'Frustration threshold exceeded'
+          task.metadata.failing_trace = event.payload?.last_stack_trace || 'Frustration threshold exceeded'
+          if (event.payload?.consecutive_fails) task.metadata.frustration_count = String(event.payload.consecutive_fails)
         }
       }
     })
