@@ -48,3 +48,15 @@ func TestBudgetTrackerOverBudgetReturnsCopy(t *testing.T) {
 		t.Fatalf("tracker state changed through returned usage: %d", got)
 	}
 }
+
+func TestSetTaskBudgetStartsAFreshStageBudget(t *testing.T) {
+	bt := NewBudgetTracker()
+	bt.SetTaskBudget("t", 100)
+	if _, err := bt.RecordUsage("t", 90, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	bt.SetTaskBudget("t", 100) // the next stage
+	if _, err := bt.RecordUsage("t", 90, 0, 0); err != nil {
+		t.Fatalf("an earlier stage's usage must not count against the next stage: %v", err)
+	}
+}

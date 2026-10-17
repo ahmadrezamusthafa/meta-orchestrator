@@ -543,8 +543,17 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 		task.TokenUsage.TotalTokens += resp.TokenUsage.TotalTokens
 		task.TokenUsage.EstimatedCostUSD += resp.TokenUsage.EstimatedCostUSD
 	}
+	var budgetNote string
 	if resp != nil && r.budgetTracker != nil {
-		_, _ = r.budgetTracker.RecordUsage(taskID, resp.TokenUsage.PromptTokens, resp.TokenUsage.CompletionTokens, resp.TokenUsage.EstimatedCostUSD)
+		// A turn is only measured once it ends, so going over budget is reported, not enforced:
+		// failing the stage then would throw away work that is already done and paid for.
+		if _, err := r.budgetTracker.RecordUsage(taskID, resp.TokenUsage.PromptTokens, resp.TokenUsage.CompletionTokens, resp.TokenUsage.EstimatedCostUSD); err != nil {
+			budgetNote = fmt.Sprintf("⚠ %s went over its token budget: %v. Consider a smaller model or a narrower stage.", stage, err)
+			if task.Metadata == nil {
+				task.Metadata = map[string]string{}
+			}
+			task.Metadata["budget_exceeded"] = stage
+		}
 	}
 
 	switch {
@@ -586,6 +595,9 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 		kind = types.ConsoleKindError
 	}
 	r.addEntry(taskID, types.ConsoleEntry{Kind: kind, Content: note})
+	if budgetNote != "" {
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: budgetNote})
+	}
 	r.reportFrustrationHalt(halt)
 	r.broadcastTask(snap)
 	r.afterStageSettled(taskID, stage, execErr)
