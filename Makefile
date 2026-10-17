@@ -1,4 +1,4 @@
-.PHONY: all dev run-daemon run-web build build-daemon build-web test clean help
+.PHONY: all dev run-daemon run-web build build-daemon build-web test clean help setup
 
 # Default target
 all: build
@@ -6,12 +6,18 @@ all: build
 # Display help commands
 help:
 	@echo "AI-Driven SDLC Meta-Orchestrator Control Targets:"
+	@echo "  make setup        - Install every missing required tool (Node.js, Git, Claude Code CLI)"
+	@echo "                      (more: go run ./cmd/daemon packages <list|install|update|rollback|uninstall|versions> [id] [version])"
 	@echo "  make dev          - Run both Go Daemon (:8080) and Vue 3 Frontend (:5173)"
 	@echo "  make run-daemon   - Start the Go Daemon server (:8080)"
 	@echo "  make run-web      - Start the Vite dev frontend (:5173)"
 	@echo "  make build        - Compile Go daemon binary and build frontend production bundle"
 	@echo "  make test         - Run all Go test suites and Vue TypeScript typechecks"
 	@echo "  make clean        - Remove build artifacts and temporary binaries"
+
+# Install every missing required package from configs/packages.json, dependencies first
+setup:
+	go run ./cmd/daemon packages setup
 
 # Start Go Daemon (:8080)
 run-daemon:

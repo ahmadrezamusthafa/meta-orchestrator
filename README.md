@@ -156,13 +156,32 @@ Agents can read live state from third-party services through MCP servers. Each c
 * **Real tests:** *Test MCP* on a stack connector checks its credential against the service's API (ClickUp also lists the workspaces the token reaches, and Trello warns when the token can write), then starts the MCP server, performs the `initialize` handshake and lists its tools. The periodic ping only checks credentials.
 * **Secrets:** API responses and WebSocket events carry masked credentials only (`••••last4`). Saving a masked value keeps the stored secret, and `connectors.json`, `.mcp.json` and `.sdlc/mcp.json` are written with mode 0600.
 * **Migration:** Linear and Notion used to name `@modelcontextprotocol/server-linear` and `server-notion`, which were never published. They now start `@tacticlaunch/mcp-linear` and Notion's official server, and the saved token carries over.
-* **Launchers:** the native MCP server is used once installed (Tool Hub offers `go install` for `github-mcp-server` and `mcp-grafana`, and Homebrew for the Azure CLI); otherwise Docker is used. A command you customise is never replaced.
+* **Launchers:** the native MCP server is used once installed (the Tool Hub installs managed `go install` builds of `github-mcp-server` and `mcp-grafana`, and the stack toolchain offers Homebrew for the Azure CLI); otherwise Docker is used. A command you customise is never replaced.
 
 **Adding a connector** means adding one `stackConnectors` entry (`internal/connectors/stack_connectors.go`) and, for a suggestion, one `connectorRules` entry (`internal/api/connector_suggestions.go`).
 
 
-### 10. Tool Hub (`internal/tools`)
-Tools come from `configs/tools.json`. Each one's `health_check_cmd` runs without a shell (20 s timeout, cached for a minute) to show whether it is installed and which version. **Install** runs a real toolchain job when the tool maps to a toolchain catalog entry; otherwise the hub shows the manual install command and docs. The compatibility check compares each tool's `required_runtimes` with the runtimes found on this machine. There is no version rollback.
+### 10. Tool Hub: package manager (`internal/packages`)
+The tools the orchestrator itself uses come from `configs/packages.json` (operator-owned): Claude Code CLI, Node.js and Git (required), Playwright and ffmpeg (recommended), Docker, BMAD, GSD, Superpowers and the GitHub/Grafana MCP servers. Each can be installed, updated, pinned to a version, rolled back and uninstalled from the Tool Hub (`/api/v1/packages`) or the CLI. State lives in `$MO_HOME` (default `~/.meta-orchestrator`): `packages/state.json` (kept versions, snapshots, history) plus the managed installs.
+
+| Kind | Packages | Install / update | Rollback | Uninstall |
+|---|---|---|---|---|
+| `npm-cli` | claude-code, playwright | `npm install --prefix $MO_HOME/packages/<id>/versions/<v>`; `$MO_HOME/bin/<binary>` is a symlink switched atomically | instant and offline to a kept version (the last 3 inactive are kept), or installs the requested one | managed versions and shims only; a system copy is reported, never touched |
+| `go-cli` | github-mcp-server, mcp-grafana | `GOBIN=<version dir>/bin go install <path>@v<version>` (needs Go) | as npm-cli | as npm-cli |
+| `npx-installer` | bmad, gsd | `npx -y <package>@<version> …` with the manifest's install/update arguments | restores a tar.gz snapshot of the footprint taken before every change (last 5 kept), offline | snapshot, the installer's own uninstaller when declared, then the footprint is removed |
+| `claude-plugin` | superpowers | `claude plugin install/update` (latest only) | best effort: restores the snapshotted cache folder and rewrites the plugin's entry in `installed_plugins.json` (`.bak` kept); restart Claude Code | snapshot, then `claude plugin uninstall` |
+| `system` | node, git, ffmpeg, docker | Homebrew (or the toolchain catalog's unattended method); apt is shown as a command, never run; never sudo | not supported (system package managers keep no previous versions; use nvm/fnm for Node) | `brew uninstall` |
+
+`$MO_HOME/bin` is put first on the daemon's `PATH` at startup, so agents run the managed versions. Commands run without a shell (argv only), versions are validated, one job runs per package and per package manager (npm, go, brew, claude) at a time, each job has a 15-minute timeout and its process group is killed on cancel. Status comes from running each binary's version command (cached for a minute); the latest version is cached for an hour and fetched in the background, never while listing. A version that cannot be read is reported as `unknown`.
+
+```bash
+make setup                                   # install every missing required package, dependencies first
+go run ./cmd/daemon packages list            # status, version, latest
+go run ./cmd/daemon packages versions claude-code
+go run ./cmd/daemon packages install claude-code 2.1.302
+go run ./cmd/daemon packages rollback claude-code          # previous kept version
+go run ./cmd/daemon packages update|uninstall <id>
+```
 
 ### 11. Local-Only Access & Security
 The daemon runs agents with shell access and holds provider and connector credentials, so it accepts only local requests:

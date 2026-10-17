@@ -17,11 +17,11 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/hooks"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/localaccess"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/packages"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/toolchain"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
 	"github.com/redis/go-redis/v9"
 )
@@ -49,15 +49,47 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// preparePath puts the managed packages' shims first on PATH, then adds the package-manager bin
+// folders (Homebrew, go install, …) that may be missing when the daemon is not started from a
+// login shell, so installed tools are found by the daemon and the agents it starts.
+func preparePath() {
+	packages.EnsurePath(packages.DefaultHome())
+	toolchain.EnsurePath()
+}
+
+// loadPackages loads configs/packages.json; state lives in $MO_HOME or ~/.meta-orchestrator.
+func loadPackages(cwd string, tc *toolchain.Toolchain) *packages.Manager {
+	m, err := packages.Load(filepath.Join(cwd, "configs", "packages.json"), packages.Options{Home: packages.DefaultHome(), Toolchain: tc})
+	if err != nil {
+		fmt.Printf("[Packages] %v\n", err)
+	}
+	return m
+}
+
+// runPackagesCLI handles `daemon packages …` without starting the server.
+func runPackagesCLI(cwd string, args []string) int {
+	preparePath()
+	m := loadPackages(cwd, toolchain.New())
+	if m == nil {
+		return 1
+	}
+	defer m.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return packages.RunCLI(ctx, m, args, os.Stdout)
+}
+
 func main() {
+	cwd, _ := os.Getwd()
+	if len(os.Args) > 1 && os.Args[1] == "packages" {
+		os.Exit(runPackagesCLI(cwd, os.Args[2:]))
+	}
+
 	fmt.Println("================================================================")
 	fmt.Println("  Meta-Orchestrator Daemon")
 	fmt.Println("================================================================")
 
-	cwd, _ := os.Getwd()
-	// Package-manager bin folders (Homebrew, go install, …) may be missing when the daemon is not
-	// started from a login shell; add them so installed tools are found by the daemon and agents.
-	toolchain.EnsurePath()
+	preparePath()
 
 	// 1. Cascading Configuration Resolver
 	configResolver := config.NewCascadingConfigResolver(cwd)
@@ -82,13 +114,13 @@ func main() {
 	projectMgr := projects.NewProjectManager(cwd)
 	fmt.Printf("[Projects] Loaded %d registered multi-repo workspaces\n", len(projectMgr.List()))
 
-	// 3. Tool Lifecycle Manager
+	// 3. Package manager for the orchestrator's own tools
 	toolchainSvc := toolchain.New()
-	toolMgr, err := tools.Load(filepath.Join(cwd, "configs", "tools.json"), toolchainSvc)
-	if err != nil {
-		fmt.Printf("[Tools] Tool Hub manifest not loaded: %v\n", err)
+	pkgMgr := loadPackages(cwd, toolchainSvc)
+	if pkgMgr != nil {
+		defer pkgMgr.Close()
+		fmt.Printf("[Packages] Tracking %d packages; managed shims in %s\n", pkgMgr.Count(), pkgMgr.BinDir())
 	}
-	fmt.Printf("[Tools] Tool Hub tracks %d tools\n", toolMgr.Count())
 
 	// 4. WebSocket Streaming Hub
 	wsHub := ws.NewHub()
@@ -108,7 +140,7 @@ func main() {
 		HookEngine:  hookEngine,
 		// Stages run on a bounded pool (MO_MAX_CONCURRENT_STAGES, default 10) owned by the router.
 		MaxConcurrentStages: maxConcurrentStages(),
-		ToolManager:         toolMgr,
+		Packages:            pkgMgr,
 		Toolchain:           toolchainSvc,
 		ProfileRegistry:     profileReg,
 		ArtifactManager:     artifactMgr,
