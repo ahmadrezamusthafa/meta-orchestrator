@@ -79,7 +79,7 @@ func main() {
 
 	promptReg := registry.NewPromptRegistry(cwd)
 	skillResolver := skills.NewMultiSourceSkillResolver(cwd)
-	artifactMgr := artifacts.NewArtifactManager(".sdlc/artifacts")
+	artifactMgr := artifacts.NewArtifactManager(filepath.Join(cwd, ".sdlc", "artifacts"))
 	hookEngine := hooks.NewHookEngine(cwd)
 	taskStore := fsm.NewMemoryTaskStateStore()
 	projectMgr := projects.NewProjectManager(cwd)
@@ -112,7 +112,6 @@ func main() {
 	_ = taskProfiler
 	_ = circuitBreaker
 	_ = skillResolver
-	_ = artifactMgr
 	_ = hookEngine
 
 	// 7. Crash Recovery

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -89,6 +90,9 @@ type Router struct {
 
 // NewRouter constructs a new REST API router.
 func NewRouter(cfg RouterConfig) *Router {
+	if cfg.ArtifactManager == nil {
+		cfg.ArtifactManager = artifacts.NewArtifactManager(filepath.Join(cfg.RootDir, ".sdlc", "artifacts"))
+	}
 	if cfg.ConnectorsManager == nil {
 		cfg.ConnectorsManager = connectors.NewManager(cfg.RootDir)
 	}
