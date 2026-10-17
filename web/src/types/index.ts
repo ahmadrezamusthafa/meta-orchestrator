@@ -826,6 +826,13 @@ export interface RegistryDTO {
   problems?: string[]
 }
 
+/** A repository a draft task likely touches (POST /projects/{id}/suggest-repos). */
+export interface RepoSuggestion {
+  name: string
+  score: number
+  reasons: string[]
+}
+
 export type ProjectRole = 'frontend' | 'backend' | 'automation-test' | 'contracts' | 'artifact' | 'infrastructure' | 'other'
 
 export interface ProjectRepo {

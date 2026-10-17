@@ -6,7 +6,7 @@ import type {
   JiraSyncConfig, JiraSyncSettings,
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
-  UniversalSkillDTO, SkillSourceDTO, SkillRunResult, CheckPathCompatibilityResponse,
+  UniversalSkillDTO, SkillSourceDTO, SkillRunResult, RepoSuggestion, CheckPathCompatibilityResponse,
   PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
   OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO, RoutePreviewDTO, TierAssignmentDTO,
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
@@ -556,6 +556,17 @@ export const api = {
     if (res.status === 403 && body?.skill) return body // refused for the role: show why
     if (!res.ok) throw new Error(body?.error || `Skill run failed (HTTP ${res.status})`)
     return body
+  },
+
+  /** Ranks the project's repositories by how strongly a draft task points at them. */
+  async suggestRepos(projectId: string, title: string, description: string): Promise<RepoSuggestion[]> {
+    const res = await fetch(`${BASE_URL}/projects/${encodeURIComponent(projectId)}/suggest-repos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, description })
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to suggest repositories')
+    return (await res.json()).suggested_repos
   },
 
   async getRegistries(): Promise<RegistryDTO> {

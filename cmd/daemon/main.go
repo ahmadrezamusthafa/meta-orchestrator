@@ -20,7 +20,6 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/localaccess"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/toolchain"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
@@ -111,9 +110,6 @@ func main() {
 		})
 	})
 
-	// 6. Router & Task Profiler
-	taskProfiler := router.NewTaskProfiler(cfg, cwd)
-	_ = taskProfiler
 	_ = circuitBreaker
 	_ = skillResolver
 	_ = artifactMgr

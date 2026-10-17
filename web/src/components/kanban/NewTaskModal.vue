@@ -10,7 +10,7 @@ import ArtifactUploadDropzone from './ArtifactUploadDropzone.vue'
 import ComplexityAssessmentCard from '../routing/ComplexityAssessmentCard.vue'
 import RoutingPlanTable from '../routing/RoutingPlanTable.vue'
 import { api } from '../../services/api'
-import type { TaskAnalysisDTO, StageRoute, Complexity } from '../../types'
+import type { TaskAnalysisDTO, StageRoute, Complexity, RepoSuggestion } from '../../types'
 import { X, Sparkles, Layers, GitFork, Zap, FolderGit2, Link2, GitBranch, ChevronLeft, AlertOctagon } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -122,6 +122,25 @@ watch(selectedProjectId, () => {
   if (availableRepos.value.length > 0) {
     selectedRepos.value = availableRepos.value.map(r => r.name)
   }
+})
+
+// Repositories the title/description point at (name, stack, role words), offered — never applied
+// without the operator.
+const repoSuggestions = ref<RepoSuggestion[] | null>(null)
+const suggesting = ref(false)
+async function suggestRepos() {
+  if (!activeProject.value?.id) return
+  suggesting.value = true
+  try {
+    repoSuggestions.value = await api.suggestRepos(activeProject.value.id, title.value, description.value)
+  } catch (err: any) {
+    toastStore.error('Could not suggest repositories', err?.message)
+  } finally {
+    suggesting.value = false
+  }
+}
+watch([selectedProjectId, title, description], () => {
+  repoSuggestions.value = null
 })
 
 function handleFileSelected(file: File) {
@@ -368,8 +387,31 @@ async function handleSubmit() {
         <div>
           <label class="block text-xs font-medium text-slate-300 mb-1.5 flex items-center justify-between">
             <span>Target Repositories (Symlinked in Project Root)</span>
-            <span class="text-[11px] text-slate-500 font-mono">{{ selectedRepos.length }} selected</span>
+            <span class="flex items-center gap-3">
+              <button
+                v-if="activeProject?.repos?.length"
+                type="button"
+                :disabled="suggesting || !(title.trim() || description.trim())"
+                class="text-[11px] text-emerald-400 hover:underline disabled:text-slate-600 disabled:no-underline"
+                @click="suggestRepos"
+              >
+                {{ suggesting ? 'Matching…' : 'Suggest from description' }}
+              </button>
+              <span class="text-[11px] text-slate-500 font-mono">{{ selectedRepos.length }} selected</span>
+            </span>
           </label>
+          <div v-if="repoSuggestions" class="mb-2 text-[11px] text-slate-400">
+            <template v-if="repoSuggestions.length">
+              Suggested:
+              <span v-for="s in repoSuggestions" :key="s.name" class="font-mono text-slate-200 mr-2" :title="s.reasons.join('; ')">
+                {{ s.name }}
+              </span>
+              <button type="button" class="text-emerald-400 hover:underline" @click="selectedRepos = repoSuggestions.map((s) => s.name)">
+                Use these
+              </button>
+            </template>
+            <span v-else>Nothing in the title or description points at a specific repository.</span>
+          </div>
           <div class="flex flex-wrap gap-2">
             <label
               v-for="repo in availableRepos"

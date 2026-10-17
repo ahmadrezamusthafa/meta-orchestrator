@@ -59,6 +59,11 @@ func (r *Router) handleProjectItem(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if len(parts) > 1 && parts[1] == "suggest-repos" {
+		r.handleSuggestRepos(w, req, projectID)
+		return
+	}
+
 	// Handle sub-action: /api/v1/projects/{id}/resync
 	if len(parts) > 1 && parts[1] == "resync" {
 		if req.Method != http.MethodPost {
