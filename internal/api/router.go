@@ -197,6 +197,7 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/tasks/", r.handleTaskItem)
 	r.mux.HandleFunc("/api/v1/tasks/analyze", r.handleTaskAnalyze)
 	r.mux.HandleFunc("/api/v1/tasks/{id}/evidence/verify", r.handleEvidenceVerify)
+	r.mux.HandleFunc("/api/v1/tasks/{id}/outline", r.handleTaskOutline)
 	r.mux.HandleFunc("/api/v1/toolchain", r.handleToolchain)
 	r.mux.HandleFunc("/api/v1/toolchain/", r.handleToolchainAction)
 	r.mux.HandleFunc("/api/v1/tools", r.handleTools)

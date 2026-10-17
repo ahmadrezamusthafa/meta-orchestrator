@@ -2,6 +2,7 @@ package ast
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,7 +10,11 @@ import (
 	"strings"
 )
 
-// Language represents supported source languages for syntactic AST sharding.
+// The sharder is a line-based, regular-expression outline of a source file: declarations are
+// recognised per language by their opening line, bodies are left out. It is not a parser, so a
+// declaration split over several lines or produced by a macro can be missed.
+
+// Language represents supported source languages.
 type Language string
 
 const (
@@ -19,38 +24,41 @@ const (
 	LangPython     Language = "python"
 )
 
-// ASTSymbol represents an extracted syntactic declaration.
+// ErrUnsupportedLanguage is returned for files whose language the sharder does not outline.
+var ErrUnsupportedLanguage = errors.New("unsupported language: outlines cover .go, .ts/.tsx/.js/.jsx/.mjs/.vue, .php and .py files")
+
+// ASTSymbol represents an extracted declaration.
 type ASTSymbol struct {
 	Name      string `json:"name"`
-	Kind      string `json:"kind"` // "class", "interface", "function", "method", "route"
+	Kind      string `json:"kind"` // "class", "interface", "type", "function", "method", "route"
 	StartLine int    `json:"start_line"`
 	Signature string `json:"signature"`
 }
 
-// ASTContextSlice encapsulates compact syntactic context with token savings metrics.
+// ASTContextSlice is a file's outline. LineReductionPct is how many fewer lines the outline has
+// than the file; it is a line count, not a token measurement.
 type ASTContextSlice struct {
-	FilePath          string      `json:"file_path"`
-	Language          Language    `json:"language"`
-	OriginalLines     int         `json:"original_lines"`
-	ShardedLines      int         `json:"sharded_lines"`
-	TokenReductionPct float64     `json:"token_reduction_pct"`
-	Symbols           []ASTSymbol `json:"symbols"`
-	ShardedContent    string      `json:"sharded_content"`
+	FilePath         string      `json:"file_path"`
+	Language         Language    `json:"language"`
+	OriginalLines    int         `json:"original_lines"`
+	ShardedLines     int         `json:"sharded_lines"`
+	LineReductionPct float64     `json:"line_reduction_pct"`
+	Symbols          []ASTSymbol `json:"symbols"`
+	ShardedContent   string      `json:"sharded_content"`
 }
 
-// Sharder extracts high-leverage signatures and slices out body implementations.
+// Sharder extracts declarations and leaves out their bodies.
 type Sharder struct{}
 
-// NewSharder creates a new AST sharder instance.
+// NewSharder creates a new sharder instance.
 func NewSharder() *Sharder {
 	return &Sharder{}
 }
 
-// DetectLanguage resolves the language from file extension.
+// DetectLanguage resolves the language from the file extension; "" when unsupported.
 func (s *Sharder) DetectLanguage(filePath string) Language {
-	ext := strings.ToLower(filepath.Ext(filePath))
-	switch ext {
-	case ".ts", ".tsx", ".js", ".vue":
+	switch strings.ToLower(filepath.Ext(filePath)) {
+	case ".ts", ".tsx", ".js", ".jsx", ".mjs", ".vue":
 		return LangTypeScript
 	case ".go":
 		return LangGo
@@ -58,117 +66,113 @@ func (s *Sharder) DetectLanguage(filePath string) Language {
 		return LangPHP
 	case ".py":
 		return LangPython
-	default:
-		return LangTypeScript
 	}
+	return ""
 }
 
-// ShardFile reads a source file and extracts signatures, interfaces, and symbol contracts.
+type pattern struct {
+	re   *regexp.Regexp
+	kind string // "" takes the kind from the "kind" group
+}
+
+var (
+	tsClass   = pattern{regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?(?P<kind>class|interface|type|enum)\s+(?P<name>[A-Za-z0-9_$]+)`), ""}
+	tsFunc    = pattern{regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*(?P<name>[A-Za-z0-9_$]+)`), "function"}
+	tsArrow   = pattern{regexp.MustCompile(`^\s*(?:export\s+)?const\s+(?P<name>[A-Za-z0-9_$]+)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z0-9_$]+)\s*(?::\s*[^=]+)?=>`), "function"}
+	tsMethod  = pattern{regexp.MustCompile(`^\s+(?:(?:public|protected|private|static|readonly|override|abstract|async|get|set)\s+)*(?P<name>[A-Za-z0-9_$]+)\s*(?:<[^>]*>)?\([^)]*\)\s*(?::\s*[^{]+)?\{\s*$`), "method"}
+	route     = pattern{regexp.MustCompile(`(?:Route::|router\.|app\.)(?:get|post|put|delete|patch)\s*\(`), "route"}
+	goType    = pattern{regexp.MustCompile(`^type\s+(?P<name>[A-Za-z0-9_]+)(?:\[[^\]]*\])?\s+(?P<kind>struct|interface)\b`), ""}
+	goTypeAny = pattern{regexp.MustCompile(`^type\s+(?P<name>[A-Za-z0-9_]+)\b`), "type"}
+	goMethod  = pattern{regexp.MustCompile(`^func\s*\([^)]*\)\s*(?P<name>[A-Za-z0-9_]+)\s*[\[(]`), "method"}
+	goFunc    = pattern{regexp.MustCompile(`^func\s+(?P<name>[A-Za-z0-9_]+)\s*[\[(]`), "function"}
+	phpClass  = pattern{regexp.MustCompile(`^\s*(?:(?:abstract|final|readonly)\s+)*(?P<kind>class|interface|trait|enum)\s+(?P<name>[A-Za-z0-9_]+)`), ""}
+	phpFunc   = pattern{regexp.MustCompile(`^\s*(?:(?:public|protected|private|static|abstract|final)\s+)*function\s+&?\s*(?P<name>[A-Za-z0-9_]+)\s*\(`), "function"}
+	pyClass   = pattern{regexp.MustCompile(`^\s*class\s+(?P<name>[A-Za-z0-9_]+)`), "class"}
+	pyFunc    = pattern{regexp.MustCompile(`^(?P<indent>\s*)(?:async\s+)?def\s+(?P<name>[A-Za-z0-9_]+)\s*\(`), "function"}
+)
+
+var languagePatterns = map[Language][]pattern{
+	LangTypeScript: {tsClass, tsFunc, tsArrow, route, tsMethod},
+	LangGo:         {goType, goTypeAny, goMethod, goFunc},
+	LangPHP:        {phpClass, phpFunc, route},
+	LangPython:     {pyClass, pyFunc},
+}
+
+var tsKeywords = map[string]bool{"if": true, "for": true, "while": true, "switch": true, "catch": true, "function": true, "return": true, "with": true}
+
+func match(p pattern, line string) (name, kind string, ok bool) {
+	m := p.re.FindStringSubmatch(line)
+	if m == nil {
+		return "", "", false
+	}
+	kind = p.kind
+	for i, g := range p.re.SubexpNames() {
+		switch g {
+		case "name":
+			name = m[i]
+		case "kind":
+			kind = m[i]
+		case "indent":
+			if m[i] != "" {
+				kind = "method"
+			}
+		}
+	}
+	if p.kind == "route" {
+		name = strings.TrimSpace(line)
+	}
+	return name, kind, true
+}
+
+// maxLineBytes bounds one source line (minified files have very long ones).
+const maxLineBytes = 1 << 20
+
+// ShardFile reads a source file and outlines its imports and declarations.
 func (s *Sharder) ShardFile(filePath string) (*ASTContextSlice, error) {
+	lang := s.DetectLanguage(filePath)
+	if lang == "" {
+		return nil, ErrUnsupportedLanguage
+	}
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open source file: %w", err)
 	}
 	defer file.Close()
 
-	lang := s.DetectLanguage(filePath)
 	scanner := bufio.NewScanner(file)
-
-	var symbols []ASTSymbol
-	var shardedBuilder strings.Builder
+	scanner.Buffer(make([]byte, 64*1024), maxLineBytes)
+	symbols := []ASTSymbol{}
+	var out strings.Builder
+	fmt.Fprintf(&out, "// outline: %s [%s]\n", filepath.Base(filePath), lang)
 	lineNum := 0
-	originalLines := 0
-
-	// Regex patterns for syntactic definitions
-	classRegex := regexp.MustCompile(`(?m)^\s*(export\s+)?(class|interface|type)\s+([A-Za-z0-9_]+)`)
-	funcRegex := regexp.MustCompile(`(?m)^\s*(export\s+)?(async\s+)?(function|func|def)\s+([A-Za-z0-9_]+)`)
-	methodRegex := regexp.MustCompile(`(?m)^\s*(public|protected|private)?\s*(async\s+)?([A-Za-z0-9_]+)\s*\([^)]*\)\s*([{:]|\s*->)`)
-	routeRegex := regexp.MustCompile(`(?m)(Route::|router\.|app\.)(get|post|put|delete|patch)\s*\(`)
-
-	shardedBuilder.WriteString(fmt.Sprintf("// --- Syntactic AST Slice: %s [%s] ---\n", filepath.Base(filePath), lang))
-
 	for scanner.Scan() {
 		lineNum++
-		originalLines++
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
-
-		// Retain import statements
 		if strings.HasPrefix(trimmed, "import ") || strings.HasPrefix(trimmed, "use ") || strings.HasPrefix(trimmed, "from ") || strings.HasPrefix(trimmed, "package ") {
-			shardedBuilder.WriteString(line + "\n")
+			out.WriteString(line + "\n")
 			continue
 		}
-
-		// Detect Class/Interface/Type
-		if match := classRegex.FindStringSubmatch(line); len(match) > 3 {
-			sym := ASTSymbol{
-				Name:      match[3],
-				Kind:      match[2],
-				StartLine: lineNum,
-				Signature: trimmed,
+		for _, p := range languagePatterns[lang] {
+			name, kind, ok := match(p, line)
+			if !ok || (lang == LangTypeScript && kind == "method" && tsKeywords[name]) {
+				continue
 			}
-			symbols = append(symbols, sym)
-			shardedBuilder.WriteString(fmt.Sprintf("\n%s { /* implementation omitted */ }\n", trimmed))
-			continue
-		}
-
-		// Detect Functions
-		if match := funcRegex.FindStringSubmatch(line); len(match) > 4 {
-			sym := ASTSymbol{
-				Name:      match[4],
-				Kind:      "function",
-				StartLine: lineNum,
-				Signature: trimmed,
-			}
-			symbols = append(symbols, sym)
-			shardedBuilder.WriteString(fmt.Sprintf("%s { ... }\n", trimmed))
-			continue
-		}
-
-		// Detect Methods
-		if match := methodRegex.FindStringSubmatch(line); len(match) > 3 && !strings.HasPrefix(trimmed, "if") && !strings.HasPrefix(trimmed, "for") {
-			sym := ASTSymbol{
-				Name:      match[3],
-				Kind:      "method",
-				StartLine: lineNum,
-				Signature: trimmed,
-			}
-			symbols = append(symbols, sym)
-			shardedBuilder.WriteString(fmt.Sprintf("  %s { ... }\n", trimmed))
-			continue
-		}
-
-		// Detect Routes
-		if routeRegex.MatchString(line) {
-			sym := ASTSymbol{
-				Name:      trimmed,
-				Kind:      "route",
-				StartLine: lineNum,
-				Signature: trimmed,
-			}
-			symbols = append(symbols, sym)
-			shardedBuilder.WriteString(trimmed + "\n")
-			continue
+			symbols = append(symbols, ASTSymbol{Name: name, Kind: kind, StartLine: lineNum, Signature: trimmed})
+			out.WriteString(line + "\n")
+			break
 		}
 	}
-
-	shardedContent := shardedBuilder.String()
-	shardedLines := strings.Count(shardedContent, "\n")
-	reductionPct := 0.0
-	if originalLines > 0 {
-		reductionPct = float64(originalLines-shardedLines) / float64(originalLines) * 100.0
-		if reductionPct < 0 {
-			reductionPct = 0
-		}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read source file: %w", err)
 	}
 
-	return &ASTContextSlice{
-		FilePath:          filePath,
-		Language:          lang,
-		OriginalLines:     originalLines,
-		ShardedLines:      shardedLines,
-		TokenReductionPct: reductionPct,
-		Symbols:           symbols,
-		ShardedContent:    shardedContent,
-	}, nil
+	content := out.String()
+	shardedLines := strings.Count(content, "\n")
+	reduction := 0.0
+	if lineNum > 0 && shardedLines < lineNum {
+		reduction = float64(lineNum-shardedLines) / float64(lineNum) * 100.0
+	}
+	return &ASTContextSlice{FilePath: filePath, Language: lang, OriginalLines: lineNum, ShardedLines: shardedLines,
+		LineReductionPct: reduction, Symbols: symbols, ShardedContent: content}, nil
 }
