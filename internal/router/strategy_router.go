@@ -529,7 +529,7 @@ func (r *Router) routeCustom(stageID string, complexity string, repoTypes []stri
 		condition := strings.TrimSpace(parts[0])
 		action := strings.TrimSpace(parts[1])
 
-		if strings.Contains(condition, "stage:"+stageID) || strings.Contains(condition, "complexity:"+strings.ToLower(complexity)) {
+		if ruleMatches(condition, stageID, complexity) {
 			decision := &RoutingDecision{
 				Strategy:       "custom",
 				Model:          r.cfg.ModelTiers.Tier1Reasoning,
@@ -542,7 +542,7 @@ func (r *Router) routeCustom(stageID string, complexity string, repoTypes []stri
 
 			// Parse action key-values
 			for _, item := range strings.Split(action, ",") {
-				kv := strings.Split(strings.TrimSpace(item), ":")
+				kv := strings.SplitN(strings.TrimSpace(item), ":", 2) // model ids may contain ':' (qwen2.5-coder:7b)
 				if len(kv) == 2 {
 					switch kv[0] {
 					case "model":
@@ -557,4 +557,36 @@ func (r *Router) routeCustom(stageID string, complexity string, repoTypes []stri
 	}
 
 	return nil
+}
+
+// ruleMatches reports whether every "stage:<id>" / "complexity:<level>" term of a rule condition
+// holds. Stages compare by canonical id, so workflow ids (task_implementation) match their FSM
+// spellings (IMPLEMENTATION_GREEN); an unknown stage or complexity never matches a term.
+func ruleMatches(condition, stageID, complexity string) bool {
+	terms := strings.FieldsFunc(condition, func(c rune) bool { return c == ' ' || c == '\t' || c == ',' || c == '&' })
+	matched := false
+	for _, term := range terms {
+		key, val, ok := strings.Cut(term, ":")
+		if !ok {
+			return false
+		}
+		switch strings.ToLower(key) {
+		case "stage":
+			if strings.TrimSpace(stageID) == "" || canonicalRouterStage(val) != canonicalRouterStage(stageID) {
+				return false
+			}
+		case "complexity":
+			want := strings.ToUpper(strings.TrimSpace(val))
+			if want == "CRITICAL" {
+				want = "HIGH"
+			}
+			if strings.TrimSpace(complexity) == "" || want != NormalizeComplexity(complexity) {
+				return false
+			}
+		default:
+			return false
+		}
+		matched = true
+	}
+	return matched
 }
