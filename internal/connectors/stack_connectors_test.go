@@ -268,6 +268,57 @@ func TestMaskEnvCoversCommonCredentialNames(t *testing.T) {
 	}
 }
 
+func TestCredentialFilesArePrivateAndReplacedWhole(t *testing.T) {
+	isolate(t)
+	m := newTestManager(t, &types.ConnectorsConfig{}) // connectors.json starts out 0644
+	if _, err := m.ToggleConnector("slack", true); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{m.configPath, filepath.Join(m.rootDir, ".mcp.json"), filepath.Join(m.rootDir, ".sdlc", "mcp.json")} {
+		st, err := os.Stat(p)
+		if err != nil || st.Mode().Perm() != 0o600 {
+			t.Errorf("%s: mode %v err %v, want 0600", filepath.Base(p), st.Mode().Perm(), err)
+		}
+	}
+	entries, _ := os.ReadDir(filepath.Dir(m.configPath))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".connectors.json-") || strings.HasPrefix(e.Name(), ".mcp.json-") {
+			t.Errorf("temporary file left behind: %s", e.Name())
+		}
+	}
+	var saved types.ConnectorsConfig
+	if b, _ := os.ReadFile(m.configPath); json.Unmarshal(b, &saved) != nil || len(saved.Items) == 0 {
+		t.Fatal("connectors.json is not a complete config")
+	}
+}
+
+// Handlers read connectors while toggles and status probes change them: readers get copies.
+func TestConnectorReadsDoNotRaceWithUpdates(t *testing.T) {
+	isolate(t)
+	m := newTestManager(t, nil)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 30; i++ {
+			_, _ = m.ToggleConnector("grafana", i%2 == 0)
+			m.updateItemStatus("grafana", i%2 == 0, int64(i), "probe")
+		}
+	}()
+	for i := 0; i < 30; i++ {
+		if it, err := m.GetConnector("grafana"); err == nil {
+			_ = mustJSON(Masked(it))
+		}
+		_ = mustJSON(MaskedList(m.ListConnectors()))
+		_ = mustJSON(m.MaskedConfig())
+	}
+	<-done
+	it, _ := m.GetConnector("grafana")
+	it.MCP.Env["X"] = "changed"
+	if again, _ := m.GetConnector("grafana"); again.MCP.Env["X"] == "changed" {
+		t.Fatal("GetConnector must return a copy")
+	}
+}
+
 func mustJSON(v interface{}) string {
 	b, _ := json.Marshal(v)
 	return string(b)

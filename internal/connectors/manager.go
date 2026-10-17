@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -1084,12 +1086,33 @@ func (m *Manager) save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(m.configPath, data, 0o600); err != nil { // holds credentials
+	if err := writePrivateFile(m.configPath, data); err != nil { // holds credentials
 		return err
 	}
-	_ = os.Chmod(m.configPath, 0o600) // WriteFile keeps the mode of an existing file
 	_ = m.saveMCPConfigLocked()
 	return nil
+}
+
+// writePrivateFile replaces path with data, readable only by this user (0600). It writes a
+// sibling file and renames it over path, so a crash never leaves the credentials half written.
+func writePrivateFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*") // created 0600
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func (m *Manager) getMCPExportConfigLocked() map[string]interface{} {
@@ -1143,12 +1166,10 @@ func (m *Manager) saveMCPConfigLocked() error {
 	sdlcDir := filepath.Join(m.rootDir, ".sdlc")
 	_ = os.MkdirAll(sdlcDir, 0755)
 	sdlcMCPPath := filepath.Join(sdlcDir, "mcp.json")
-	_ = os.WriteFile(sdlcMCPPath, mcpData, 0o600)
-	_ = os.Chmod(sdlcMCPPath, 0o600)
+	_ = writePrivateFile(sdlcMCPPath, mcpData)
 
 	rootMCPPath := filepath.Join(m.rootDir, ".mcp.json")
-	_ = os.WriteFile(rootMCPPath, mcpData, 0o600)
-	_ = os.Chmod(rootMCPPath, 0o600)
+	_ = writePrivateFile(rootMCPPath, mcpData)
 
 	if m.onMCPUpdate != nil {
 		m.onMCPUpdate(mcpExport)
@@ -1161,8 +1182,31 @@ func (m *Manager) GetConfig() types.ConnectorsConfig {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	cfg := m.config
-	cfg.Items = m.listConnectorsLocked()
+	cfg.Items = copyItems(m.listConnectorsLocked())
 	return cfg
+}
+
+// copyItem copies a connector, so callers never share (or race on) the saved one.
+func copyItem(it *types.ConnectorItem) *types.ConnectorItem {
+	cp := *it
+	cp.Capabilities = slices.Clone(it.Capabilities)
+	cp.ExtraSettings = maps.Clone(it.ExtraSettings)
+	if it.MCP != nil {
+		mcp := cloneMCP(*it.MCP)
+		if it.MCP.Env == nil {
+			mcp.Env = nil
+		}
+		cp.MCP = &mcp
+	}
+	return &cp
+}
+
+func copyItems(list []*types.ConnectorItem) []*types.ConnectorItem {
+	out := make([]*types.ConnectorItem, 0, len(list))
+	for _, it := range list {
+		out = append(out, copyItem(it))
+	}
+	return out
 }
 
 func (m *Manager) listConnectorsLocked() []*types.ConnectorItem {
@@ -1190,7 +1234,7 @@ func (m *Manager) listConnectorsLocked() []*types.ConnectorItem {
 func (m *Manager) ListConnectors() []*types.ConnectorItem {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.listConnectorsLocked()
+	return copyItems(m.listConnectorsLocked())
 }
 
 // GetConnector returns a single connector item by ID.
@@ -1202,7 +1246,7 @@ func (m *Manager) GetConnector(id string) (*types.ConnectorItem, error) {
 	if !exists {
 		return nil, fmt.Errorf("connector '%s' not found", id)
 	}
-	return item, nil
+	return copyItem(item), nil
 }
 
 // UpdateConnector updates an existing connector's configuration and syncs specific configs.
@@ -1312,7 +1356,7 @@ func (m *Manager) UpdateConnector(item types.ConnectorItem) (*types.ConnectorIte
 	if err := m.save(); err != nil {
 		return nil, err
 	}
-	return m.items[item.ID], nil
+	return copyItem(m.items[item.ID]), nil
 }
 
 // ToggleConnector toggles a connector on or off.
@@ -1346,7 +1390,7 @@ func (m *Manager) ToggleConnector(id string, enabled bool) (*types.ConnectorItem
 	if err := m.save(); err != nil {
 		return nil, err
 	}
-	return item, nil
+	return copyItem(item), nil
 }
 
 // TestGenericConnector performs a real connectivity check for any connector in the catalog. An
@@ -1379,6 +1423,9 @@ func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *typ
 func (m *Manager) mergedForTest(id string, item *types.ConnectorItem) *types.ConnectorItem {
 	m.mu.RLock()
 	existing := m.items[id]
+	if existing != nil {
+		existing = copyItem(existing)
+	}
 	m.mu.RUnlock()
 	if existing == nil {
 		return item
@@ -1414,6 +1461,9 @@ func (m *Manager) mergedForTest(id string, item *types.ConnectorItem) *types.Con
 func (m *Manager) testGenericConnector(ctx context.Context, id string, item *types.ConnectorItem) types.TestConnectorResponse {
 	m.mu.RLock()
 	existing := m.items[id]
+	if existing != nil {
+		existing = copyItem(existing) // the test fills in resolved credentials: never on the saved connector
+	}
 	m.mu.RUnlock()
 
 	activeItem := existing
@@ -2080,7 +2130,7 @@ func (m *Manager) PingAll(ctx context.Context) *types.PingAllSummary {
 	for _, it := range m.items {
 		// Only ping enabled connectors
 		if it.Enabled {
-			targets = append(targets, it)
+			targets = append(targets, copyItem(it)) // the probes run unlocked
 		}
 	}
 	jiraCfg := m.config.Jira
