@@ -72,12 +72,21 @@ func cloneTask(t *types.Task) *types.Task {
 	return &cp
 }
 
+// maxTaskBodyBytes caps task request bodies (imported PRDs and task plans included).
+const maxTaskBodyBytes = 10 << 20
+
+// knownTaskStates are the states an operator may set directly.
+var knownTaskStates = map[types.TaskState]bool{
+	types.TaskStatePending: true, types.TaskStateRunning: true, types.TaskStateWaitingGateApproval: true,
+	types.TaskStateBlockedFrustration: true, types.TaskStateWaitingDependency: true, types.TaskStateCompleted: true,
+	types.TaskStateFailed: true, types.TaskStateSuspended: true,
+}
+
 func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
+	req.Body = http.MaxBytesReader(w, req.Body, maxTaskBodyBytes)
 	switch req.Method {
 	case http.MethodGet:
 		r.mu.RLock()
-		defer r.mu.RUnlock()
-
 		search := strings.ToLower(req.URL.Query().Get("search"))
 		method := req.URL.Query().Get("method")
 		repo := req.URL.Query().Get("repo")
@@ -102,8 +111,10 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 					continue
 				}
 			}
-			result = append(result, t)
+			result = append(result, cloneTask(t))
 		}
+		// Encode copies after unlocking: a slow client must not hold r.mu against every writer.
+		r.mu.RUnlock()
 		if result == nil {
 			result = []*types.Task{}
 		}
@@ -311,7 +322,8 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
-	path := strings.TrimPrefix(req.URL.Path, "/api/v1/tasks/")
+	req.Body = http.MaxBytesReader(w, req.Body, maxTaskBodyBytes)
+	path :=strings.TrimPrefix(req.URL.Path, "/api/v1/tasks/")
 	parts := strings.Split(path, "/")
 	taskID := parts[0]
 
@@ -514,7 +526,8 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 				CurrentStageID string          `json:"current_stage_id"`
 			}
 			var details []depDetail
-			for _, depID := range task.Dependencies {
+			deps := append([]string(nil), task.Dependencies...) // deleteTask rewrites the live slice in place
+			for _, depID := range deps {
 				dep, exists := r.tasks[depID]
 				if exists {
 					details = append(details, depDetail{
@@ -534,7 +547,7 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 
 			r.writeJSON(w, http.StatusOK, map[string]interface{}{
 				"task_id":            taskID,
-				"dependencies":       task.Dependencies,
+				"dependencies":       deps,
 				"all_satisfied":      len(unmet) == 0,
 				"unmet_dependencies": unmet,
 				"details":            details,
@@ -566,6 +579,10 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 		}
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			r.writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+			return
+		}
+		if body.State != "" && !knownTaskStates[body.State] {
+			r.writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown task state %q", body.State))
 			return
 		}
 		if body.AssignedRepos != nil {
