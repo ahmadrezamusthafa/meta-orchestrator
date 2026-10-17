@@ -295,6 +295,7 @@ onMounted(async () => {
                 <a
                   :href="issue.url"
                   target="_blank"
+                  rel="noopener"
                   @click.stop
                   title="Open ticket in JIRA"
                   class="p-1 rounded text-slate-400 hover:text-blue-400 transition-colors"

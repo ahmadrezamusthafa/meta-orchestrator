@@ -2070,6 +2070,7 @@ onUnmounted(() => {
                     <a
                       :href="issue.url || (issue as any).URL"
                       target="_blank"
+                      rel="noopener"
                       class="p-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-blue-400 hover:border-slate-700 transition"
                       title="View in JIRA"
                     >
