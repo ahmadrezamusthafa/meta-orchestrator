@@ -23,7 +23,7 @@ type Case struct {
 	ExpectedResults    []string `json:"expected_results,omitempty"`
 	AcceptanceCriteria string   `json:"reference_acceptance_criteria,omitempty"`
 	Tags               string   `json:"tags,omitempty"`
-	Platform           string   `json:"platform,omitempty"`   // WEB or API
+	Platform           string   `json:"platform,omitempty"`   // WEB, MOBILE or API
 	Repository         string   `json:"repository,omitempty"` // app/repo the case runs against, when the sheet says
 	Note               string   `json:"note,omitempty"`
 	UAT                bool     `json:"uat"`
@@ -35,6 +35,15 @@ func (c Case) InUATScope() bool { return c.UAT || c.Sanity }
 
 // IsAPI reports an operation-level case with no screen to drive.
 func (c Case) IsAPI() bool { return strings.EqualFold(strings.TrimSpace(c.Platform), "API") }
+
+// IsMobile reports whether the case runs in a mobile app (MOBILE, ANDROID or IOS).
+func (c Case) IsMobile() bool {
+	switch strings.ToUpper(strings.TrimSpace(c.Platform)) {
+	case "MOBILE", "ANDROID", "IOS":
+		return true
+	}
+	return false
+}
 
 // Kind labels the case for testers: "Sanity", "UAT" or "Sanity + UAT".
 func (c Case) Kind() string {

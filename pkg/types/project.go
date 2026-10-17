@@ -11,6 +11,7 @@ const (
 	RoleAutomationTest ProjectRole = "automation-test"
 	RoleContracts      ProjectRole = "contracts"
 	RoleArtifact       ProjectRole = "artifact"
+	RoleInfrastructure ProjectRole = "infrastructure"
 	RoleOtherService   ProjectRole = "other"
 )
 
@@ -26,6 +27,7 @@ type ProjectRepo struct {
 	Error        string      `json:"error,omitempty"`
 	GitBranch    string      `json:"git_branch,omitempty"`
 	FilesCount   int         `json:"files_count,omitempty"`
+	Stack        []string    `json:"stack,omitempty"` // detected technologies, e.g. "Go", "PostgreSQL"
 	CreatedAt    time.Time   `json:"created_at"`
 }
 
@@ -49,6 +51,7 @@ type DetectedRepo struct {
 	SuggestedRole ProjectRole `json:"suggested_role"`
 	ManifestType  string      `json:"manifest_type"`
 	FilesCount    int         `json:"files_count"`
+	Stack         []string    `json:"stack,omitempty"`
 }
 
 // ScanDirResult returns discovered repositories from a directory path.

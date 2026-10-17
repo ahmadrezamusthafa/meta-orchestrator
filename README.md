@@ -102,6 +102,62 @@ http://localhost:5173
 * **Unified Project Root & Atomic Symlinks:** Provisions dedicated workspace roots (e.g. `workspaces/{project-id}/`) with atomic filesystem symlinks pointing to target repositories and writes `.sdlc/project.json`.
 * **Dynamic Kanban Ingestion:** Selecting a registered project dynamically populates the New Task modal with mapped repositories and role tags.
 
+### 7. Tech-Stack Awareness (`internal/stack`)
+Every repository is scanned from its files only (nothing is executed; dependency and cache folders are skipped). The detected stack drives role suggestions, UI tags, complexity grading, UAT app kinds and a **stack brief** added to every agent turn. For each repository, the brief lists its verification commands, the conventions to keep and the commands the agent must never run.
+
+| Area | Detected | Agent verifies with | Guardrails |
+|---|---|---|---|
+| Backend | Go, PostgreSQL | `go build/vet/test ./...`, `golangci-lint run` | new migrations only; no writes to shared DBs |
+| Backend (JVM) | Java, Kotlin (Spring, Maven, Gradle) | `./gradlew check` or `./mvnw -q verify` once per build root (wrapper preferred) | no `mvn deploy` / `gradle publish` |
+| Frontend | React, TypeScript | the package's own `typecheck`/`lint`/`test`/`build` scripts (npm, pnpm, yarn or bun), else `tsc --noEmit` | — |
+| Mobile | Flutter, Dart, Android | `dart format --set-exit-if-changed`, `flutter`/`dart analyze` and `test`, `build_runner` when used; Android through Gradle `check` | no `pub publish`, store uploads or release signing |
+| Identity | Keycloak (OIDC), SpiceDB | `zed validate <schema>.zed` | no admin/schema writes to live realms or SpiceDB |
+| Cloud | Azure Container Apps, Cloudflare | `wrangler deploy --dry-run` | no mutating `az containerapp` / `wrangler deploy` |
+| IaC | OpenTofu, Terragrunt | `tofu fmt -check`, `tofu validate`, `terragrunt hclfmt --check` | no `apply`/`destroy`/`state`; `plan` only when the operator approves |
+| Delivery | GitHub Actions, containers, Playwright | `actionlint`, the e2e script or `playwright test` | no `gh workflow run`, deploy tags or `docker push` |
+| Observability | OpenTelemetry, Grafana | — | no personal data or unbounded values in telemetry |
+| API | OpenAPI | `npx @redocly/cli lint <spec>` | contract changes ship with handlers and regenerated clients |
+
+Repositories that hold only IaC get the new **Infrastructure** role and have no manual-UAT surface. A Go, Java, Kotlin or Dart service with no screens becomes an **API** app in the UAT guide, with Keycloak token steps when it uses OIDC. A Flutter or Android app becomes a **mobile** app: testers install the UAT build on a device and follow manual steps, and nothing is replayed in a browser (ATDD platform `MOBILE`, `ANDROID` or `IOS`). The generated `android/`/`ios/` folders of a Flutter app count as part of that app, not as separate Java or Kotlin projects. **Adding a technology** means adding a rule to `rules` (`internal/stack/detect.go`) and, if agents need guidance, an entry in `guides` (`internal/stack/brief.go`).
+
+### 8. Toolchain: Install What the Stack Needs (`internal/toolchain`)
+Every detected stack declares the command-line tools its checks need: required tools (e.g. Go, a JDK, Flutter, OpenTofu) and recommended ones (e.g. actionlint, zed). The orchestrator checks this machine by **running** each tool, not just finding it on `PATH`, so the macOS `java` stub without a JDK counts as missing.
+
+* **Where you see it:** *Tool Hub → Stack toolchain* covers every registered repository. *Task → Workspace & Repos → Toolchain on this machine* covers one task. Each tool shows its status, version, why it is needed and how to install it.
+* **One-click installs:** when Homebrew, npm or Go can install a tool without sudo, a password or a GUI, **Install** runs the exact command shown, streams the log, verifies the tool and re-checks. Installs of the same tool never overlap, and only one install runs at a time per package manager.
+* **Copy-and-run:** methods that need sudo, a password or a GUI (`apt`, `snap`, the Temurin JDK and Android Studio casks) are never run for you. You get the command to copy, plus the official install guide and **Re-check**.
+* **Before a stage runs:** a code stage (ATDD, implementation, E2E) whose required tools are missing does not start. A prompt lists them, with **Install all**, **Re-check**, **Run *stage*** once they are ready, or **Run without them**. "Run without them" is remembered per task for exactly those tools; the agent skips the affected checks and says so. A console message sent to a blocked stage is answered as chat instead of being lost.
+* **Agents** are told which tools are missing and never install tools themselves.
+* **PATH:** at startup and after each install, the daemon adds existing package-manager bin folders (`/opt/homebrew/bin`, `~/go/bin`, `/snap/bin`, …) to its `PATH`, so tools installed while it runs are visible to it and to its agents.
+
+API: `GET /api/v1/toolchain[?task=|?project=][&all=1]`, `POST /api/v1/toolchain/recheck`, `POST /api/v1/toolchain/install {"tool","method"}`, `GET /api/v1/toolchain/jobs/{id}`, `GET /api/v1/tasks/{id}/toolchain`, `POST /api/v1/tasks/{id}/toolchain/ack`. A blocked stage start answers `409 {"status":"needs_tools","missing":[…],"toolchain":{…}}` and broadcasts the `toolchain.needed` WebSocket event. **Adding a tool** means adding one `Catalog` entry (`internal/toolchain/catalog.go`) and asking for it from `Profile.Needs` (`internal/stack/needs.go`).
+
+### 9. Connectors for the Stack (`internal/connectors`)
+Agents can read live state from third-party services through MCP servers. Each connector is opt-in, its access is described in the UI and in the agent brief, and it defaults to read-only.
+
+| Connector | MCP server | Agent access | Credential |
+|---|---|---|---|
+| GitHub | GitHub's official server (`github-mcp-server`, else its Docker image) | Read-only: repos, issues, PRs, Actions runs and logs | Fine-grained PAT (Read) or `GITHUB_TOKEN` |
+| Grafana | `mcp-grafana`, else Docker `mcp/grafana` | Dashboards, alerts, Prometheus/Loki/Tempo queries (Viewer role) | Service account token |
+| Azure | `@azure/mcp` with `--read-only` | Resources and Container Apps | `az login` |
+| Cloudflare | Cloudflare Observability server via `mcp-remote` | Workers logs and analytics | Read-only API token |
+| ClickUp | `@hauptsache.net/clickup-mcp` with `CLICKUP_MCP_MODE=read` | Tasks, comments, lists, spaces, docs | Personal API token (`pk_…`) + workspace ID |
+| Trello | `@delorenj/mcp-server-trello` | Boards, lists, cards, checklists, comments (read-only via the token's `scope=read`) | API key + token |
+| Asana | `@roychri/mcp-server-asana` with `READ_ONLY_MODE=true` | Tasks, projects, sections, comments, status updates | Personal access token |
+| monday.com | `@mondaydotcomorg/monday-api-mcp` with `--read-only` | Boards, items, updates, columns | API token |
+| Linear | `@tacticlaunch/mcp-linear` | Issues, projects, cycles, comments (read-only when the key has only the Read permission) | Personal API key |
+| Notion | `@notionhq/notion-mcp-server` | Pages and databases shared with the integration | Internal integration secret (Read content) |
+| Jira, Confluence, Bitbucket, GitLab, Slack | as configured | as configured | as configured |
+
+* **Suggested from the stack:** a GitHub/GitLab/Bitbucket remote, GitHub Actions, OpenTelemetry/Grafana, Azure Container Apps and Cloudflare each suggest their connector. Project-management tools are suggested from the links a repository already has: ClickUp, Trello, Asana, monday.com, Linear and Notion URLs (and ClickUp `CU-…` task IDs) in the README, CONTRIBUTING, PR/MR templates, CI workflows or recent commit and branch names in the reflog. Git is not run, and only reflog messages are read, never authors. Suggestions appear in *Tool Hub* and *Task → Workspace & Repos*, and **Connect** opens the connector's setup with step-by-step instructions.
+* **Into every agent turn:** enabled connectors that are connected or configured, and have their credentials, are passed to the Claude CLI with `--mcp-config` in a private per-turn file (mode 0600 in a 0700 folder) that is deleted when the turn ends. The agent brief lists them as `mcp__<id>__*` with their access, plus the suggested connectors that are not connected yet. Tool calls that write still ask the operator.
+* **Real tests:** *Test MCP* on a stack connector checks its credential against the service's API (ClickUp also lists the workspaces the token reaches, and Trello warns when the token can write), then starts the MCP server, performs the `initialize` handshake and lists its tools. The periodic ping only checks credentials.
+* **Secrets:** API responses and WebSocket events carry masked credentials only (`••••last4`). Saving a masked value keeps the stored secret, and `connectors.json`, `.mcp.json` and `.sdlc/mcp.json` are written with mode 0600.
+* **Migration:** Linear and Notion used to name `@modelcontextprotocol/server-linear` and `server-notion`, which were never published. They now start `@tacticlaunch/mcp-linear` and Notion's official server, and the saved token carries over.
+* **Launchers:** the native MCP server is used once installed (Tool Hub offers `go install` for `github-mcp-server` and `mcp-grafana`, and Homebrew for the Azure CLI); otherwise Docker is used. A command you customise is never replaced.
+
+**Adding a connector** means adding one `stackConnectors` entry (`internal/connectors/stack_connectors.go`) and, for a suggestion, one `connectorRules` entry (`internal/api/connector_suggestions.go`).
+
 
 ---
 

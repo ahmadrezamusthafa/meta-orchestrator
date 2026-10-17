@@ -175,9 +175,15 @@ func (m *Manager) resolveTokenLocked(id, candidate string) (string, string) {
 		case "slack":
 			mcpEnvToken = existing.MCP.Env["SLACK_BOT_TOKEN"]
 		case "linear":
-			mcpEnvToken = existing.MCP.Env["LINEAR_API_KEY"]
+			mcpEnvToken = existing.MCP.Env["LINEAR_API_TOKEN"]
+			if mcpEnvToken == "" {
+				mcpEnvToken = existing.MCP.Env["LINEAR_API_KEY"] // before @tacticlaunch/mcp-linear
+			}
 		case "notion":
-			mcpEnvToken = existing.MCP.Env["NOTION_API_KEY"]
+			mcpEnvToken = existing.MCP.Env["NOTION_TOKEN"]
+			if mcpEnvToken == "" {
+				mcpEnvToken = existing.MCP.Env["NOTION_API_KEY"] // before the official Notion server
+			}
 		}
 	}
 
@@ -241,7 +247,7 @@ func (m *Manager) resolveTokenLocked(id, candidate string) (string, string) {
 			return v, src
 		}
 	case "linear":
-		if v, src := resolveEnvValue("LINEAR_API_KEY", "LINEAR_TOKEN"); v != "" {
+		if v, src := resolveEnvValue("LINEAR_API_KEY", "LINEAR_API_TOKEN", "LINEAR_TOKEN"); v != "" {
 			return v, src
 		}
 	case "notion":
@@ -916,16 +922,7 @@ func (m *Manager) ensureCatalogLocked() {
 			TargetEntity:  "",
 			TargetLabel:   "Team Prefix / Project",
 			Capabilities:  []string{"Identifier Detection", "Cycle Sync", "High-speed Import"},
-			MCP: &types.MCPConfig{
-				Enabled:   true,
-				Command:   "npx",
-				Args:      []string{"-y", "@modelcontextprotocol/server-linear"},
-				Transport: "stdio",
-				Env: map[string]string{
-					"LINEAR_API_KEY": linearToken,
-				},
-			},
-			LatencyMs: 0,
+			LatencyMs:     0,
 		}
 		if linearSrc != "" && linearSrc != "direct_input" && linearSrc != "saved_config" {
 			it.HasEnvAuth = true
@@ -944,18 +941,9 @@ func (m *Manager) ensureCatalogLocked() {
 			it.Status = "configured"
 			it.ErrorMessage = ""
 		}
-		if it.MCP == nil {
-			it.MCP = &types.MCPConfig{
-				Enabled:   true,
-				Command:   "npx",
-				Args:      []string{"-y", "@modelcontextprotocol/server-linear"},
-				Transport: "stdio",
-				Env: map[string]string{
-					"LINEAR_API_KEY": it.APIToken,
-				},
-			}
-		} else if it.MCP.Env != nil && it.APIToken != "" {
-			it.MCP.Env["LINEAR_API_KEY"] = it.APIToken
+		// The MCP server itself is set by ensureStackConnectorsLocked.
+		if it.MCP != nil && it.MCP.Env != nil && it.APIToken != "" {
+			it.MCP.Env["LINEAR_API_TOKEN"] = it.APIToken
 		}
 	}
 
@@ -983,16 +971,7 @@ func (m *Manager) ensureCatalogLocked() {
 			TargetEntity:  "",
 			TargetLabel:   "Database / Parent Page",
 			Capabilities:  []string{"Page Creation", "Database Row Sync", "Rich Text Blocks"},
-			MCP: &types.MCPConfig{
-				Enabled:   true,
-				Command:   "npx",
-				Args:      []string{"-y", "@modelcontextprotocol/server-notion"},
-				Transport: "stdio",
-				Env: map[string]string{
-					"NOTION_API_KEY": notionToken,
-				},
-			},
-			LatencyMs: 0,
+			LatencyMs:     0,
 		}
 		if notionSrc != "" && notionSrc != "direct_input" && notionSrc != "saved_config" {
 			it.HasEnvAuth = true
@@ -1011,18 +990,9 @@ func (m *Manager) ensureCatalogLocked() {
 			it.Status = "configured"
 			it.ErrorMessage = ""
 		}
-		if it.MCP == nil {
-			it.MCP = &types.MCPConfig{
-				Enabled:   true,
-				Command:   "npx",
-				Args:      []string{"-y", "@modelcontextprotocol/server-notion"},
-				Transport: "stdio",
-				Env: map[string]string{
-					"NOTION_API_KEY": it.APIToken,
-				},
-			}
-		} else if it.MCP.Env != nil && it.APIToken != "" {
-			it.MCP.Env["NOTION_API_KEY"] = it.APIToken
+		// The MCP server itself is set by ensureStackConnectorsLocked.
+		if it.MCP != nil && it.MCP.Env != nil && it.APIToken != "" {
+			it.MCP.Env["NOTION_TOKEN"] = it.APIToken
 		}
 	}
 
@@ -1063,6 +1033,9 @@ func (m *Manager) ensureCatalogLocked() {
 			Env:       map[string]string{},
 		}
 	}
+
+	// Connectors the supported stacks need (GitHub's official server, Grafana, Azure, Cloudflare).
+	m.ensureStackConnectorsLocked()
 
 	// Sanitize runtime statuses: disabled connectors must be "disabled", unauthenticated must be "unconfigured"
 	for _, it := range m.items {
@@ -1111,9 +1084,10 @@ func (m *Manager) save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(m.configPath, data, 0644); err != nil {
+	if err := os.WriteFile(m.configPath, data, 0o600); err != nil { // holds credentials
 		return err
 	}
+	_ = os.Chmod(m.configPath, 0o600) // WriteFile keeps the mode of an existing file
 	_ = m.saveMCPConfigLocked()
 	return nil
 }
@@ -1121,6 +1095,13 @@ func (m *Manager) save() error {
 func (m *Manager) getMCPExportConfigLocked() map[string]interface{} {
 	servers := make(map[string]interface{})
 	for id, item := range m.items {
+		if _, stack := lookupStack(id); stack && item.Enabled && item.MCP != nil && (item.MCP.Enabled || item.ConfigMode == "mcp") {
+			// Stack connectors keep the credential outside the MCP env: export the runnable form.
+			if mcp, ok := m.runtimeMCPLocked(item); ok {
+				servers[id] = map[string]interface{}{"command": mcp.Command, "args": mcp.Args, "env": mcp.Env}
+			}
+			continue
+		}
 		if item.Enabled && item.MCP != nil && (item.MCP.Enabled || item.ConfigMode == "mcp") {
 			serverEntry := map[string]interface{}{
 				"command": item.MCP.Command,
@@ -1147,10 +1128,12 @@ func (m *Manager) saveMCPConfigLocked() error {
 	sdlcDir := filepath.Join(m.rootDir, ".sdlc")
 	_ = os.MkdirAll(sdlcDir, 0755)
 	sdlcMCPPath := filepath.Join(sdlcDir, "mcp.json")
-	_ = os.WriteFile(sdlcMCPPath, mcpData, 0644)
+	_ = os.WriteFile(sdlcMCPPath, mcpData, 0o600)
+	_ = os.Chmod(sdlcMCPPath, 0o600)
 
 	rootMCPPath := filepath.Join(m.rootDir, ".mcp.json")
-	_ = os.WriteFile(rootMCPPath, mcpData, 0644)
+	_ = os.WriteFile(rootMCPPath, mcpData, 0o600)
+	_ = os.Chmod(rootMCPPath, 0o600)
 
 	if m.onMCPUpdate != nil {
 		m.onMCPUpdate(mcpExport)
@@ -1168,7 +1151,7 @@ func (m *Manager) GetConfig() types.ConnectorsConfig {
 }
 
 func (m *Manager) listConnectorsLocked() []*types.ConnectorItem {
-	order := []string{"jira", "confluence", "github", "gitlab", "bitbucket", "slack", "linear", "notion", "custom_webhook"}
+	order := []string{"jira", "confluence", "github", "gitlab", "bitbucket", "grafana", "azure", "cloudflare", "slack", "linear", "notion", "custom_webhook"}
 	seen := make(map[string]bool)
 	var list []*types.ConnectorItem
 
@@ -1214,6 +1197,9 @@ func (m *Manager) UpdateConnector(item types.ConnectorItem) (*types.ConnectorIte
 	m.ensureCatalogLocked()
 
 	existing := m.items[item.ID]
+	if existing != nil {
+		keepMaskedEnv(item.MCP, existing.MCP) // the browser only ever sees masked secrets
+	}
 
 	// Preserve existing credentials if submitted empty or masked
 	if strings.TrimSpace(item.APIToken) == "" || strings.Contains(item.APIToken, "••••") {
@@ -1348,8 +1334,69 @@ func (m *Manager) ToggleConnector(id string, enabled bool) (*types.ConnectorItem
 	return item, nil
 }
 
-// TestGenericConnector performs a real connectivity check for any connector in the catalog.
+// TestGenericConnector performs a real connectivity check for any connector in the catalog. An
+// explicit test (item set) of a stack connector also starts its MCP server and lists its tools.
 func (m *Manager) TestGenericConnector(ctx context.Context, id string, item *types.ConnectorItem) types.TestConnectorResponse {
+	if _, stack := lookupStack(id); !stack {
+		return m.testGenericConnector(ctx, id, item)
+	}
+	merged := m.mergedForTest(id, item)
+	if merged == nil {
+		return types.TestConnectorResponse{Success: false, Message: fmt.Sprintf("Connector '%s' not found in catalog", id)}
+	}
+	if s, _ := lookupStack(id); !s.restCheck {
+		return m.testStackConnector(ctx, merged, item != nil)
+	}
+	res := m.testGenericConnector(ctx, id, item)
+	if !res.Success || item == nil || merged.MCP == nil || !merged.MCP.Enabled {
+		return res
+	}
+	deep := m.testStackConnector(ctx, merged, true)
+	if !deep.Success {
+		return deep
+	}
+	res.Message += " " + deep.Message
+	res.ServerInfo = deep.ServerInfo
+	return res
+}
+
+// mergedForTest overlays the form the operator is editing on the saved connector.
+func (m *Manager) mergedForTest(id string, item *types.ConnectorItem) *types.ConnectorItem {
+	m.mu.RLock()
+	existing := m.items[id]
+	m.mu.RUnlock()
+	if existing == nil {
+		return item
+	}
+	cp := *existing
+	if existing.MCP != nil {
+		mcp := cloneMCP(*existing.MCP)
+		cp.MCP = &mcp
+	}
+	if item == nil {
+		return &cp
+	}
+	if item.BaseURL != "" {
+		cp.BaseURL = item.BaseURL
+	}
+	if item.Username != "" {
+		cp.Username = item.Username
+	}
+	if item.APIToken != "" && !masked(item.APIToken) {
+		cp.APIToken = item.APIToken
+	}
+	if item.TargetEntity != "" {
+		cp.TargetEntity = item.TargetEntity
+	}
+	if item.MCP != nil {
+		mcp := cloneMCP(*item.MCP)
+		keepMaskedEnv(&mcp, existing.MCP)
+		cp.MCP = &mcp
+	}
+	return &cp
+}
+
+func (m *Manager) testGenericConnector(ctx context.Context, id string, item *types.ConnectorItem) types.TestConnectorResponse {
 	m.mu.RLock()
 	existing := m.items[id]
 	m.mu.RUnlock()
@@ -1740,7 +1787,7 @@ func (m *Manager) updateItemStatus(id string, success bool, latency int64, errMs
 		m.config.Confluence.ErrorMessage = item.ErrorMessage
 	}
 
-	itemCopy := *item
+	itemCopy := *Masked(item) // broadcast to every browser: never with live credentials
 	fn := m.broadcastFunc
 	m.mu.Unlock()
 
@@ -1872,6 +1919,9 @@ func (m *Manager) GetMCPExportConfig() map[string]interface{} {
 func (m *Manager) UpdateJira(cfg types.JiraConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if strings.TrimSpace(cfg.APIToken) == "" || masked(cfg.APIToken) {
+		cfg.APIToken = m.config.Jira.APIToken // browsers only see the masked token
+	}
 	m.config.Jira = cfg
 	if item, ok := m.items["jira"]; ok {
 		item.Enabled = cfg.Enabled
@@ -1887,6 +1937,9 @@ func (m *Manager) UpdateJira(cfg types.JiraConfig) error {
 func (m *Manager) UpdateConfluence(cfg types.ConfluenceConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if strings.TrimSpace(cfg.APIToken) == "" || masked(cfg.APIToken) {
+		cfg.APIToken = m.config.Confluence.APIToken // browsers only see the masked token
+	}
 	m.config.Confluence = cfg
 	if item, ok := m.items["confluence"]; ok {
 		item.Enabled = cfg.Enabled
@@ -1896,6 +1949,15 @@ func (m *Manager) UpdateConfluence(cfg types.ConfluenceConfig) error {
 		item.Status = cfg.Status
 	}
 	return m.save()
+}
+
+// MaskedConfig is GetConfig with every credential masked, for browsers.
+func (m *Manager) MaskedConfig() types.ConnectorsConfig {
+	cfg := m.GetConfig()
+	cfg.Jira.APIToken = mask(cfg.Jira.APIToken)
+	cfg.Confluence.APIToken = mask(cfg.Confluence.APIToken)
+	cfg.Items = MaskedList(cfg.Items)
+	return cfg
 }
 
 // SetBroadcastFunc sets a callback to broadcast connector events (e.g. via WebSocket).
@@ -2011,7 +2073,9 @@ func (m *Manager) PingAll(ctx context.Context) *types.PingAllSummary {
 
 	for _, item := range targets {
 		var res types.TestConnectorResponse
-		if item.ConfigMode == "mcp" {
+		if s, stack := lookupStack(item.ID); stack && !s.restCheck {
+			res = m.testStackConnector(ctx, item, false) // credentials only: never start servers every ping
+		} else if item.ConfigMode == "mcp" {
 			res = m.TestMCPConnector(ctx, item.ID, item.MCP)
 		} else if item.ID == "jira" {
 			res = m.TestJira(ctx, jiraCfg)

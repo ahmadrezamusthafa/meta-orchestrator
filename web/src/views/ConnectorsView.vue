@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { api } from '../services/api'
 import { useToastStore } from '../stores/toast'
 import { wsService } from '../services/websocket'
@@ -14,14 +15,125 @@ import {
   Eye, EyeOff, Search, Download, FileText, Check, ShieldCheck, ArrowRight, 
   ArrowLeft, Layers, GitBranch, MessageSquare, BookOpen, Globe, Sliders, 
   CheckSquare, Sparkles, Zap, Activity, Settings, Cpu, Terminal, Copy, Plus, Trash2, Code,
-  Radio, Clock, ChevronDown, Play, Pause
+  Radio, Clock, ChevronDown, Play, Pause, ListTodo, Trello, ClipboardList, SquareKanban
 } from 'lucide-vue-next'
 
 const toastStore = useToastStore()
 
 // View Modes: 'list' (catalog gallery) vs 'edit' (setup/edit connector)
 const currentView = ref<'list' | 'edit'>('list')
+const route = useRoute()
 const selectedConnector = ref<ConnectorItem | null>(null)
+
+/** Setup form of the connectors added for the supported stacks: only the fields they use, and how to get them. */
+interface StackForm {
+  baseUrl: false | { label: string; placeholder: string }
+  /** A second, non-secret credential kept in the username field (e.g. Trello's API key). */
+  username?: { label: string; placeholder: string }
+  token: false | { label: string }
+  targetPlaceholder: string
+  steps: string[]
+}
+const STACK_FORMS: Record<string, StackForm> = {
+  github: {
+    baseUrl: { label: 'API URL (GitHub Enterprise: your server)', placeholder: 'https://api.github.com' },
+    token: { label: 'Personal access token (read-only)' },
+    targetPlaceholder: 'org-name or org/repo',
+    steps: [
+      'Create a fine-grained personal access token with read-only access to your repositories: Contents, Issues, Pull requests and Actions set to Read.',
+      'Paste it here (or set GITHUB_TOKEN), save, and press Test MCP — agents then read PRs, CI runs and logs.',
+      'The GitHub MCP server runs natively when github-mcp-server is installed (Tool Hub), otherwise in Docker.',
+    ],
+  },
+  grafana: {
+    baseUrl: { label: 'Grafana URL', placeholder: 'https://grafana.example.com' },
+    token: { label: 'Service account token (Viewer role)' },
+    targetPlaceholder: 'e.g. Payments',
+    steps: [
+      'In Grafana: Administration › Users and access › Service accounts › Add service account, with the Viewer role.',
+      'Add a token to it and paste it here together with your Grafana URL.',
+      'Enable the connector, save, and press Test MCP — the orchestrator starts the Grafana MCP server and lists its tools.',
+    ],
+  },
+  azure: {
+    baseUrl: false,
+    token: false,
+    targetPlaceholder: 'subscription ID, e.g. 00000000-0000-0000-0000-000000000000',
+    steps: [
+      'Install the Azure CLI from Tool Hub › Stack toolchain.',
+      'Run `az login` in your terminal with an account that has Reader access.',
+      'Optionally enter a default subscription ID below, enable the connector, save, and press Test MCP.',
+    ],
+  },
+  cloudflare: {
+    baseUrl: false,
+    token: { label: 'API token (read-only)' },
+    targetPlaceholder: 'account ID',
+    steps: [
+      'In Cloudflare: My Profile › API Tokens › Create Token, with read-only permissions (e.g. Workers Scripts: Read, Account Analytics: Read).',
+      'Paste it here, enable the connector, save, and press Test MCP.',
+    ],
+  },
+  clickup: {
+    baseUrl: false,
+    token: { label: 'Personal API token (pk_…)' },
+    targetPlaceholder: 'workspace ID, e.g. 9012345678',
+    steps: [
+      'In ClickUp: avatar › Settings › Apps › API Token › Generate, and copy the token (starts with pk_).',
+      'Enter the workspace ID — the number after app.clickup.com/ in your browser. Test lists the workspaces the token reaches if you leave it empty.',
+      'Enable the connector, save, and press Test MCP. The server runs in read mode: agents read tasks, comments and docs but cannot change them.',
+    ],
+  },
+  trello: {
+    baseUrl: false,
+    username: { label: 'API key', placeholder: 'from trello.com/power-ups/admin' },
+    token: { label: 'Token (authorized with scope=read)' },
+    targetPlaceholder: 'board ID, e.g. AbCd1234 from trello.com/b/AbCd1234/…',
+    steps: [
+      'At trello.com/power-ups/admin create a Power-Up (any name) and open its API key tab; paste the API key here.',
+      'Generate a read-only token: open https://trello.com/1/authorize?expiration=never&scope=read&response_type=token&key=YOUR_API_KEY, allow it, and paste the token.',
+      'Optionally enter a default board ID, enable the connector, save, and press Test MCP. Test warns if the token can also write.',
+    ],
+  },
+  asana: {
+    baseUrl: false,
+    token: { label: 'Personal access token' },
+    targetPlaceholder: 'workspace name or GID (optional)',
+    steps: [
+      'In Asana: avatar › My settings › Apps › Manage developer apps › Create new token, and paste it here.',
+      'Enable the connector, save, and press Test MCP. The server runs with READ_ONLY_MODE, so agents cannot create, update or delete anything.',
+    ],
+  },
+  monday: {
+    baseUrl: false,
+    token: { label: 'API token' },
+    targetPlaceholder: 'board ID (optional)',
+    steps: [
+      'In monday.com: avatar › Developers › My access tokens › Show, and copy the token.',
+      'Paste it here, enable the connector, save, and press Test MCP. monday.com\'s official MCP server runs with --read-only.',
+    ],
+  },
+  linear: {
+    baseUrl: false,
+    token: { label: 'Personal API key' },
+    targetPlaceholder: 'team key, e.g. ENG',
+    steps: [
+      'In Linear: Settings › Security & access › Personal API keys › New API key. Give it only the Read permission for read-only agents.',
+      'Paste it here (or set LINEAR_API_KEY), save, and press Test MCP — agents then read issues, projects and cycles through the Linear MCP server.',
+    ],
+  },
+  notion: {
+    baseUrl: false,
+    token: { label: 'Internal integration secret (ntn_…)' },
+    targetPlaceholder: 'database or parent page ID',
+    steps: [
+      'At notion.so/profile/integrations create an internal integration with only the Read content capability.',
+      'Share the pages and databases agents may read with it (page › ••• › Connections), then paste its secret here.',
+      'Enable the connector, save, and press Test MCP — it runs Notion\'s official MCP server.',
+    ],
+  },
+}
+const stackForm = computed<StackForm | null>(() => (selectedConnector.value ? STACK_FORMS[selectedConnector.value.id] || null : null))
 const activeEditTab = ref<'rest' | 'mcp' | 'explorer'>('rest')
 
 // Catalog state
@@ -66,9 +178,12 @@ const showImportModal = ref(false)
 const categoryTabs = [
   { key: 'all', label: 'All Connectors' },
   { key: 'issue_tracker', label: 'Issue Trackers' },
+  { key: 'project_management', label: 'Project Management' },
   { key: 'documentation', label: 'Documentation' },
   { key: 'chatops', label: 'ChatOps & Alerts' },
   { key: 'vcs', label: 'Source Control (VCS)' },
+  { key: 'observability', label: 'Observability' },
+  { key: 'cloud', label: 'Cloud Platforms' },
   { key: 'custom', label: 'Custom Webhooks' },
 ]
 
@@ -172,6 +287,69 @@ function getBrandColor(c: ConnectorItem) {
         badgeBg: 'bg-violet-950 text-violet-300 border-violet-800/60',
         accentBorder: 'group-hover:border-violet-500/50',
         gradient: 'from-violet-600/10 via-transparent to-transparent'
+      }
+    case 'grafana':
+      return {
+        bg: 'bg-orange-500/10',
+        border: 'border-orange-500/30',
+        text: 'text-orange-400',
+        badgeBg: 'bg-orange-950 text-orange-300 border-orange-800/60',
+        accentBorder: 'group-hover:border-orange-500/50',
+        gradient: 'from-orange-600/10 via-transparent to-transparent'
+      }
+    case 'azure':
+      return {
+        bg: 'bg-sky-500/10',
+        border: 'border-sky-500/30',
+        text: 'text-sky-400',
+        badgeBg: 'bg-sky-950 text-sky-300 border-sky-800/60',
+        accentBorder: 'group-hover:border-sky-500/50',
+        gradient: 'from-sky-600/10 via-transparent to-transparent'
+      }
+    case 'cloudflare':
+      return {
+        bg: 'bg-amber-500/10',
+        border: 'border-amber-500/30',
+        text: 'text-amber-300',
+        badgeBg: 'bg-amber-950 text-amber-200 border-amber-800/60',
+        accentBorder: 'group-hover:border-amber-500/50',
+        gradient: 'from-amber-600/10 via-transparent to-transparent'
+      }
+    case 'clickup':
+      return {
+        bg: 'bg-pink-500/10',
+        border: 'border-pink-500/30',
+        text: 'text-pink-400',
+        badgeBg: 'bg-pink-950 text-pink-300 border-pink-800/60',
+        accentBorder: 'group-hover:border-pink-500/50',
+        gradient: 'from-pink-600/10 via-transparent to-transparent'
+      }
+    case 'trello':
+      return {
+        bg: 'bg-blue-500/10',
+        border: 'border-blue-500/30',
+        text: 'text-blue-300',
+        badgeBg: 'bg-blue-950 text-blue-200 border-blue-800/60',
+        accentBorder: 'group-hover:border-blue-500/50',
+        gradient: 'from-blue-600/10 via-transparent to-transparent'
+      }
+    case 'asana':
+      return {
+        bg: 'bg-rose-500/10',
+        border: 'border-rose-500/30',
+        text: 'text-rose-400',
+        badgeBg: 'bg-rose-950 text-rose-300 border-rose-800/60',
+        accentBorder: 'group-hover:border-rose-500/50',
+        gradient: 'from-rose-600/10 via-transparent to-transparent'
+      }
+    case 'monday':
+      return {
+        bg: 'bg-red-500/10',
+        border: 'border-red-500/30',
+        text: 'text-red-400',
+        badgeBg: 'bg-red-950 text-red-300 border-red-800/60',
+        accentBorder: 'group-hover:border-red-500/50',
+        gradient: 'from-red-600/10 via-transparent to-transparent'
       }
     case 'notion':
       return {
@@ -590,6 +768,13 @@ onMounted(async () => {
   await loadCatalog()
   await loadPingConfig()
 
+  // Deep link from a "Connect" button: /connectors?focus=grafana opens that connector's setup.
+  const focus = route.query.focus
+  if (typeof focus === 'string') {
+    const target = catalog.value.find((c) => c.id === focus)
+    if (target) openConnectorSetup(target)
+  }
+
   // Real-time WebSocket listener: automatically updates cards whenever background pinger or live test completes
   unsubscribeWS = wsService.subscribe((event) => {
     if (event.type === 'connector.status') {
@@ -894,6 +1079,10 @@ onUnmounted(() => {
                       <MessageSquare v-else-if="c.id === 'slack'" class="w-5 h-5" />
                       <Layers v-else-if="c.id === 'linear'" class="w-5 h-5" />
                       <FileText v-else-if="c.id === 'notion'" class="w-5 h-5" />
+                      <ListTodo v-else-if="c.id === 'clickup'" class="w-5 h-5" />
+                      <Trello v-else-if="c.id === 'trello'" class="w-5 h-5" />
+                      <ClipboardList v-else-if="c.id === 'asana'" class="w-5 h-5" />
+                      <SquareKanban v-else-if="c.id === 'monday'" class="w-5 h-5" />
                       <Zap v-else class="w-5 h-5" />
                     </div>
 
@@ -957,6 +1146,9 @@ onUnmounted(() => {
                   </h3>
                   <p class="text-xs text-slate-400 line-clamp-2 leading-relaxed mt-1">
                     {{ c.description }}
+                  </p>
+                  <p v-if="c.agent_access" class="text-[11px] text-purple-300/80 mt-1 line-clamp-1" :title="c.agent_access">
+                    Agents: {{ c.agent_access }}
                   </p>
                 </div>
 
@@ -1057,6 +1249,10 @@ onUnmounted(() => {
               <MessageSquare v-else-if="selectedConnector.id === 'slack'" class="w-4 h-4" />
               <Layers v-else-if="selectedConnector.id === 'linear'" class="w-4 h-4" />
               <FileText v-else-if="selectedConnector.id === 'notion'" class="w-4 h-4" />
+              <ListTodo v-else-if="selectedConnector.id === 'clickup'" class="w-4 h-4" />
+              <Trello v-else-if="selectedConnector.id === 'trello'" class="w-4 h-4" />
+              <ClipboardList v-else-if="selectedConnector.id === 'asana'" class="w-4 h-4" />
+              <SquareKanban v-else-if="selectedConnector.id === 'monday'" class="w-4 h-4" />
               <Zap v-else class="w-4 h-4" />
             </div>
             <div class="min-w-0">
@@ -1276,36 +1472,44 @@ onUnmounted(() => {
                 </div>
 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <!-- How to connect (stack connectors) -->
+                  <div v-if="stackForm" class="md:col-span-2 p-3.5 rounded-xl bg-sky-950/30 border border-sky-800/40 text-xs space-y-1.5">
+                    <div class="font-semibold text-sky-200">How to connect {{ selectedConnector.name }}</div>
+                    <ol class="list-decimal list-inside space-y-1 text-slate-300">
+                      <li v-for="(step, i) in stackForm.steps" :key="i">{{ step }}</li>
+                    </ol>
+                  </div>
+
                   <!-- Base URL -->
-                  <div class="md:col-span-2">
+                  <div v-if="!stackForm || stackForm.baseUrl" class="md:col-span-2">
                     <label class="block text-xs font-medium text-slate-300 mb-1.5">
-                      Base Endpoint / Host URL
+                      {{ stackForm && stackForm.baseUrl ? stackForm.baseUrl.label : 'Base Endpoint / Host URL' }}
                     </label>
                     <input
                       v-model="selectedConnector.base_url"
                       type="text"
-                      :placeholder="selectedConnector.id === 'bitbucket' ? 'https://api.bitbucket.org/2.0' : selectedConnector.id === 'slack' ? 'https://hooks.slack.com/services/...' : 'https://api.example.com'"
+                      :placeholder="stackForm && stackForm.baseUrl ? stackForm.baseUrl.placeholder : selectedConnector.id === 'bitbucket' ? 'https://api.bitbucket.org/2.0' : selectedConnector.id === 'slack' ? 'https://hooks.slack.com/services/...' : 'https://api.example.com'"
                       class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
                     />
                   </div>
 
                   <!-- Username / Email -->
-                  <div>
+                  <div v-if="!stackForm || stackForm.username" :class="{ 'md:col-span-2': stackForm }">
                     <label class="block text-xs font-medium text-slate-300 mb-1.5">
-                      Username / Email / Account ID
+                      {{ stackForm && stackForm.username ? stackForm.username.label : 'Username / Email / Account ID' }}
                     </label>
                     <input
                       v-model="selectedConnector.username"
                       type="text"
-                      placeholder="devops@company.com or service-account"
+                      :placeholder="stackForm && stackForm.username ? stackForm.username.placeholder : 'devops@company.com or service-account'"
                       class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
                     />
                   </div>
 
                   <!-- API Token / PAT / Secret -->
-                  <div>
+                  <div v-if="!stackForm || stackForm.token" :class="{ 'md:col-span-2': stackForm }">
                     <label class="block text-xs font-medium text-slate-300 mb-1.5">
-                      API Token / Personal Access Token / App Password
+                      {{ stackForm && stackForm.token ? stackForm.token.label : 'API Token / Personal Access Token / App Password' }}
                     </label>
                     <div class="relative">
                       <input
@@ -1343,7 +1547,7 @@ onUnmounted(() => {
                     <input
                       v-model="selectedConnector.target_entity"
                       type="text"
-                      :placeholder="selectedConnector.id === 'bitbucket' ? 'workspace-name/repo-slug' : selectedConnector.id === 'slack' ? '#alerts' : 'Target Key'"
+                      :placeholder="stackForm ? stackForm.targetPlaceholder : selectedConnector.id === 'bitbucket' ? 'workspace-name/repo-slug' : selectedConnector.id === 'slack' ? '#alerts' : 'Target Key'"
                       class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
                     />
                     <p v-if="selectedConnector.id === 'bitbucket'" class="text-[11px] text-slate-400 mt-1">
@@ -1537,6 +1741,15 @@ onUnmounted(() => {
                   </div>
                 </template>
 
+                <!-- STACK CONNECTORS: what agents may do -->
+                <template v-else-if="stackForm">
+                  <div class="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs space-y-1">
+                    <div class="font-medium text-slate-200">Used by agents through MCP</div>
+                    <p class="text-slate-400">{{ selectedConnector.agent_access }}</p>
+                    <p class="text-slate-500 text-[11px]">Agents get it in every stage and chat turn once it is enabled and its test passes. Tool calls that write still ask you in the console.</p>
+                  </div>
+                </template>
+
                 <!-- GENERIC / WEBHOOK TOGGLES -->
                 <template v-else>
                   <div class="space-y-3">
@@ -1601,6 +1814,13 @@ onUnmounted(() => {
                 <p class="text-slate-300 text-xs leading-relaxed">
                   Enables Meta-Orchestrator and AI agents to invoke {{ selectedConnector.name }} tools directly using standard Model Context Protocol servers.
                   Compatible with Claude Desktop, Antigravity, Cursor, and CLI agent drivers.
+                </p>
+                <p class="text-slate-400 text-[11px] leading-relaxed">
+                  Agents get this server in every stage and chat turn once the connector is enabled and its test passes; credentials are passed per turn
+                  in a private file that is deleted afterwards, and are never shown back in this page.
+                </p>
+                <p v-if="selectedConnector.agent_access" class="text-purple-200 text-[11px]">
+                  <strong>Agent access:</strong> {{ selectedConnector.agent_access }}
                 </p>
               </div>
 

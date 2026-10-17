@@ -323,6 +323,10 @@ func (d *AnthropicDriver) streamViaCLI(ctx context.Context, req *LLMRequest, cli
 	if mode == "" {
 		mode = "plan" // read-only unless the caller explicitly grants more
 	}
+	if req.MCPConfig != "" {
+		// Variadic in the CLI: it must be followed by another flag, never by a positional value.
+		args = append(args, "--mcp-config", req.MCPConfig)
+	}
 	args = append(args, "--permission-mode", mode)
 
 	timeout := req.Timeout

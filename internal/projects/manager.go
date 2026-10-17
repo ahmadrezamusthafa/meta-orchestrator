@@ -9,15 +9,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/stack"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
 // ProjectManager governs project registration, multi-repo topology, and symlink synthesis.
 type ProjectManager struct {
-	mu          sync.RWMutex
-	rootDir     string
-	storeFile   string
-	projects    map[string]*types.Project
+	mu        sync.RWMutex
+	rootDir   string
+	storeFile string
+	projects  map[string]*types.Project
 }
 
 // NewProjectManager initializes the project manager.
@@ -237,9 +238,10 @@ func (m *ProjectManager) Create(p *types.Project) (*types.Project, error) {
 			repo.ManifestType = detectManifest(repo.Path)
 		}
 
-		// Detect Git branch and file count
+		// Detect Git branch, file count and tech stack
 		repo.GitBranch = readGitBranch(repo.Path)
 		repo.FilesCount = countFiles(repo.Path)
+		repo.Stack = stack.For(repo.Path).Names()
 
 		symlinkTarget := filepath.Join(p.RootDir, repo.Name)
 		repo.SymlinkPath = symlinkTarget
@@ -319,6 +321,7 @@ func (m *ProjectManager) ResyncSymlinks(id string) (*types.Project, error) {
 		}
 		repo.GitBranch = readGitBranch(repo.Path)
 		repo.FilesCount = countFiles(repo.Path)
+		repo.Stack = stack.For(repo.Path).Names()
 
 		symlinkTarget := filepath.Join(p.RootDir, repo.Name)
 		repo.SymlinkPath = symlinkTarget
@@ -421,7 +424,7 @@ func (m *ProjectManager) ScanDirectory(targetPath string) (*types.ScanDirResult,
 		}
 
 		childPath := filepath.Join(targetPath, entry.Name())
-		role, manifest, count := classifyDirectory(entry.Name(), childPath)
+		role, manifest, techs, count := classifyDirectory(entry.Name(), childPath)
 
 		detected = append(detected, types.DetectedRepo{
 			Name:          entry.Name(),
@@ -429,20 +432,22 @@ func (m *ProjectManager) ScanDirectory(targetPath string) (*types.ScanDirResult,
 			SuggestedRole: role,
 			ManifestType:  manifest,
 			FilesCount:    count,
+			Stack:         techs,
 		})
 	}
 
 	// If no subdirectories matched, test if targetPath itself is a single repo
 	if len(detected) == 0 {
 		baseName := filepath.Base(targetPath)
-		role, manifest, count := classifyDirectory(baseName, targetPath)
-		if manifest != "unknown" {
+		role, manifest, techs, count := classifyDirectory(baseName, targetPath)
+		if manifest != stack.Unknown {
 			detected = append(detected, types.DetectedRepo{
 				Name:          baseName,
 				Path:          targetPath,
 				SuggestedRole: role,
 				ManifestType:  manifest,
 				FilesCount:    count,
+				Stack:         techs,
 			})
 		}
 	}
@@ -453,94 +458,14 @@ func (m *ProjectManager) ScanDirectory(targetPath string) (*types.ScanDirResult,
 	}, nil
 }
 
-func classifyDirectory(name string, path string) (types.ProjectRole, string, int) {
-	lowerName := strings.ToLower(name)
-	entries, _ := os.ReadDir(path)
-	fileCount := len(entries)
-
-	// 1. Check for Playwright / Cypress / E2E test suite
-	if _, err := os.Stat(filepath.Join(path, "playwright.config.ts")); err == nil {
-		return types.RoleAutomationTest, "playwright.config.ts", fileCount
-	}
-	if _, err := os.Stat(filepath.Join(path, "playwright.config.js")); err == nil {
-		return types.RoleAutomationTest, "playwright.config.js", fileCount
-	}
-	if _, err := os.Stat(filepath.Join(path, "cypress.config.ts")); err == nil {
-		return types.RoleAutomationTest, "cypress.config.ts", fileCount
-	}
-	if strings.Contains(lowerName, "test") || strings.Contains(lowerName, "e2e") || strings.Contains(lowerName, "atdd") || strings.Contains(lowerName, "automation") {
-		return types.RoleAutomationTest, detectManifest(path), fileCount
-	}
-
-	// 2. Check for Contracts (OpenAPI, Protobuf, Schemas)
-	if _, err := os.Stat(filepath.Join(path, "openapi.yaml")); err == nil {
-		return types.RoleContracts, "openapi.yaml", fileCount
-	}
-	if _, err := os.Stat(filepath.Join(path, "openapi.json")); err == nil {
-		return types.RoleContracts, "openapi.json", fileCount
-	}
-	if strings.Contains(lowerName, "contract") || strings.Contains(lowerName, "schema") || strings.Contains(lowerName, "proto") {
-		return types.RoleContracts, detectManifest(path), fileCount
-	}
-
-	// 3. Check for Docs / Artifacts
-	if strings.Contains(lowerName, "artifact") || strings.Contains(lowerName, "doc") || strings.Contains(lowerName, "prd") || strings.Contains(lowerName, "spec") {
-		return types.RoleArtifact, "markdown", fileCount
-	}
-
-	// 4. Check for Frontend (Vite, Vue, React, Next, Nuxt, Svelte, Angular)
-	if _, err := os.Stat(filepath.Join(path, "package.json")); err == nil {
-		manifestData, _ := os.ReadFile(filepath.Join(path, "package.json"))
-		mStr := strings.ToLower(string(manifestData))
-
-		if strings.Contains(lowerName, "front") || strings.Contains(lowerName, "ui") || strings.Contains(lowerName, "web") || strings.Contains(lowerName, "client") ||
-			strings.Contains(mStr, "vue") || strings.Contains(mStr, "react") || strings.Contains(mStr, "next") || strings.Contains(mStr, "nuxt") || strings.Contains(mStr, "vite") {
-			return types.RoleFrontend, "package.json", fileCount
-		}
-		// If it's a node backend
-		return types.RoleBackend, "package.json", fileCount
-	}
-
-	// 5. Check for Backend languages
-	if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
-		return types.RoleBackend, "go.mod", fileCount
-	}
-	if _, err := os.Stat(filepath.Join(path, "composer.json")); err == nil {
-		return types.RoleBackend, "composer.json", fileCount
-	}
-	if _, err := os.Stat(filepath.Join(path, "pom.xml")); err == nil {
-		return types.RoleBackend, "pom.xml", fileCount
-	}
-	if _, err := os.Stat(filepath.Join(path, "Cargo.toml")); err == nil {
-		return types.RoleBackend, "Cargo.toml", fileCount
-	}
-	if _, err := os.Stat(filepath.Join(path, "requirements.txt")); err == nil {
-		return types.RoleBackend, "requirements.txt", fileCount
-	}
-
-	return types.RoleOtherService, "unknown", fileCount
+// classifyDirectory suggests a role and manifest from the folder's files (see stack.Classify).
+func classifyDirectory(name string, path string) (types.ProjectRole, string, []string, int) {
+	c := stack.Classify(name, path)
+	return c.Role, c.Manifest, c.Stack, countFiles(path)
 }
 
 func detectManifest(path string) string {
-	if _, err := os.Stat(filepath.Join(path, "package.json")); err == nil {
-		return "package.json"
-	}
-	if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
-		return "go.mod"
-	}
-	if _, err := os.Stat(filepath.Join(path, "composer.json")); err == nil {
-		return "composer.json"
-	}
-	if _, err := os.Stat(filepath.Join(path, "openapi.yaml")); err == nil {
-		return "openapi.yaml"
-	}
-	if _, err := os.Stat(filepath.Join(path, "playwright.config.ts")); err == nil {
-		return "playwright.config.ts"
-	}
-	if _, err := os.Stat(filepath.Join(path, "Cargo.toml")); err == nil {
-		return "Cargo.toml"
-	}
-	return "unknown"
+	return stack.Classify(filepath.Base(path), path).Manifest
 }
 
 func slugify(s string) string {
@@ -584,4 +509,3 @@ func countFiles(repoPath string) int {
 	}
 	return len(entries)
 }
-

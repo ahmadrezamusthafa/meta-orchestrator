@@ -102,6 +102,10 @@ type stageRun struct {
 // claimStage validates and marks a task RUNNING for its current stage. Only one claim can hold a
 // task's console at a time, so RUNNING always means an agent turn is live.
 func (r *Router) claimStage(taskID, trigger, feedback string) (*stageRun, error) {
+	// Checked before taking the lock: it may run each tool's version command.
+	if err := r.toolchainGate(taskID); err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
 	task, ok := r.tasks[taskID]
 	if !ok {
@@ -173,6 +177,10 @@ var agentTurnTimeout = llm.DefaultAgentTurnLimit + 5*time.Minute
 // startStage claims the task's current stage and executes it in the background.
 func (r *Router) startStage(taskID, trigger, feedback string) error {
 	run, err := r.claimStage(taskID, trigger, feedback)
+	var missingTools *toolsMissingError
+	if errors.As(err, &missingTools) {
+		r.noteMissingTools(taskID, trigger, missingTools)
+	}
 	if errors.Is(err, errNoRepos) {
 		if t := r.taskSnapshot(taskID); t != nil {
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
@@ -280,7 +288,7 @@ func (r *Router) executeStage(run *stageRun) {
 	canContinue := sessionID != "" && c.sessionStage == task.CurrentStageID
 	r.console.mu.Unlock()
 
-	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method)}}, history...)
+	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method) + r.stackBrief(task) + r.connectorsBrief(task)}}, history...)
 	message := run.trigger == "message"
 	rejected := run.trigger == "gate_rejected"
 	evidenceOnly := run.trigger == "evidence" // record test evidence for the implementation already done
@@ -775,7 +783,16 @@ func (r *Router) broadcastTask(t *types.Task) {
 // respondStageStart maps a startStage result to an HTTP response.
 func (r *Router) respondStageStart(w http.ResponseWriter, taskID string, err error) {
 	var blocked *depsBlockedError
+	var missingTools *toolsMissingError
 	switch {
+	case errors.As(err, &missingTools):
+		t := r.taskSnapshot(taskID)
+		var repos []string
+		if t != nil {
+			repos = t.AssignedRepos
+		}
+		r.writeJSON(w, http.StatusConflict, map[string]interface{}{"status": "needs_tools", "task_id": taskID, "error": err.Error(),
+			"missing": missingTools.Missing, "toolchain": r.toolchainFor(repos, false), "task": t})
 	case err == nil:
 		r.writeJSON(w, http.StatusOK, map[string]interface{}{"status": "execution_dispatched", "task_id": taskID, "task": r.taskSnapshot(taskID)})
 	case errors.As(err, &blocked):
@@ -809,7 +826,7 @@ Then emit the cases as JSON in a fenced block whose language is atdd-cases, one 
 ` + "```" + `
 
 Rules: priority P0 (money, permissions, data loss, regression guards), P1 (core happy path, primary validations) or P2;
-test_level SIT (end-to-end journey) or SUT (one rule or one API contract); platform WEB for screen-driven cases, API for operation-level cases;
+test_level SIT (end-to-end journey) or SUT (one rule or one API contract); platform WEB for screen-driven cases in a browser, MOBILE for cases in a mobile app (Flutter, Android), API for operation-level cases;
 repository is the assigned repository the case runs against; uat true for every reviewer-facing UI case;
 sanity true for the smoke / critical-path cases that prove the release is healthy.
 Write steps and expected results in complete plain language a business tester can follow — name the screen, menu, button and field; no bare requirement codes.`
@@ -844,13 +861,13 @@ Plan rules:
 - every step has "where" (screen and menu path), a plain-language description of exactly what to do, and the expected result the tester should see. Never skip an intermediate action (sign in, navigation, opening the record, saving, refreshing, waiting for a background job).
 - executable_by: "Finance/Ops" when every step is on a screen, "Engineer" when any step needs console, API, database or flag access, "Engineer + Finance/Ops" when an engineer prepares and a business user verifies.
 - the test data every scenario needs (record ids, serials, payment UIDs, dates) is prepared by one script, not by hand. After the plan, emit a second fenced block whose language is "uat-seed <language>" (e.g. uat-seed ruby) containing a script an engineer runs once in the UAT environment:
-  - first line is a comment "# run: <exact command>" for that repository (e.g. bundle exec rails runner tmp/uat_seed.rb);
+  - first line is a comment "run: <exact command>" in the script's comment syntax (# Ruby/Python/shell, // Go/Java/Kotlin/Dart, -- SQL) for that repository (e.g. # run: bundle exec rails runner tmp/uat_seed.rb, // run: go run ./tmp/uat_seed for a Go service, or the repository's own seeding task for a JVM or Dart backend — prefer the repository's own models or store layer over raw SQL);
   - it aborts when it detects a production environment (the way this repository detects it) before it loads or touches any data, and never contains credentials (read any it needs from ENV);
   - it is a dry run unless UAT_SEED_APPLY=1 is set: without it, it runs every lookup and query it will rely on (read-only), reports what it would create on stderr, and writes nothing — so a broken query fails before any record exists. Put both commands in the header: the dry run first, then UAT_SEED_APPLY=1;
   - it creates each record in exactly the state the scenario needs, using the repository's own models, services or factories, and is safe to re-run (reuse its own tagged records and re-apply each state change only when needed);
   - every record it creates is keyed by a data-set tag read from ENV UAT_SEED_TAG (default 01): the same tag reuses the set, a new tag creates a fresh set — never reset or delete records to reuse them. When a reused record is no longer in the state its scenario needs (a UAT run or the screenshot capture paid, voided or changed it), stop and ask for a new UAT_SEED_TAG;
   - it only creates or changes records it owns (a tagged external reference and a fake tenant); it checks ownership before find_or_create, and never uses delete_all, destroy_all, update_all or raw DELETE/UPDATE;
-  - every call must match the code as it is: open the definition of each class, method, scope and keyword argument you use and follow its real signature and return value. In joined queries, qualify every raw SQL column with its table (apps.name, not name) and do not merge another model's scope into a join unless its SQL is table-qualified — MySQL rejects ambiguous columns. Wait for work the code does in background jobs instead of assuming it finished;
+  - every call must match the code as it is: open the definition of each class, method, scope and keyword argument you use and follow its real signature and return value. In joined queries, qualify every raw SQL column with its table (apps.name, not name) and do not merge another model's scope into a join unless its SQL is table-qualified — MySQL and PostgreSQL reject ambiguous columns. Wait for work the code does in background jobs instead of assuming it finished;
   - on failure it prints which records it already created, then exits non-zero;
   - it prints UAT_SEED_TAG=<tag> first, then exactly one NAME=value line per ${…} placeholder the plan uses (dates included), and nothing else on stdout.
 - use obviously fake test data. Never include real customer data, credentials or tokens; for a login use ${UAT_USERNAME} and ${UAT_PASSWORD}.`

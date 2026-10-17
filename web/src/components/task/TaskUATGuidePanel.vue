@@ -34,7 +34,7 @@ let poll: ReturnType<typeof setInterval> | null = null
 const generating = computed(() => status.value?.status === 'GENERATING')
 const htmlURL = computed(() => status.value?.html_path
   ? `/api/v1/artifacts/${encodeURIComponent(props.task.id)}/${status.value.html_path}` : '')
-const webApps = computed(() => (status.value?.apps || []).filter((a) => a.kind !== 'api'))
+const webApps = computed(() => (status.value?.apps || []).filter((a) => a.kind !== 'api' && a.kind !== 'mobile'))
 const appName = (id: string) => status.value?.apps.find((a) => a.id === id)?.name || id
 const missing = computed(() => status.value?.coverage?.missing?.filter(Boolean) || [])
 const scope = computed(() => status.value?.atdd)

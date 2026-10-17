@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/stack"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
 // DiscoveredRepo details an identified codebase inside the organization workspace.
@@ -12,7 +15,7 @@ type DiscoveredRepo struct {
 	Path         string   `json:"path"`
 	Category     string   `json:"category"` // "frontend", "backend", "contracts", "infra", "library"
 	ManifestType string   `json:"manifest_type"`
-	Languages    []string `json:"languages"`
+	Languages    []string `json:"languages"` // detected technologies
 }
 
 // RepoDiscoveryEngine automatically discovers repositories and classifications within a workspace.
@@ -59,50 +62,27 @@ func (e *RepoDiscoveryEngine) Discover() ([]*DiscoveredRepo, error) {
 }
 
 func (e *RepoDiscoveryEngine) classifyRepo(name string, path string) *DiscoveredRepo {
-	category := "library"
-	manifestType := "unknown"
-	var languages []string
-
-	// Check package.json (Frontend or Node backend)
-	if _, err := os.Stat(filepath.Join(path, "package.json")); err == nil {
-		manifestType = "package.json"
-		languages = append(languages, "typescript", "javascript")
-		if strings.Contains(strings.ToLower(name), "front") || strings.Contains(strings.ToLower(name), "ui") || strings.Contains(strings.ToLower(name), "web") {
-			category = "frontend"
-		} else {
-			category = "backend"
-		}
-	}
-
-	// Check go.mod (Backend Go)
-	if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
-		manifestType = "go.mod"
-		languages = append(languages, "go")
-		category = "backend"
-	}
-
-	// Check composer.json (PHP/Laravel)
-	if _, err := os.Stat(filepath.Join(path, "composer.json")); err == nil {
-		manifestType = "composer.json"
-		languages = append(languages, "php")
-		category = "backend"
-	}
-
-	// Check OpenAPI / Protobuf
-	if _, err := os.Stat(filepath.Join(path, "openapi.yaml")); err == nil {
-		category = "contracts"
-	}
-
-	if len(languages) == 0 {
+	c := stack.Classify(name, path)
+	if c.Manifest == stack.Unknown || c.Manifest == "markdown" {
 		return nil
 	}
-
+	category := "library"
+	switch c.Role {
+	case types.RoleFrontend:
+		category = "frontend"
+	case types.RoleBackend:
+		category = "backend"
+	case types.RoleContracts:
+		category = "contracts"
+	case types.RoleInfrastructure:
+		category = "infra"
+	}
 	return &DiscoveredRepo{
 		Name:         name,
 		Path:         path,
 		Category:     category,
-		ManifestType: manifestType,
-		Languages:    languages,
+		ManifestType: c.Manifest,
+		Languages:    c.Stack,
 	}
 }
 
@@ -115,7 +95,8 @@ func (e *RepoDiscoveryEngine) FindImpactedRepos(allRepos []*DiscoveredRepo, desc
 		lowerName := strings.ToLower(r.Name)
 		if strings.Contains(lowerDesc, lowerName) ||
 			(r.Category == "frontend" && (strings.Contains(lowerDesc, "ui") || strings.Contains(lowerDesc, "frontend") || strings.Contains(lowerDesc, "page"))) ||
-			(r.Category == "backend" && (strings.Contains(lowerDesc, "api") || strings.Contains(lowerDesc, "endpoint") || strings.Contains(lowerDesc, "backend") || strings.Contains(lowerDesc, "db"))) {
+			(r.Category == "backend" && (strings.Contains(lowerDesc, "api") || strings.Contains(lowerDesc, "endpoint") || strings.Contains(lowerDesc, "backend") || strings.Contains(lowerDesc, "db"))) ||
+			(r.Category == "infra" && (strings.Contains(lowerDesc, "infra") || strings.Contains(lowerDesc, "deploy") || strings.Contains(lowerDesc, "terragrunt") || strings.Contains(lowerDesc, "opentofu"))) {
 			impacted = append(impacted, r.Name)
 		}
 	}

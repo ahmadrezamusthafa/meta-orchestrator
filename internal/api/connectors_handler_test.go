@@ -316,20 +316,21 @@ func TestConnectorsCatalogEndpoints(t *testing.T) {
 		t.Errorf("expected test success, got false. Message: %s", testResp.Message)
 	}
 
-	// 6. POST /api/v1/connectors/items/github/test-mcp (validates real npx on system)
+	// 6. POST /api/v1/connectors/items/custom_webhook/test-mcp (validates real npx on system). Stack
+	// connectors (GitHub, Grafana, …) start their server for real instead: see stack_connectors_test.go.
 	mcpTestPayload := types.MCPConfig{
 		Enabled:   true,
 		Command:   "npx",
-		Args:      []string{"-y", "@modelcontextprotocol/server-github"},
+		Args:      []string{"-y", "mcp-proxy-webhook"},
 		Transport: "stdio",
 	}
 	b, _ = json.Marshal(mcpTestPayload)
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/connectors/items/github/test-mcp", bytes.NewReader(b))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/connectors/items/custom_webhook/test-mcp", bytes.NewReader(b))
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /api/v1/connectors/items/github/test-mcp returned %d", rec.Code)
+		t.Fatalf("POST /api/v1/connectors/items/custom_webhook/test-mcp returned %d", rec.Code)
 	}
 	var mcpResp types.TestConnectorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &mcpResp); err != nil {

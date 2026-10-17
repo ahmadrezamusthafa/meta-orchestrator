@@ -165,9 +165,12 @@ var syntaxTools = map[string][]string{
 	"sh":     {"bash", "-n"},
 	"js":     {"node", "--check"},
 	"node":   {"node", "--check"},
+	"go":     {"gofmt", "-e", "-l"},               // parses without building; needs no module
+	"dart":   {"dart", "format", "--output=none"}, // parses without resolving packages
 }
 
-var seedExt = map[string]string{"ruby": ".rb", "rb": ".rb", "python": ".py", "py": ".py", "bash": ".sh", "sh": ".sh", "js": ".mjs", "node": ".mjs"}
+var seedExt = map[string]string{"ruby": ".rb", "rb": ".rb", "python": ".py", "py": ".py", "bash": ".sh", "sh": ".sh", "js": ".mjs", "node": ".mjs",
+	"go": ".go", "sql": ".sql", "dart": ".dart"}
 
 // CheckSyntax parses the script with its language's checker. It never executes the script.
 func (s *Seed) CheckSyntax(ctx context.Context) SeedSyntax {
@@ -198,6 +201,9 @@ func (s *Seed) CheckSyntax(ctx context.Context) SeedSyntax {
 	msg := strings.TrimSpace(strings.ReplaceAll(out.String(), path, "uat_seed"+seedExt[lang]))
 	if len(msg) > 600 {
 		msg = msg[:600] + "…"
+	}
+	if runErr == nil && (tool[0] == "gofmt" || tool[0] == "dart") {
+		msg = "" // formatters report formatting on success, which is not a syntax problem
 	}
 	res := SeedSyntax{Checked: true, OK: runErr == nil, Tool: strings.Join(tool, " "), Message: msg}
 	if runErr != nil && msg == "" {

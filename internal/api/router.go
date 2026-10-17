@@ -18,6 +18,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/telemetry"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/toolchain"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -49,6 +50,9 @@ type RouterConfig struct {
 	Docker DockerLimits
 	// EnableJiraSync runs the background JIRA → board sync using the rules in connectors.json.
 	EnableJiraSync bool
+	// Toolchain checks and installs the tools the repositories' stacks need. Nil checks this
+	// machine (toolchain.New).
+	Toolchain *toolchain.Toolchain
 }
 
 // Router provides the HTTP REST API handler for the Mission Control frontend.
@@ -72,10 +76,11 @@ type Router struct {
 	persistMu     sync.Mutex
 	worktreeMu    sync.Mutex // serializes git worktree creation/removal
 	approvals     *approvalHub
-	docker        *dockerGate         // limits concurrent Docker commands across all agents
-	busyOps       sync.Map            // "pr:<task>" / "uat:<task>" while a delivery job runs
-	prClient      *pullrequest.Client // opens pull requests; tests point it at a fake API
-	uatRunner     uatScreenshotRunner // captures UAT screenshots; tests stub it
+	docker        *dockerGate          // limits concurrent Docker commands across all agents
+	toolchain     *toolchain.Toolchain // checks and installs the tools the stacks need
+	busyOps       sync.Map             // "pr:<task>" / "uat:<task>" while a delivery job runs
+	prClient      *pullrequest.Client  // opens pull requests; tests point it at a fake API
+	uatRunner     uatScreenshotRunner  // captures UAT screenshots; tests stub it
 	lastPersisted []byte
 	stop          chan struct{}
 	closeOnce     sync.Once
@@ -137,8 +142,12 @@ func NewRouter(cfg RouterConfig) *Router {
 		jira:           newJiraSyncState(),
 		approvals:      newApprovalHub(),
 		docker:         newDockerGate(cfg.Docker),
+		toolchain:      cfg.Toolchain,
 		prClient:       &pullrequest.Client{},
 		stop:           make(chan struct{}),
+	}
+	if r.toolchain == nil {
+		r.toolchain = toolchain.New()
 	}
 	r.connections = newConnectionChecker(r.quota)
 	stratRouter.SetAvailability(r.connections.Usable)
@@ -182,6 +191,8 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/tasks", r.handleTasks)
 	r.mux.HandleFunc("/api/v1/tasks/", r.handleTaskItem)
 	r.mux.HandleFunc("/api/v1/tasks/analyze", r.handleTaskAnalyze)
+	r.mux.HandleFunc("/api/v1/toolchain", r.handleToolchain)
+	r.mux.HandleFunc("/api/v1/toolchain/", r.handleToolchainAction)
 	r.mux.HandleFunc("/api/v1/tools", r.handleTools)
 	r.mux.HandleFunc("/api/v1/tools/", r.handleToolAction)
 	r.mux.HandleFunc("/api/v1/providers", r.handleProviders)
@@ -214,6 +225,7 @@ func (r *Router) registerRoutes() {
 	// Connector endpoints (Modular Catalog, Items, JIRA & Confluence, MCP)
 	r.mux.HandleFunc("/api/v1/connectors", r.handleConnectors)
 	r.mux.HandleFunc("/api/v1/connectors/catalog", r.handleConnectorCatalog)
+	r.mux.HandleFunc("/api/v1/connectors/suggestions", r.handleConnectorSuggestions)
 	r.mux.HandleFunc("/api/v1/connectors/mcp-config", r.handleConnectorMCPConfig)
 	r.mux.HandleFunc("/api/v1/connectors/items/", r.handleConnectorItemAction)
 	r.mux.HandleFunc("/api/v1/connectors/jira", r.handleConnectorJira)

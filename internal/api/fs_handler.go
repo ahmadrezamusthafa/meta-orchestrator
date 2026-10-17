@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/stack"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
@@ -24,6 +25,7 @@ type DirectoryItem struct {
 	IsRepo        bool              `json:"is_repo"`
 	Manifest      string            `json:"manifest"`
 	SuggestedRole types.ProjectRole `json:"suggested_role"`
+	Stack         []string          `json:"stack,omitempty"`
 	HasChildren   bool              `json:"has_children"`
 	IsHidden      bool              `json:"is_hidden"`
 }
@@ -105,9 +107,9 @@ func (r *Router) handleFSBrowse(w http.ResponseWriter, req *http.Request) {
 			}
 
 			childPath := filepath.Join(targetPath, name)
-			manifest := checkManifest(childPath)
-			suggestedRole := classifyRole(name, manifest, childPath)
-			isRepo := manifest != "unknown"
+			class := stack.Classify(name, childPath)
+			manifest, suggestedRole := class.Manifest, class.Role
+			isRepo := (manifest != stack.Unknown && manifest != "markdown") || dirExists(filepath.Join(childPath, ".git"))
 
 			hasChildren := false
 			if subEntries, subErr := os.ReadDir(childPath); subErr == nil {
@@ -133,6 +135,7 @@ func (r *Router) handleFSBrowse(w http.ResponseWriter, req *http.Request) {
 				IsRepo:        isRepo,
 				Manifest:      manifest,
 				SuggestedRole: suggestedRole,
+				Stack:         class.Stack,
 				HasChildren:   hasChildren,
 				IsHidden:      isHidden,
 			})
@@ -218,70 +221,6 @@ func generateBreadcrumbs(fullPath string) []BreadcrumbItem {
 	}
 
 	return items
-}
-
-func checkManifest(path string) string {
-	if _, err := os.Stat(filepath.Join(path, "package.json")); err == nil {
-		return "package.json"
-	}
-	if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
-		return "go.mod"
-	}
-	if _, err := os.Stat(filepath.Join(path, "playwright.config.ts")); err == nil {
-		return "playwright.config.ts"
-	}
-	if _, err := os.Stat(filepath.Join(path, "playwright.config.js")); err == nil {
-		return "playwright.config.js"
-	}
-	if _, err := os.Stat(filepath.Join(path, "openapi.yaml")); err == nil {
-		return "openapi.yaml"
-	}
-	if _, err := os.Stat(filepath.Join(path, "composer.json")); err == nil {
-		return "composer.json"
-	}
-	if _, err := os.Stat(filepath.Join(path, "Cargo.toml")); err == nil {
-		return "Cargo.toml"
-	}
-	if _, err := os.Stat(filepath.Join(path, "requirements.txt")); err == nil {
-		return "requirements.txt"
-	}
-	return "unknown"
-}
-
-func classifyRole(name, manifest, path string) types.ProjectRole {
-	lowerName := strings.ToLower(name)
-
-	// 1. Tests
-	if strings.Contains(manifest, "playwright") || strings.Contains(lowerName, "test") || strings.Contains(lowerName, "e2e") || strings.Contains(lowerName, "atdd") {
-		return types.RoleAutomationTest
-	}
-
-	// 2. Contracts
-	if manifest == "openapi.yaml" || strings.Contains(lowerName, "contract") || strings.Contains(lowerName, "schema") || strings.Contains(lowerName, "proto") {
-		return types.RoleContracts
-	}
-
-	// 3. Artifacts / Docs
-	if strings.Contains(lowerName, "artifact") || strings.Contains(lowerName, "doc") || strings.Contains(lowerName, "prd") {
-		return types.RoleArtifact
-	}
-
-	// 4. Frontend
-	if manifest == "package.json" {
-		data, _ := os.ReadFile(filepath.Join(path, "package.json"))
-		mStr := strings.ToLower(string(data))
-		if strings.Contains(lowerName, "front") || strings.Contains(lowerName, "ui") || strings.Contains(lowerName, "web") ||
-			strings.Contains(mStr, "vue") || strings.Contains(mStr, "react") || strings.Contains(mStr, "vite") {
-			return types.RoleFrontend
-		}
-	}
-
-	// 5. Backend
-	if manifest == "go.mod" || manifest == "composer.json" || manifest == "Cargo.toml" || strings.Contains(lowerName, "service") || strings.Contains(lowerName, "api") || strings.Contains(lowerName, "backend") {
-		return types.RoleBackend
-	}
-
-	return types.RoleOtherService
 }
 
 // CreateFolderRequest holds parameters to create a new folder.

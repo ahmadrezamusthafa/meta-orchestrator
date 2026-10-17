@@ -7,6 +7,8 @@ import ToolLifecycleCard from '../components/tools/ToolLifecycleCard.vue'
 import InstallWizardModal from '../components/tools/InstallWizardModal.vue'
 import RollbackConfirmModal from '../components/tools/RollbackConfirmModal.vue'
 import BestFitMatrixModal from '../components/tools/BestFitMatrixModal.vue'
+import ToolchainSection from '../components/toolchain/ToolchainSection.vue'
+import ConnectorSuggestions from '../components/toolchain/ConnectorSuggestions.vue'
 import { Search, Sparkles, Wrench, X, RefreshCw } from 'lucide-vue-next'
 
 const toolsStore = useToolsStore()
@@ -130,7 +132,21 @@ async function handleRefresh() {
     </div>
 
     <!-- Catalog Grid -->
-    <main class="flex-1 p-6 overflow-y-auto">
+    <main class="flex-1 p-6 overflow-y-auto space-y-8">
+      <!-- Real CLI tools the registered repositories' stacks need on this machine -->
+      <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+        <ToolchainSection
+          :scope="{}"
+          title="Stack toolchain"
+          empty-text="No registered repository needs command-line tools yet. Register projects in Projects, or show every supported tool."
+        />
+      </div>
+
+      <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+        <ConnectorSuggestions :scope="{}" title="Connectors your repositories use" />
+      </div>
+
+      <h2 class="text-xs uppercase tracking-wider text-slate-500 font-semibold">Orchestrator packages</h2>
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <ToolLifecycleCard
           v-for="tool in filteredTools"

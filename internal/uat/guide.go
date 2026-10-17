@@ -293,9 +293,14 @@ func RenderMarkdown(p *Plan, scenarios []GuideScenario, sum Summary, cov Coverag
 		if a.Audience != "" {
 			w("- **Used by:** %s\n", a.Audience)
 		}
-		if a.BaseURL != "" {
+		switch {
+		case a.IsMobile() && a.BaseURL != "":
+			w("- **UAT build:** %s\n", a.BaseURL)
+		case a.IsMobile():
+			b.WriteString("- **UAT build:** _ask the engineer on the ticket for the UAT build (TestFlight, Play internal testing or Firebase App Distribution)_\n")
+		case a.BaseURL != "":
 			w("- **Environment:** %s\n", a.BaseURL)
-		} else if a.IsWeb() {
+		case a.IsWeb():
 			b.WriteString("- **Environment:** _not set — ask the engineer on the ticket for the UAT URL_\n")
 		}
 		if len(a.Repos) > 0 {
@@ -355,7 +360,7 @@ func RenderMarkdown(p *Plan, scenarios []GuideScenario, sum Summary, cov Coverag
 			who := s.ExecutableBy
 			if who == "" {
 				who = "Finance/Ops"
-				if s.App != nil && !s.App.IsWeb() {
+				if s.App != nil && s.App.IsAPI() {
 					who = "Engineer"
 				}
 			}

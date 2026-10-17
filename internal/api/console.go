@@ -327,6 +327,12 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 	})
 	req := &llm.LLMRequest{Messages: t.Messages, MaxTokens: t.MaxTokens, SessionID: t.SessionID, WorkDir: t.WorkDir, AddDirs: t.AddDirs,
 		PermissionMode: t.PermissionMode, Approver: approver, AllowedTools: readOnlyCommands}
+	// Connected connectors (GitHub, Grafana, Jira, …) reach the agent through a private per-turn
+	// MCP config: the agent runs in the task worktree, where the orchestrator's .mcp.json is not.
+	if mcpPath, cleanup := r.agentMCPConfig(taskID, t.TurnID); mcpPath != "" {
+		defer cleanup()
+		req.MCPConfig = mcpPath
+	}
 	start := time.Now()
 	resp, used, err := r.clientFactory.StreamWithFallbackChain(ctx, chain, req, emit, onFailover)
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -584,6 +590,13 @@ func (r *Router) handleTaskConsole(w http.ResponseWriter, req *http.Request, tas
 		if r.messageRunsStage(taskID) {
 			mode = "stage"
 			turnID, userID, err = r.startStageWithMessage(taskID, msg, model)
+			var missingTools *toolsMissingError
+			if errors.As(err, &missingTools) {
+				// Never lose the message: answer it as a side conversation while the stage waits for tools.
+				r.noteMissingTools(taskID, "message", missingTools)
+				mode = "chat"
+				turnID, userID, err = r.startChatTurn(task, msg, model)
+			}
 		} else {
 			turnID, userID, err = r.startChatTurn(task, msg, model)
 		}
@@ -633,7 +646,7 @@ func (r *Router) startChatTurn(task *types.Task, message, model string) (string,
 		// The operator is at the console, so the agent may act; anything gated asks them first.
 		workDir := r.resolveWorkDir(task)
 		mode := r.editMode(task.ID, workDir)
-		system := taskSystemPrompt(task, decision.Method) + "\n" + permissionBrief(mode)
+		system := taskSystemPrompt(task, decision.Method) + r.stackBrief(task) + r.connectorsBrief(task) + "\n" + permissionBrief(mode)
 		msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: system}}, history...)
 		msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: message})
 		resp, used, _ := r.runAgentTurn(ctx, agentTurn{Source: "chat", TurnID: turnID, Task: task, Decision: decision,
