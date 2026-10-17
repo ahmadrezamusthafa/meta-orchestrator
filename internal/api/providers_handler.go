@@ -455,6 +455,9 @@ func registerCustomModel(providerID, modelID, modelName string, costPer1k float6
 		LatencyMs: latencyMs,
 	}
 
+	// defaultProviders is guarded by providerAuthStore.mu (lock order: modelMetaMu, then it).
+	providerAuthStore.mu.Lock()
+	defer providerAuthStore.mu.Unlock()
 	foundProvider := false
 	for i := range defaultProviders {
 		if defaultProviders[i].ID == providerID {
@@ -487,6 +490,8 @@ func registerChainModels(chain []router.PriorityModelItem) {
 func getAllAvailableModels() []AvailableModelDTO {
 	modelMetaMu.RLock()
 	defer modelMetaMu.RUnlock()
+	providerAuthStore.mu.RLock()
+	defer providerAuthStore.mu.RUnlock()
 
 	var list []AvailableModelDTO
 	seen := make(map[string]bool)
@@ -692,10 +697,14 @@ func applyProviderAuthUpdate(prev *ProviderAuthState, authMethod, apiKey string,
 	return state
 }
 
-// maskToken masks a token for safe display, showing first 6 and last 4 chars.
+// maskToken masks a token for safe display: first 6 and last 4 chars of long keys (their
+// non-secret prefix identifies the key type), only the last 4 of shorter ones.
 func maskToken(token string) string {
-	if len(token) <= 12 {
+	switch {
+	case len(token) <= 12:
 		return strings.Repeat("•", len(token))
+	case len(token) < 24:
+		return strings.Repeat("•", 16) + token[len(token)-4:]
 	}
 	return token[:6] + strings.Repeat("•", 16) + token[len(token)-4:]
 }

@@ -5,12 +5,29 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
 var fixedNow = time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+
+// A keychain read that blocks (e.g. on an access prompt) must give up instead of hanging the caller.
+func TestKeychainReadIsBounded(t *testing.T) {
+	prevCmd, prevTimeout := keychainCommand, keychainTimeout
+	t.Cleanup(func() { keychainCommand, keychainTimeout = prevCmd, prevTimeout })
+	keychainTimeout = 200 * time.Millisecond
+	keychainCommand = func(ctx context.Context) *exec.Cmd { return exec.CommandContext(ctx, "sleep", "30") }
+
+	start := time.Now()
+	if _, err := readKeychain(); err == nil {
+		t.Fatal("expected the blocked read to fail")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("keychain read took %v; it is not bounded", d)
+	}
+}
 
 func TestClaudeFetcher(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

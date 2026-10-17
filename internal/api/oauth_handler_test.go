@@ -5,10 +5,81 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/quota"
 )
+
+// The callback reflects the provider's error parameter into an HTML page served from the daemon
+// origin; it must not let a crafted link run script there.
+func TestOAuthCallbackEscapesReflectedInput(t *testing.T) {
+	router := NewRouter(RouterConfig{RootDir: t.TempDir()})
+	for _, payload := range []string{
+		`<img src=x onerror=alert(1)>`,
+		`'};alert(document.domain);//`,
+		`</script><script>alert(1)</script>`,
+	} {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+			"/api/v1/providers/oauth/callback?error="+url.QueryEscape(payload), nil))
+		body := w.Body.String()
+		if strings.Contains(body, "<img") || strings.Count(body, "<script>") != 1 || strings.Count(body, "</script>") != 1 {
+			t.Fatalf("payload %q injected markup:\n%s", payload, body)
+		}
+		// The postMessage payload must stay one JSON literal that carries the text as data.
+		_, lit, _ := strings.Cut(body, "var result = ")
+		lit, _, _ = strings.Cut(lit, ";\n")
+		var result map[string]string
+		if err := json.Unmarshal([]byte(lit), &result); err != nil || result["error"] != payload {
+			t.Fatalf("payload %q broke out of the result literal (%v): %s", payload, err, lit)
+		}
+	}
+}
+
+func TestOAuthCallbackRejectsExpiredState(t *testing.T) {
+	router := NewRouter(RouterConfig{RootDir: t.TempDir()})
+	oauthStore.mu.Lock()
+	oauthStore.sessions["old-state"] = &OAuthSession{State: "old-state", ProviderID: "claude",
+		CreatedAt: time.Now().Add(-oauthSessionTTL - time.Minute)}
+	oauthStore.mu.Unlock()
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/providers/oauth/callback?state=old-state&code=abc", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expired state: got %d, want 400", w.Code)
+	}
+}
+
+// No token exchange is implemented, so a callback must not report a connected account with a
+// made-up token and email.
+func TestOAuthCallbackDoesNotFabricateConnection(t *testing.T) {
+	router := NewRouter(RouterConfig{RootDir: t.TempDir()})
+	payload, _ := json.Marshal(map[string]string{"provider_id": "chatgpt", "redirect_uri": "http://localhost:3000/cb"})
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/providers/oauth/initiate", bytes.NewReader(payload)))
+	var init map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &init)
+	state, _ := init["state"].(string)
+	if state == "" {
+		t.Fatalf("initiate: %d %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/providers/oauth/callback?state="+state+"&code=abc", nil))
+	if strings.Contains(w.Body.String(), `"status":"success"`) || strings.Contains(w.Body.String(), "user@example.com") {
+		t.Fatalf("callback reported a fabricated success:\n%s", w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/providers/oauth/status?provider_id=chatgpt", nil))
+	var status map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &status)
+	if status["is_connected"] != false {
+		t.Fatalf("status after a callback with no token exchange = %v, want not connected", status)
+	}
+}
 
 func TestOAuthEndpoints(t *testing.T) {
 	router := NewRouter(RouterConfig{RootDir: t.TempDir()})
@@ -85,8 +156,9 @@ func TestOAuthEndpoints(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/providers/oauth/callback?state="+state+"&code=test-auth-code-123", nil)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GET /providers/oauth/callback: expected 200, got %d", w.Code)
+	// No token exchange is implemented, so the callback reports that rather than a connection.
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("GET /providers/oauth/callback: expected 501, got %d", w.Code)
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
 		t.Errorf("Expected text/html content type, got %s", ct)
@@ -95,26 +167,16 @@ func TestOAuthEndpoints(t *testing.T) {
 	if !bytes.Contains([]byte(body), []byte("meta-orchestrator-oauth-callback")) {
 		t.Error("Callback HTML should contain postMessage type identifier")
 	}
-	if !bytes.Contains([]byte(body), []byte("success")) {
-		t.Error("Callback HTML should indicate success status")
+	if !bytes.Contains([]byte(body), []byte(`"status":"error"`)) {
+		t.Error("Callback HTML should indicate error status")
 	}
 
-	// 5. Verify OAuth status is now connected
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/providers/oauth/status?provider_id=antigravity", nil)
+	// 5. The state was consumed: replaying it is rejected.
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/providers/oauth/callback?state="+state+"&code=test-auth-code-123", nil)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GET /providers/oauth/status after connect: expected 200, got %d", w.Code)
-	}
-
-	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
-		t.Fatalf("Failed to decode status: %v", err)
-	}
-	if status["is_connected"] != true {
-		t.Error("Expected is_connected=true after successful OAuth callback")
-	}
-	if status["auth_method"] != "oauth" {
-		t.Errorf("Expected auth_method='oauth', got '%v'", status["auth_method"])
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("replayed callback: expected 400, got %d", w.Code)
 	}
 
 	// 6. Disconnect OAuth

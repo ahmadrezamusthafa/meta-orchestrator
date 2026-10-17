@@ -98,7 +98,7 @@ func (r *Router) initTelemetry() {
 	matrix := shadow.NewMatrixStore(matrixPath, publish)
 	if matrixPath != "" {
 		if _, err := os.Stat(matrixPath); err == nil {
-			go matrix.Watch(context.Background(), 5*time.Second) // hot-reload manual edits
+			go matrix.Watch(r.lifetime(), 5*time.Second) // hot-reload manual edits
 		}
 	}
 
@@ -117,6 +117,17 @@ func (r *Router) initTelemetry() {
 		r.initShadow(sub, tc, publish)
 	}
 	r.telemetry = sub
+}
+
+// lifetime is a context cancelled when the router closes, so background loops started for it
+// (matrix hot-reload, shadow workers) stop with it instead of leaking.
+func (r *Router) lifetime() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-r.stop
+		cancel()
+	}()
+	return ctx
 }
 
 func (r *Router) initShadow(sub *telemetrySubsystem, tc TelemetryConfig, publish telemetry.Publisher) {
@@ -151,7 +162,7 @@ func (r *Router) initShadow(sub *telemetrySubsystem, tc TelemetryConfig, publish
 	ceiling := mcfg.Execution.CPUCeilingPercent
 	sub.daemon = shadow.NewDaemon(shadow.DaemonConfig{Workers: 1, CPUCeilingPercent: ceiling}, nil,
 		func(ctx context.Context, job shadow.Job) error { return r.runShadowJob(ctx, sub, sandbox, job) })
-	sub.daemon.Start(context.Background())
+	sub.daemon.Start(r.lifetime())
 	fmt.Printf("[Shadow] Benchmark daemon started (CPU ceiling %.0f%%, sandbox=%v)\n", ceiling, sandbox != nil)
 }
 

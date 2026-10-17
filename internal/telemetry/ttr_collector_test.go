@@ -200,3 +200,32 @@ func TestTTRCollectorFirstPassWhenFirstIterationPasses(t *testing.T) {
 		t.Fatal("StartedAt not set")
 	}
 }
+
+// Each stage of a task is its own run, but the token tracker accumulates per task for its whole
+// lifetime: a run must carry only the tokens spent between its StartRun and Finish.
+func TestRunTokensAreScopedToTheRun(t *testing.T) {
+	tracker := NewTokenTracker(NewPricingTable(), nil)
+	c := NewTTRCollector()
+	c.SetTokenSource(tracker.TaskUsage)
+	meta := CallMeta{TaskID: "T1", Model: "claude/claude-sonnet-5-5"}
+
+	c.StartRun(RunMeta{TaskID: "T1", StageID: "INTAKE_PRD"})
+	tracker.Record(meta, types.TokenUsage{PromptTokens: 1000, CompletionTokens: 100})
+	first, _ := c.Finish("T1", true)
+
+	c.StartRun(RunMeta{TaskID: "T1", StageID: "TASK_BREAKDOWN"})
+	tracker.Record(meta, types.TokenUsage{PromptTokens: 200, CompletionTokens: 20, CachedTokens: 50})
+	second, _ := c.Finish("T1", true)
+
+	if first.PromptTokens != 1000 || first.CompletionTokens != 100 {
+		t.Fatalf("first run tokens = %d/%d", first.PromptTokens, first.CompletionTokens)
+	}
+	if second.PromptTokens != 200 || second.CompletionTokens != 20 || second.CachedTokens != 50 {
+		t.Fatalf("second run tokens = %d/%d/%d, want 200/20/50 (not cumulative)",
+			second.PromptTokens, second.CompletionTokens, second.CachedTokens)
+	}
+	want := tracker.Pricing().Cost(meta.Model, 200, 20, 50)
+	if d := second.CostUSD - want; d > 1e-12 || d < -1e-12 {
+		t.Fatalf("second run cost = %v, want %v", second.CostUSD, want)
+	}
+}

@@ -69,6 +69,42 @@ stage:IMPLEMENTATION_GREEN -> model:openai/gpt-4o,method:superpower
 	}
 }
 
+// Custom rules must match the stage ids the pipeline really runs (lowercase workflow ids such as
+// task_implementation) and only the exact stage/complexity they name.
+func TestCustomRuleMatching(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.Router.Strategy = "custom"
+	cfg.Router.CustomRules = `
+stage:IMPLEMENTATION_GREEN -> model:openai/gpt-4o,method:superpower
+complexity:system -> model:opencode/qwen2.5-coder:7b,method:react
+stage:E2E_AUTOMATION complexity:high -> method:bmad
+`
+	r := NewRouter(cfg)
+	cases := []struct {
+		stage, cx, wantStrategy, wantModel, wantMethod string
+	}{
+		{"task_implementation", "MEDIUM", "custom", "openai/gpt-4o", "superpower"}, // workflow id of IMPLEMENTATION_GREEN
+		{"IMPLEMENTATION_GREEN", "LOW", "custom", "openai/gpt-4o", "superpower"},
+		{"prd_discovery", "", "best_practice", "", ""},                              // unknown complexity must not match complexity:system
+		{"prd_discovery", "SYSTEM", "custom", "opencode/qwen2.5-coder:7b", "react"}, // model ids may contain ':'
+		{"e2e_validation", "MEDIUM", "best_practice", "", ""},                       // both conditions must hold
+		{"e2e_validation", "HIGH", "custom", "", "bmad"},
+	}
+	for _, c := range cases {
+		d := r.Route(c.stage, c.cx, nil)
+		if d.Strategy != c.wantStrategy {
+			t.Errorf("%s/%s: strategy %s, want %s (%s)", c.stage, c.cx, d.Strategy, c.wantStrategy, d.Reasoning)
+			continue
+		}
+		if c.wantModel != "" && d.Model != c.wantModel {
+			t.Errorf("%s/%s: model %s, want %s", c.stage, c.cx, d.Model, c.wantModel)
+		}
+		if c.wantMethod != "" && d.Method != c.wantMethod {
+			t.Errorf("%s/%s: method %s, want %s", c.stage, c.cx, d.Method, c.wantMethod)
+		}
+	}
+}
+
 func TestRouterModesAndCustomPriority(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	r := NewRouter(cfg)
@@ -118,4 +154,3 @@ func TestRouterModesAndCustomPriority(t *testing.T) {
 		t.Errorf("expected fastest model 'antigravity/gemini-2.0-flash', got %s", decLat.Model)
 	}
 }
-

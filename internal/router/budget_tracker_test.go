@@ -33,3 +33,18 @@ func TestBudgetTracker(t *testing.T) {
 		t.Fatalf("expected budget exceeded error")
 	}
 }
+
+// The over-budget result must be a snapshot too: handing out the tracker's own record lets the
+// caller mutate (and race on) state the tracker guards with its lock.
+func TestBudgetTrackerOverBudgetReturnsCopy(t *testing.T) {
+	bt := NewBudgetTracker()
+	bt.SetTaskBudget("t", 10)
+	u, err := bt.RecordUsage("t", 20, 0, 0)
+	if err == nil || u == nil {
+		t.Fatalf("expected over-budget usage and error, got %v %v", u, err)
+	}
+	u.TotalTokens = 0
+	if got := bt.GetUsage("t").TotalTokens; got != 20 {
+		t.Fatalf("tracker state changed through returned usage: %d", got)
+	}
+}

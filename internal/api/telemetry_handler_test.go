@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +18,40 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/telemetry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
+
+func countGoroutines(fn string) int {
+	buf := make([]byte, 1<<20)
+	return strings.Count(string(buf[:runtime.Stack(buf, true)]), fn)
+}
+
+// The matrix hot-reload loop must stop when the router closes instead of outliving it.
+func TestMatrixWatchStopsOnClose(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "configs", "best_methods_matrix.json"), []byte(`{"version":1,"cells":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const fn = "shadow.(*MatrixStore).Watch"
+	before := countGoroutines(fn)
+	r := NewRouter(RouterConfig{RootDir: root})
+	deadline := time.Now().Add(2 * time.Second)
+	for countGoroutines(fn) <= before && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if countGoroutines(fn) <= before {
+		t.Fatal("matrix watch did not start")
+	}
+	_ = r.Close()
+	deadline = time.Now().Add(2 * time.Second)
+	for countGoroutines(fn) > before && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := countGoroutines(fn); n > before {
+		t.Fatalf("matrix watch still running after Close (%d > %d)", n, before)
+	}
+}
 
 // stubProvider keeps API tests hermetic: no live LLM calls.
 type stubProvider struct{}

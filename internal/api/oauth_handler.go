@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -75,6 +77,9 @@ var oauthProviderConfigs = map[string]OAuthProviderMeta{
 	},
 }
 
+// oauthSessionTTL bounds how long an authorization state stays valid.
+const oauthSessionTTL = 10 * time.Minute
+
 func generateState() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -108,11 +113,17 @@ func (r *Router) handleOAuthInitiate(w http.ResponseWriter, req *http.Request) {
 
 	state := generateState()
 
+	now := time.Now()
 	oauthStore.mu.Lock()
+	for k, s := range oauthStore.sessions {
+		if now.Sub(s.CreatedAt) > oauthSessionTTL {
+			delete(oauthStore.sessions, k) // abandoned flows must not pile up
+		}
+	}
 	oauthStore.sessions[state] = &OAuthSession{
 		State:      state,
 		ProviderID: body.ProviderID,
-		CreatedAt:  time.Now(),
+		CreatedAt:  now,
 	}
 	oauthStore.mu.Unlock()
 
@@ -121,14 +132,16 @@ func (r *Router) handleOAuthInitiate(w http.ResponseWriter, req *http.Request) {
 		redirectURI = fmt.Sprintf("%s/api/v1/providers/oauth/callback", req.Header.Get("Origin"))
 	}
 
-	authURL := fmt.Sprintf(
-		"%s?response_type=code&client_id=%s&redirect_uri=%s&scope=%s&state=%s&access_type=offline&prompt=consent",
-		providerMeta.AuthURL,
-		providerMeta.ClientID,
-		redirectURI,
-		providerMeta.Scopes,
-		state,
-	)
+	// Encoded, so a redirect_uri carrying "&..." cannot add or override query parameters.
+	authURL := providerMeta.AuthURL + "?" + url.Values{
+		"response_type": {"code"},
+		"client_id":     {providerMeta.ClientID},
+		"redirect_uri":  {redirectURI},
+		"scope":         {providerMeta.Scopes},
+		"state":         {state},
+		"access_type":   {"offline"},
+		"prompt":        {"consent"},
+	}.Encode()
 
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"auth_url":    authURL,
@@ -172,37 +185,19 @@ func (r *Router) handleOAuthCallback(w http.ResponseWriter, req *http.Request) {
 	}
 	oauthStore.mu.Unlock()
 
-	if !exists {
+	if !exists || time.Since(session.CreatedAt) > oauthSessionTTL {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprint(w, oauthCallbackHTML("error", "Invalid or expired state", "", ""))
 		return
 	}
 
-	// In production, we'd exchange the code for tokens here.
-	// For the demo/local flow, we simulate a successful token exchange.
-	now := time.Now()
-	tokenInfo := &OAuthTokenInfo{
-		ProviderID:   session.ProviderID,
-		AccessToken:  fmt.Sprintf("oa-%s-%s", session.ProviderID, generateState()),
-		RefreshToken: fmt.Sprintf("ort-%s-%s", session.ProviderID, generateState()),
-		ExpiresAt:    now.Add(1 * time.Hour),
-		TokenType:    "Bearer",
-		Scopes:       oauthProviderConfigs[session.ProviderID].Scopes,
-		Email:        "user@example.com",
-		AuthMethod:   "oauth",
-		IsConnected:  true,
-		ConnectedAt:  now,
-	}
-
-	oauthStore.mu.Lock()
-	oauthStore.tokens[session.ProviderID] = tokenInfo
-	oauthStore.mu.Unlock()
-
-	// Return HTML page that posts message to parent window
+	// The authorization code is never exchanged for tokens (no client credentials are configured
+	// and no driver reads OAuth tokens), so report that honestly instead of a made-up connection.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, oauthCallbackHTML("success", "", session.ProviderID, tokenInfo.Email))
+	w.WriteHeader(http.StatusNotImplemented)
+	fmt.Fprint(w, oauthCallbackHTML("error",
+		"Browser sign-in is not supported for "+session.ProviderID+" yet. Add an API key instead.", session.ProviderID, ""))
 }
 
 // handleOAuthStatus returns the OAuth connection status for a provider.
@@ -378,13 +373,7 @@ func oauthCallbackHTML(status, errorMsg, providerID, email string) string {
   </div>
   <script>
     (function() {
-      var result = {
-        type: 'meta-orchestrator-oauth-callback',
-        status: '%s',
-        provider_id: '%s',
-        email: '%s',
-        error: '%s'
-      };
+      var result = %s;
       if (window.opener) {
         window.opener.postMessage(result, '*');
         setTimeout(function() { window.close(); }, 1500);
@@ -396,9 +385,22 @@ func oauthCallbackHTML(status, errorMsg, providerID, email string) string {
 </body>
 </html>`,
 		statusClass(status), statusIcon(status),
-		statusTitle(status), statusDesc(status, errorMsg, providerID, email),
-		status, providerID, email, errorMsg,
+		statusTitle(status), html.EscapeString(statusDesc(status, errorMsg, providerID, email)),
+		oauthCallbackResult(status, errorMsg, providerID, email),
 	)
+}
+
+// oauthCallbackResult is the postMessage payload as a JS literal. errorMsg comes straight from the
+// callback query string, so it is JSON-encoded (which escapes <, > and &) rather than spliced in.
+func oauthCallbackResult(status, errorMsg, providerID, email string) string {
+	b, _ := json.Marshal(map[string]string{
+		"type":        "meta-orchestrator-oauth-callback",
+		"status":      status,
+		"provider_id": providerID,
+		"email":       email,
+		"error":       errorMsg,
+	})
+	return string(b)
 }
 
 func statusClass(status string) string {
