@@ -1,0 +1,145 @@
+// Package toolchain knows the command-line tools the supported tech stacks need on this machine:
+// how to tell whether each is really installed (by running it, not just finding it on PATH), and
+// how to install it — one click when the package manager can do it unattended, a copyable command
+// when it needs a password or a GUI, and the official docs otherwise.
+//
+// Adding a tool is one Tool entry below; a stack asks for it by id from stack.Profile.Needs.
+package toolchain
+
+import "time"
+
+// Method is one way to install a tool.
+type Method struct {
+	// Manager runs the command: brew, npm, go, apt or snap. It must be present on this machine.
+	Manager string `json:"manager"`
+	// Command is run exactly as written — never through a shell, never with operator input.
+	Command []string `json:"command"`
+	// Auto marks a command the orchestrator may run for the operator: no sudo, no password
+	// prompt, no GUI. Other methods are shown for the operator to run in their own terminal.
+	Auto bool `json:"auto"`
+	// OS limits the method to these GOOS values; empty means wherever Manager exists.
+	OS   []string `json:"os,omitempty"`
+	Note string   `json:"note,omitempty"`
+}
+
+// Tool is a command-line tool a stack needs.
+type Tool struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Purpose string `json:"purpose"`
+	Docs    string `json:"docs"`
+	// Binary is looked up on PATH and run with VersionArgs; it counts as installed only when that
+	// succeeds (macOS ships a /usr/bin/java stub that fails without a JDK).
+	Binary      string   `json:"binary,omitempty"`
+	VersionArgs []string `json:"-"`
+	// SDKEnv/SDKDirs locate a tool that is a folder rather than a command (the Android SDK): the
+	// first environment variable naming an existing folder, else the first default folder
+	// (relative to the home folder) that exists.
+	SDKEnv  []string `json:"-"`
+	SDKDirs []string `json:"-"`
+	// Timeout bounds the version check; zero uses defaultCheckTimeout.
+	Timeout time.Duration `json:"-"`
+	Methods []Method      `json:"-"`
+}
+
+const defaultCheckTimeout = 8 * time.Second
+
+var (
+	macOS     = []string{"darwin"}
+	linux     = []string{"linux"}
+	brewHosts = []string{"darwin", "linux"} // Homebrew also runs on Linux
+)
+
+func brew(args ...string) Method {
+	return Method{Manager: "brew", Command: append([]string{"brew", "install"}, args...), Auto: true, OS: brewHosts}
+}
+
+func npmGlobal(pkg string) Method {
+	return Method{Manager: "npm", Command: []string{"npm", "install", "-g", pkg}, Auto: true,
+		Note: "Fails with EACCES when Node was installed system-wide; then run it with a Node version manager (nvm, fnm) or install another way."}
+}
+
+func apt(pkgs ...string) Method {
+	return Method{Manager: "apt", Command: append([]string{"sudo", "apt-get", "install", "-y"}, pkgs...), OS: linux,
+		Note: "Needs sudo, so run it in your terminal."}
+}
+
+// Catalog lists every tool the orchestrator can check and install.
+var Catalog = []Tool{
+	{ID: "go", Name: "Go", Purpose: "Builds and tests Go services.", Docs: "https://go.dev/doc/install",
+		Binary: "go", VersionArgs: []string{"version"},
+		Methods: []Method{brew("go"), withNote(apt("golang-go"), "Needs sudo. Ubuntu's package can lag behind the go.mod version; go.dev has the latest release.")}},
+	{ID: "golangci-lint", Name: "golangci-lint", Purpose: "Runs the repository's Go linters.", Docs: "https://golangci-lint.run/welcome/install/",
+		Binary: "golangci-lint", VersionArgs: []string{"--version"},
+		Methods: []Method{brew("golangci-lint")}},
+	{ID: "node", Name: "Node.js", Purpose: "Runs JavaScript/TypeScript tooling and npx commands.", Docs: "https://nodejs.org/en/download",
+		Binary: "node", VersionArgs: []string{"--version"},
+		Methods: []Method{brew("node"), apt("nodejs", "npm")}},
+	{ID: "pnpm", Name: "pnpm", Purpose: "Package manager the repository uses.", Docs: "https://pnpm.io/installation",
+		Binary: "pnpm", VersionArgs: []string{"--version"},
+		Methods: []Method{npmGlobal("pnpm"), brew("pnpm")}},
+	{ID: "yarn", Name: "Yarn", Purpose: "Package manager the repository uses.", Docs: "https://yarnpkg.com/getting-started/install",
+		Binary: "yarn", VersionArgs: []string{"--version"},
+		Methods: []Method{npmGlobal("yarn"), brew("yarn")}},
+	{ID: "bun", Name: "Bun", Purpose: "Package manager and runtime the repository uses.", Docs: "https://bun.sh/docs/installation",
+		Binary: "bun", VersionArgs: []string{"--version"},
+		Methods: []Method{brew("oven-sh/bun/bun"), npmGlobal("bun")}},
+	{ID: "java", Name: "Java (JDK)", Purpose: "Compiles and tests Java, Kotlin and Android code.", Docs: "https://adoptium.net/installation/",
+		Binary: "java", VersionArgs: []string{"-version"},
+		Methods: []Method{
+			{Manager: "brew", Command: []string{"brew", "install", "--cask", "temurin"}, OS: macOS,
+				Note: "The installer asks for your macOS password, so run it in your terminal."},
+			apt("default-jdk"),
+		}},
+	{ID: "maven", Name: "Maven", Purpose: "Builds Maven projects that have no ./mvnw wrapper.", Docs: "https://maven.apache.org/install.html",
+		Binary: "mvn", VersionArgs: []string{"-v"},
+		Methods: []Method{brew("maven"), apt("maven")}},
+	{ID: "gradle", Name: "Gradle", Purpose: "Builds Gradle projects that have no ./gradlew wrapper.", Docs: "https://gradle.org/install/",
+		Binary: "gradle", VersionArgs: []string{"--version"}, Timeout: 30 * time.Second,
+		Methods: []Method{brew("gradle")}},
+	{ID: "android-sdk", Name: "Android SDK", Purpose: "Builds Android apps with Gradle.", Docs: "https://developer.android.com/studio",
+		SDKEnv: []string{"ANDROID_HOME", "ANDROID_SDK_ROOT"}, SDKDirs: []string{"Library/Android/sdk", "Android/Sdk"},
+		Methods: []Method{{Manager: "brew", Command: []string{"brew", "install", "--cask", "android-studio"}, OS: macOS,
+			Note: "Open Android Studio once afterwards so it downloads the SDK, or set ANDROID_HOME to an existing SDK."}}},
+	{ID: "flutter", Name: "Flutter", Purpose: "Analyzes, tests and builds Flutter apps (includes Dart).", Docs: "https://docs.flutter.dev/get-started/install",
+		Binary: "flutter", VersionArgs: []string{"--version"}, Timeout: 60 * time.Second,
+		Methods: []Method{
+			{Manager: "brew", Command: []string{"brew", "install", "--cask", "flutter"}, Auto: true, OS: macOS},
+			{Manager: "snap", Command: []string{"sudo", "snap", "install", "flutter", "--classic"}, OS: linux, Note: "Needs sudo, so run it in your terminal."},
+		}},
+	{ID: "dart", Name: "Dart SDK", Purpose: "Analyzes and tests Dart packages.", Docs: "https://dart.dev/get-dart",
+		Binary: "dart", VersionArgs: []string{"--version"},
+		Methods: []Method{brew("dart-lang/dart/dart")}},
+	{ID: "tofu", Name: "OpenTofu", Purpose: "Formats and validates OpenTofu modules.", Docs: "https://opentofu.org/docs/intro/install/",
+		Binary: "tofu", VersionArgs: []string{"version"},
+		Methods: []Method{brew("opentofu"),
+			{Manager: "snap", Command: []string{"sudo", "snap", "install", "--classic", "opentofu"}, OS: linux, Note: "Needs sudo, so run it in your terminal."}}},
+	{ID: "terragrunt", Name: "Terragrunt", Purpose: "Formats and runs Terragrunt configuration.", Docs: "https://terragrunt.gruntwork.io/docs/getting-started/install/",
+		Binary: "terragrunt", VersionArgs: []string{"--version"},
+		Methods: []Method{brew("terragrunt")}},
+	{ID: "zed", Name: "zed (SpiceDB CLI)", Purpose: "Validates SpiceDB schemas.", Docs: "https://authzed.com/docs/spicedb/getting-started/installing-zed",
+		Binary: "zed", VersionArgs: []string{"version"},
+		Methods: []Method{brew("authzed/tap/zed")}},
+	{ID: "actionlint", Name: "actionlint", Purpose: "Lints GitHub Actions workflows.", Docs: "https://github.com/rhysd/actionlint/blob/main/docs/install.md",
+		Binary: "actionlint", VersionArgs: []string{"--version"},
+		Methods: []Method{brew("actionlint"),
+			{Manager: "go", Command: []string{"go", "install", "github.com/rhysd/actionlint/cmd/actionlint@latest"}, Auto: true}}},
+	{ID: "docker", Name: "Docker", Purpose: "Builds and runs containers.", Docs: "https://docs.docker.com/get-started/get-docker/",
+		Binary: "docker", VersionArgs: []string{"--version"},
+		Methods: []Method{withNote(apt("docker.io"), "Needs sudo. On macOS install Docker Desktop, OrbStack or Colima from their sites.")}},
+}
+
+func withNote(m Method, note string) Method {
+	m.Note = note
+	return m
+}
+
+// Lookup returns the catalog entry for id.
+func Lookup(id string) (Tool, bool) {
+	for _, t := range Catalog {
+		if t.ID == id {
+			return t, true
+		}
+	}
+	return Tool{}, false
+}

@@ -6,18 +6,20 @@ import "time"
 type EventType string
 
 const (
-	EventAgentThought   EventType = "agent.thought"
-	EventAgentTerminal  EventType = "agent.terminal"
-	EventTaskStatus     EventType = "task.status"
-	EventTaskDeleted    EventType = "task.deleted"
-	EventJiraSync       EventType = "jira.sync"
-	EventStageTransition EventType = "stage.transition"
-	EventFrustrationHalt EventType = "event.frustration_halt"
-	EventHITLRequired    EventType = "hitl.required"
-	EventToolProgress   EventType = "tool.install.progress"
-	EventConnectorStatus EventType = "connector.status"
-	EventTelemetryTokens EventType = "telemetry.tokens.consumed"
+	EventAgentThought        EventType = "agent.thought"
+	EventAgentTerminal       EventType = "agent.terminal"
+	EventTaskStatus          EventType = "task.status"
+	EventTaskDeleted         EventType = "task.deleted"
+	EventJiraSync            EventType = "jira.sync"
+	EventStageTransition     EventType = "stage.transition"
+	EventFrustrationHalt     EventType = "event.frustration_halt"
+	EventHITLRequired        EventType = "hitl.required"
+	EventToolProgress        EventType = "tool.install.progress"
+	EventConnectorStatus     EventType = "connector.status"
+	EventTelemetryTokens     EventType = "telemetry.tokens.consumed"
 	EventRouterMatrixUpdated EventType = "router.matrix.updated"
+	// EventToolchainNeeded asks the operator to install the tools a stage needs before it runs.
+	EventToolchainNeeded EventType = "toolchain.needed"
 )
 
 // OrchestratorEvent encapsulates payload broadcast via Redis and WebSocket.
@@ -45,9 +47,9 @@ type TerminalChunk struct {
 
 // FrustrationHaltPayload details the loop circuit breaker trip.
 type FrustrationHaltPayload struct {
-	TaskID          string `json:"task_id"`
-	StageID         string `json:"stage_id"`
+	TaskID           string `json:"task_id"`
+	StageID          string `json:"stage_id"`
 	ConsecutiveFails int    `json:"consecutive_fails"`
-	ErrorSignature  string `json:"error_signature"`
-	LastStackTrace  string `json:"last_stack_trace"`
+	ErrorSignature   string `json:"error_signature"`
+	LastStackTrace   string `json:"last_stack_trace"`
 }

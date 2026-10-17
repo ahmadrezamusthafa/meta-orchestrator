@@ -24,7 +24,8 @@ import {
   FileCode2,
   FolderArchive,
   Eye,
-  EyeOff
+  EyeOff,
+  Cloud
 } from 'lucide-vue-next'
 
 const props = withDefaults(
@@ -259,6 +260,8 @@ function getRoleIcon(role: string) {
       return FileCode2
     case 'artifact':
       return FolderArchive
+    case 'infrastructure':
+      return Cloud
     default:
       return Folder
   }
@@ -276,6 +279,8 @@ function getRoleBadgeClass(role: string) {
       return 'bg-amber-500/10 text-amber-400 border-amber-500/20'
     case 'artifact':
       return 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+    case 'infrastructure':
+      return 'bg-orange-500/10 text-orange-400 border-orange-500/20'
     default:
       return 'bg-slate-800 text-slate-400 border-slate-700'
   }
@@ -621,6 +626,7 @@ function getRoleBadgeClass(role: string) {
                 </span>
                 <span
                   v-if="item.manifest"
+                  :title="item.stack?.length ? item.stack.join(', ') : undefined"
                   class="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase font-bold"
                   :class="getRoleBadgeClass(item.suggested_role)"
                 >
@@ -667,6 +673,7 @@ function getRoleBadgeClass(role: string) {
           <div v-if="selectedItem?.manifest" class="mt-1 flex items-center gap-2 text-[11px] text-slate-400">
             <span>Detected: <strong class="text-slate-200">{{ selectedItem.manifest }}</strong></span>
             <span>• Suggested Role: <strong class="text-emerald-400 uppercase font-mono">{{ selectedItem.suggested_role }}</strong></span>
+            <span v-if="selectedItem.stack?.length" class="truncate" :title="selectedItem.stack.join(', ')">• Stack: <strong class="text-sky-300">{{ selectedItem.stack.join(', ') }}</strong></span>
           </div>
         </div>
 

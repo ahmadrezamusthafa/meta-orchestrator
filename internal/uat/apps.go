@@ -8,14 +8,16 @@ import (
 	"strings"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/atdd"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/stack"
 )
 
 // App is an application a tester works in during UAT. Web apps are replayed in a browser for
-// screenshots; API apps are checked by an engineer with the listed tools.
+// screenshots; mobile apps are tested by hand on a device with the UAT build; API apps are checked
+// by an engineer with the listed tools.
 type App struct {
 	ID        string   `json:"id"`
 	Name      string   `json:"name"`
-	Kind      string   `json:"kind"` // "web" or "api"
+	Kind      string   `json:"kind"` // "web", "mobile" or "api"
 	Audience  string   `json:"audience,omitempty"`
 	Summary   string   `json:"summary,omitempty"`
 	SignIn    []string `json:"sign_in,omitempty"`    // how a tester gets in, step by step
@@ -28,8 +30,14 @@ type App struct {
 	StorageState string `json:"storage_state,omitempty"`
 }
 
-// IsWeb reports whether the app has screens to capture.
-func (a App) IsWeb() bool { return a.Kind != "api" }
+// IsWeb reports whether the app runs in a browser, so its screens can be replayed and captured.
+func (a App) IsWeb() bool { return a.Kind != "api" && a.Kind != "mobile" }
+
+// IsMobile reports whether the app is installed on a device: it has screens, but no browser replay.
+func (a App) IsMobile() bool { return a.Kind == "mobile" }
+
+// IsAPI reports whether the app has no screens at all.
+func (a App) IsAPI() bool { return a.Kind == "api" }
 
 // DefaultApps describes the Mekari billing applications. URLs are never assumed: the operator
 // sets each environment per task. Teams can override or add apps in .sdlc/uat_apps.json.
@@ -167,13 +175,50 @@ func AppsForRepos(all []App, repos []RepoRef) []App {
 		if !matched && !strings.Contains(strings.ToLower(r.Name), "artifact") && !strings.Contains(strings.ToLower(r.Name), "automation") {
 			id := strings.Trim(nonID.ReplaceAllString(strings.ToLower(r.Name), "_"), "_")
 			if _, ok := index[id]; !ok && id != "" {
-				index[id] = len(out)
-				out = append(out, App{ID: id, Name: r.Name, Kind: "web", Repos: []string{r.Name},
-					SignIn: []string{"Open the " + r.Name + " URL for this environment and sign in with your UAT test account."}})
+				if app, ok := appFromStack(id, r); ok {
+					index[id] = len(out)
+					out = append(out, app)
+				}
 			}
 		}
 	}
 	return out
+}
+
+// appFromStack describes a repository no profile claims from its detected stack: a frontend is a
+// web app, a Flutter or Android app a mobile app, a backend without screens an API app, and
+// infrastructure code is not tested by hand.
+func appFromStack(id string, r RepoRef) (App, bool) {
+	p := stack.For(r.Path)
+	kind := p.Surface()
+	if kind == "" {
+		return App{}, false
+	}
+	app := App{ID: id, Name: r.Name, Kind: kind, Repos: []string{r.Name}, Summary: strings.Join(p.Names(), ", ")}
+	oidc := p.Has("keycloak")
+	switch {
+	case kind == "mobile":
+		signIn := "Open the app and sign in with your UAT test account — never a personal account."
+		if oidc {
+			signIn = "Open the app and sign in through Keycloak with your UAT test account — never a personal account."
+		}
+		app.SignIn = []string{
+			"Install the UAT build of " + r.Name + " on your test device (TestFlight, Play internal testing or Firebase App Distribution — ask the engineer on the ticket for the link).",
+			signIn,
+		}
+	case kind == "api" && oidc:
+		app.SignIn = []string{
+			"Get an access token for your UAT test client or test user from this environment's Keycloak realm — never a production or personal account.",
+			"Call the " + r.Name + " API with `Authorization: Bearer <token>` from the team's Postman collection or curl.",
+		}
+	case kind == "api":
+		app.SignIn = []string{"Call the " + r.Name + " API for this environment from the team's Postman collection or curl, with a test credential issued for UAT — never a production one."}
+	case oidc:
+		app.SignIn = []string{"Open the " + r.Name + " URL for this environment and sign in through Keycloak with your UAT test account (never a personal account)."}
+	default:
+		app.SignIn = []string{"Open the " + r.Name + " URL for this environment and sign in with your UAT test account."}
+	}
+	return app, true
 }
 
 // AppFor decides which app an ATDD case runs in: the sheet's Repository column, then the
@@ -184,14 +229,21 @@ func AppFor(c atdd.Case, apps []App) string {
 	}
 	if repo := strings.ToLower(strings.TrimSpace(c.Repository)); repo != "" {
 		for _, a := range apps {
-			if (a.IsWeb() || c.IsAPI()) && (containsFold(a.RepoHints, repo) || containsFold(a.Repos, repo) || strings.EqualFold(a.ID, repo)) {
+			if (!a.IsAPI() || c.IsAPI()) && (containsFold(a.RepoHints, repo) || containsFold(a.Repos, repo) || strings.EqualFold(a.ID, repo)) {
 				return a.ID
 			}
 		}
 	}
 	if c.IsAPI() {
 		for _, a := range apps {
-			if !a.IsWeb() {
+			if a.IsAPI() {
+				return a.ID
+			}
+		}
+	}
+	if c.IsMobile() {
+		for _, a := range apps {
+			if a.IsMobile() {
 				return a.ID
 			}
 		}
@@ -199,7 +251,7 @@ func AppFor(c atdd.Case, apps []App) string {
 	text := strings.ToLower(strings.Join(append(append([]string{c.Title}, c.Preconditions...), c.Steps...), " "))
 	best, bestLen := "", 0
 	for _, a := range apps {
-		if !a.IsWeb() && !c.IsAPI() {
+		if a.IsAPI() && !c.IsAPI() {
 			continue
 		}
 		for _, k := range a.Keywords {
@@ -212,7 +264,7 @@ func AppFor(c atdd.Case, apps []App) string {
 		return best
 	}
 	for _, a := range apps {
-		if a.IsWeb() {
+		if !a.IsAPI() {
 			return a.ID
 		}
 	}

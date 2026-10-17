@@ -464,6 +464,10 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			r.handleTaskWorktree(w, req, taskSnapshot)
 			return
 
+		case "toolchain":
+			r.handleTaskToolchain(w, req, taskSnapshot, parts)
+			return
+
 		case "diff":
 			r.handleTaskDiff(w, req, taskSnapshot)
 			return

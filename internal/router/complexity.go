@@ -32,8 +32,9 @@ type Classifier func(ctx context.Context, system, prompt string) (answer, model 
 // complexityRubric defines the strata for both the AI analyst and the operator-facing UI.
 const complexityRubric = `LOW: one repository, a small contained change (copy, docs, config value, styling, a guard or small bug fix). No API, schema or contract change.
 MEDIUM: a feature or fix inside one service or module (new endpoint, CRUD, validation, a component), possibly touching two repositories, with no breaking change.
-HIGH: cross-service or multi-repository work, API/contract versioning, breaking changes, security or payment-critical logic, concurrency, large refactors, or unclear requirements.
-SYSTEM: infrastructure and environment changes: containers, CI/CD pipelines, database schema migrations, deployment or cluster configuration.`
+HIGH: cross-service or multi-repository work, API/contract versioning, breaking changes, security or payment-critical logic, authentication or authorization (OIDC/Keycloak, SpiceDB permission schemas), concurrency, large refactors, or unclear requirements.
+SYSTEM: infrastructure and environment changes: containers, CI/CD pipelines, database schema migrations, infrastructure as code (OpenTofu, Terragrunt), cloud resources (Azure Container Apps, Cloudflare), mobile store releases and signing, deployment or cluster configuration.
+A repository listed with only infrastructure technologies (e.g. OpenTofu, Terragrunt) means the change is infrastructure work.`
 
 var taskTypes = []string{"architecture", "migration", "docs", "bugfix", "crud", "general"}
 
@@ -125,9 +126,11 @@ func parseAssessment(answer string) (ComplexityAssessment, error) {
 
 var (
 	systemSignals = []string{"dockerfile", "docker", "kubernetes", "k8s", "helm", "terraform", "ci pipeline", "ci/cd", "ci job",
-		"github actions", "pipeline", "database migration", "schema migration", "db migration", "infrastructure", "deployment"}
+		"github actions", "pipeline", "database migration", "schema migration", "db migration", "infrastructure", "deployment",
+		"opentofu", "terragrunt", "container app", "cloudflare", "wrangler", "app store", "play store", "testflight", "release signing"}
 	highSignals = []string{"refactor", "migration", "breaking change", "contract", "versioning", "multi-repo", "cross-service",
-		"payment", "security", "authentication", "concurrency", "race condition", "distributed", "architecture"}
+		"payment", "security", "authentication", "authorization", "keycloak", "spicedb", "oidc", "permission schema",
+		"concurrency", "race condition", "distributed", "architecture"}
 	lowSignals = []string{"typo", "readme", "css tweak", "color change", "copy change", "wording", "rename", "docs",
 		"documentation", "comment", "bump version", "badge", "styling", "label text"}
 )

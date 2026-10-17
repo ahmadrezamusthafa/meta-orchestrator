@@ -84,6 +84,19 @@ func TestAppsFromReposAndCaseRouting(t *testing.T) {
 	if len(custom) != 1 || custom[0].ID != "qontak_web" || !custom[0].IsWeb() {
 		t.Fatalf("unknown repo should become its own web app: %+v", custom)
 	}
+
+	// Unclaimed repositories take their kind from their stack: a Go service is checked through its
+	// API (signing in through Keycloak), infrastructure code is not tested by hand.
+	goSvc, infra := t.TempDir(), t.TempDir()
+	_ = os.WriteFile(filepath.Join(goSvc, "go.mod"), []byte("module svc\nrequire github.com/coreos/go-oidc/v3 v3.0.0"), 0o644)
+	_ = os.WriteFile(filepath.Join(infra, "terragrunt.hcl"), []byte("terraform {}"), 0o644)
+	byStack := AppsForRepos(DefaultApps, []RepoRef{{Name: "invoice-svc", Path: goSvc}, {Name: "platform-live", Path: infra}})
+	if len(byStack) != 1 || byStack[0].ID != "invoice_svc" || byStack[0].IsWeb() {
+		t.Fatalf("go service should be an API app and infra skipped: %+v", byStack)
+	}
+	if !strings.Contains(strings.Join(byStack[0].SignIn, " "), "Keycloak") {
+		t.Errorf("an OIDC service tells the tester to get a token from Keycloak: %v", byStack[0].SignIn)
+	}
 }
 
 func TestCoverageFillsEveryUATAndSanityCase(t *testing.T) {
@@ -309,5 +322,37 @@ func TestSeedRunDropsTrailingComment(t *testing.T) {
 	s, ok := ExtractSeed("```uat-seed ruby\n# run: bundle exec rails runner tmp/uat_seed.rb      # 1) dry run: read-only\nputs 1\n```")
 	if !ok || s.Run != "bundle exec rails runner tmp/uat_seed.rb" {
 		t.Fatalf("run = %q", s.Run)
+	}
+}
+
+func TestMobileAppsAreDeviceTested(t *testing.T) {
+	wallet := t.TempDir()
+	_ = os.WriteFile(filepath.Join(wallet, "pubspec.yaml"), []byte("name: wallet\ndependencies:\n  flutter:\n    sdk: flutter\n  flutter_appauth: ^6.0.0"), 0o644)
+	ledger := t.TempDir()
+	_ = os.WriteFile(filepath.Join(ledger, "build.gradle.kts"), []byte(`plugins { kotlin("jvm") }`), 0o644)
+	apps := AppsForRepos(DefaultApps, []RepoRef{{Name: "wallet-app", Path: wallet}, {Name: "ledger-svc", Path: ledger}})
+	if len(apps) != 2 || !apps[0].IsMobile() || apps[0].IsWeb() || apps[0].IsAPI() || !apps[1].IsAPI() {
+		t.Fatalf("flutter app should be mobile and the kotlin service an API app: %+v", apps)
+	}
+	if !strings.Contains(strings.Join(apps[0].SignIn, " "), "Install the UAT build") ||
+		!strings.Contains(strings.Join(apps[0].SignIn, " "), "Keycloak") {
+		t.Errorf("mobile sign-in installs the UAT build and signs in through Keycloak: %v", apps[0].SignIn)
+	}
+
+	routes := map[string]atdd.Case{
+		"wallet_app": {Platform: "MOBILE", Title: "Top up the wallet"},
+		"ledger_svc": {Platform: "API", Title: "POST /entries"},
+	}
+	for want, c := range routes {
+		if got := AppFor(c, apps); got != want {
+			t.Errorf("AppFor(%s) = %s, want %s", c.Platform, got, want)
+		}
+	}
+	// Screen cases still land in the mobile app (it has screens), never in the API app.
+	if got := AppFor(atdd.Case{Platform: "WEB", Title: "Open the balance screen"}, apps); got != "wallet_app" {
+		t.Errorf("a screen case goes to the app with screens, got %s", got)
+	}
+	if !(atdd.Case{Platform: "ios"}).IsMobile() || (atdd.Case{Platform: "WEB"}).IsMobile() {
+		t.Error("IOS, ANDROID and MOBILE platforms are mobile cases")
 	}
 }

@@ -135,7 +135,7 @@ func (r *Router) assess(ctx context.Context, title, description, complexity, tas
 	}
 	ctx, cancel := context.WithTimeout(ctx, analysisTimeout)
 	defer cancel()
-	return router.AnalyzeComplexity(ctx, r.classifier(), title, description, repos)
+	return router.AnalyzeComplexity(ctx, r.classifier(), title, description, r.repoLabels(repos))
 }
 
 // handleTaskAnalyze: POST /api/v1/tasks/analyze grades a draft task and proposes its routing plan.

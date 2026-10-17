@@ -5,6 +5,7 @@ import { useProjectStore } from '../../stores/projects'
 import { useTaskStore } from '../../stores/tasks'
 import { useToastStore } from '../../stores/toast'
 import type { Task, TaskWorktreeDTO, RepoDiffDTO } from '../../types'
+import ToolchainSection from '../toolchain/ToolchainSection.vue'
 import {
   FolderGit2, GitBranch, Copy, Check, AlertCircle, FileDiff, RefreshCw, Pencil, ShieldCheck, CircleDashed,
 } from 'lucide-vue-next'
@@ -33,9 +34,9 @@ const running = computed(() => props.task.state === 'RUNNING')
 
 // Registered repositories, with the project they belong to.
 const catalog = computed(() => {
-  const list: { name: string; project: string; role: string; path: string; manifest: string }[] = []
+  const list: { name: string; project: string; role: string; path: string; manifest: string; stack: string[] }[] = []
   for (const p of projectStore.projects) {
-    for (const r of p.repos || []) list.push({ name: r.name, project: p.name, role: r.role, path: r.path, manifest: r.manifest_type })
+    for (const r of p.repos || []) list.push({ name: r.name, project: p.name, role: r.role, path: r.path, manifest: r.manifest_type, stack: r.stack || [] })
   }
   return list
 })
@@ -191,7 +192,7 @@ onMounted(async () => {
           <header class="flex flex-wrap items-center gap-2">
             <FolderGit2 class="w-4 h-4 text-slate-400" />
             <span class="font-mono text-sm text-slate-100">{{ r.repo }}</span>
-            <span v-if="repoInfo(r.repo)" class="text-[11px] text-slate-500">{{ repoInfo(r.repo)!.project }} · {{ repoInfo(r.repo)!.role }}<template v-if="repoInfo(r.repo)!.manifest"> · {{ repoInfo(r.repo)!.manifest }}</template></span>
+            <span v-if="repoInfo(r.repo)" class="text-[11px] text-slate-500">{{ repoInfo(r.repo)!.project }} · {{ repoInfo(r.repo)!.role }}<template v-if="repoInfo(r.repo)!.manifest"> · {{ repoInfo(r.repo)!.manifest }}</template><template v-if="repoInfo(r.repo)!.stack.length"> · <span class="text-sky-300/80" title="Detected tech stack — the agent is briefed with its checks, conventions and guardrails">{{ repoInfo(r.repo)!.stack.join(', ') }}</span></template></span>
             <span class="ml-auto px-1.5 py-0.5 rounded border text-[10px] font-semibold" :class="statusOf(r).cls">{{ statusOf(r).label }}</span>
             <span v-if="r.dirty" class="px-1.5 py-0.5 rounded border border-amber-800/60 bg-amber-950/50 text-amber-300 text-[10px]">Uncommitted changes</span>
           </header>
@@ -243,6 +244,15 @@ onMounted(async () => {
           </div>
         </article>
       </section>
+
+      <!-- Tools the assigned repositories' stacks need on this machine -->
+      <ToolchainSection
+        v-if="task.assigned_repos?.length"
+        :key="task.assigned_repos.join(',')"
+        class="pt-2 border-t border-slate-800"
+        :scope="{ task: task.id }"
+        title="Toolchain on this machine"
+      />
     </div>
   </div>
 </template>

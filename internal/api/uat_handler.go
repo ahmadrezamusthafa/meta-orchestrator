@@ -161,6 +161,10 @@ func (r *Router) uatStageContext(t *types.Task) string {
 				b.WriteString("; environment URL: not set yet")
 			}
 		}
+		if a.IsMobile() {
+			b.WriteString("; mobile app on a device — no browser replay: write its steps as manual actions, with the screen in \"where\" " +
+				"and the exact button, field and tab names read from the app's code")
+		}
 		b.WriteString("\n")
 	}
 	b.WriteString("\nEach goto target is appended to its application's environment URL. Write it as the path the browser address bar shows " +
@@ -370,6 +374,8 @@ func (r *Router) generateUATGuide(ctx context.Context, taskID string, rerender b
 		case hasBrowserStep && env == "" && known && a.IsWeb():
 			missingEnv[a.Name] = true
 			note = "No environment URL is set for " + a.Name + ", so this screen was not captured. Set it in the UAT Guide tab and regenerate."
+		case known && a.IsMobile():
+			note = a.Name + " is a mobile app: run these steps on a device with the UAT build."
 		case known && !a.IsWeb():
 			note = a.Name + " has no screen: an engineer runs this step with the team's API client."
 		}

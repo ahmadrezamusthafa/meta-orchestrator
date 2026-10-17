@@ -34,7 +34,8 @@ import {
   FolderOpen,
   HelpCircle,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Cloud
 } from 'lucide-vue-next'
 import DirectoryPickerModal from '../components/common/DirectoryPickerModal.vue'
 import ConfirmDeleteModal from '../components/common/ConfirmDeleteModal.vue'
@@ -114,7 +115,7 @@ const copiedCliCmd = ref(false)
 // Local Scanner State
 const isScanning = ref(false)
 const scanPath = ref('')
-const scannedCandidates = ref<Array<{ name: string; path: string; role: ProjectRole; manifest: string; selected: boolean }>>([])
+const scannedCandidates = ref<Array<{ name: string; path: string; role: ProjectRole; manifest: string; stack?: string[]; selected: boolean }>>([])
 
 // Create Form State
 const createFormName = ref('')
@@ -130,7 +131,7 @@ const editFormName = ref('')
 const editFormDesc = ref('')
 const editFormRootDir = ref('')
 const editFormActiveSDLC = ref('general-ai-sdlc')
-const editFormRepos = ref<Array<{ id?: string; name: string; path: string; role: ProjectRole; manifest: string; status?: string; symlink_path?: string; git_branch?: string; error?: string }>>([])
+const editFormRepos = ref<Array<{ id?: string; name: string; path: string; role: ProjectRole; manifest: string; status?: string; symlink_path?: string; git_branch?: string; error?: string; stack?: string[] }>>([])
 
 // Architecture Explainer Card State
 const showArchitectureExplainer = ref(true)
@@ -278,6 +279,7 @@ function getProjectMetrics(p: Project) {
     'automation-test': 0,
     contracts: 0,
     artifact: 0,
+    infrastructure: 0,
     other: 0,
   }
 
@@ -332,7 +334,8 @@ function openProjectEdit(projectId: string) {
     status: r.status,
     symlink_path: r.symlink_path,
     git_branch: r.git_branch,
-    error: r.error
+    error: r.error,
+    stack: r.stack
   }))
   scannedCandidates.value = []
   scanPath.value = ''
@@ -446,6 +449,7 @@ const editProjectMetrics = computed(() => {
     'automation-test': 0,
     contracts: 0,
     artifact: 0,
+    infrastructure: 0,
     other: 0,
   }
 
@@ -504,6 +508,7 @@ async function handleScanDirectory() {
       path: r.path,
       role: r.suggested_role,
       manifest: r.manifest_type,
+      stack: r.stack,
       selected: true,
     }))
     if (scannedCandidates.value.length === 0) {
@@ -674,6 +679,7 @@ async function handleResync() {
       symlink_path: r.symlink_path,
       git_branch: r.git_branch,
       error: r.error,
+      stack: r.stack,
     }))
   }
 }
@@ -749,6 +755,13 @@ function getRoleBadgeStyle(role: ProjectRole) {
         dot: 'bg-blue-400',
         icon: FolderArchive,
         label: 'Artifacts & PRD',
+      }
+    case 'infrastructure':
+      return {
+        bg: 'bg-orange-500/10 border-orange-500/30 text-orange-400',
+        dot: 'bg-orange-400',
+        icon: Cloud,
+        label: 'Infrastructure (IaC)',
       }
     default:
       return {
@@ -983,6 +996,12 @@ function launchTaskForProject() {
                     class="px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px] font-medium flex items-center gap-1"
                   >
                     <FolderArchive class="w-3 h-3" /> {{ getProjectMetrics(p).roleCounts.artifact }} Docs
+                  </span>
+                  <span
+                    v-if="getProjectMetrics(p).roleCounts.infrastructure > 0"
+                    class="px-2 py-0.5 rounded bg-orange-500/10 text-orange-400 border border-orange-500/20 text-[10px] font-medium flex items-center gap-1"
+                  >
+                    <Cloud class="w-3 h-3" /> {{ getProjectMetrics(p).roleCounts.infrastructure }} Infra
                   </span>
                   <span
                     v-if="p.repos?.length === 0"
@@ -1391,6 +1410,7 @@ function launchTaskForProject() {
                   <div class="truncate flex-1 font-mono">
                     <span class="font-bold text-white">{{ c.name }}</span>
                     <span class="text-[10px] text-slate-400 block truncate">{{ c.path }}</span>
+                    <span v-if="c.stack?.length" class="text-[10px] text-sky-300/80 block truncate" :title="c.stack.join(', ')">{{ c.stack.join(' · ') }}</span>
                   </div>
                   <span class="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono flex-shrink-0">
                     {{ c.role }}
@@ -1430,6 +1450,7 @@ function launchTaskForProject() {
                     <option value="automation-test">🧪 Automation Test</option>
                     <option value="contracts">📜 API Contracts</option>
                     <option value="artifact">📁 Artifacts & PRD</option>
+                    <option value="infrastructure">☁️ Infrastructure (IaC)</option>
                     <option value="other">🔌 Other Service</option>
                   </select>
 
@@ -1446,6 +1467,15 @@ function launchTaskForProject() {
                     <option value="composer.json">composer.json</option>
                     <option value="Cargo.toml">Cargo.toml</option>
                     <option value="requirements.txt">requirements.txt</option>
+                    <option value="Gemfile">Gemfile</option>
+                    <option value="pom.xml">pom.xml</option>
+                    <option value="build.gradle.kts">build.gradle.kts</option>
+                    <option value="build.gradle">build.gradle</option>
+                    <option value="pubspec.yaml">pubspec.yaml</option>
+                    <option value="terragrunt.hcl">terragrunt.hcl</option>
+                    <option value="root.hcl">root.hcl</option>
+                    <option value="main.tf">main.tf</option>
+                    <option value="wrangler.toml">wrangler.toml</option>
                   </select>
                 </div>
 
@@ -1618,6 +1648,7 @@ function launchTaskForProject() {
             <option value="automation-test">🧪 Automation Test</option>
             <option value="contracts">📜 API Contracts</option>
             <option value="artifact">📁 Artifacts & PRD</option>
+            <option value="infrastructure">☁️ Infrastructure (IaC)</option>
             <option value="other">🔌 Other Service</option>
           </select>
           <p class="text-[11px] text-slate-400">Updating role immediately adjusts task routing and AST inspection profiles.</p>
@@ -1636,6 +1667,17 @@ function launchTaskForProject() {
             <span class="text-slate-400 block mb-1 text-[11px]">Unified Workspace Mount:</span>
             <div class="p-2.5 rounded bg-slate-950 border border-slate-800 text-emerald-400 break-all select-all">
               {{ editFormRootDir }}/{{ selectedRepoDetail.name }}
+            </div>
+          </div>
+
+          <div v-if="selectedRepoDetail.stack?.length">
+            <span class="text-slate-400 block mb-1 text-[11px]">Detected Tech Stack (briefed to agents):</span>
+            <div class="flex flex-wrap gap-1.5">
+              <span
+                v-for="tech in selectedRepoDetail.stack"
+                :key="tech"
+                class="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-sky-300 text-[11px]"
+              >{{ tech }}</span>
             </div>
           </div>
 
@@ -1818,6 +1860,7 @@ function launchTaskForProject() {
                   <div class="truncate flex-1 font-mono">
                     <span class="font-bold text-white">{{ c.name }}</span>
                     <span class="text-[10px] text-slate-400 block truncate">{{ c.path }}</span>
+                    <span v-if="c.stack?.length" class="text-[10px] text-sky-300/80 block truncate" :title="c.stack.join(', ')">{{ c.stack.join(' · ') }}</span>
                   </div>
                   <span class="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono flex-shrink-0">
                     {{ c.role }}
@@ -1875,6 +1918,7 @@ function launchTaskForProject() {
                     <option value="automation-test">🧪 Test</option>
                     <option value="contracts">📜 Contracts</option>
                     <option value="artifact">📁 Artifacts</option>
+                    <option value="infrastructure">☁️ Infra</option>
                     <option value="other">🔌 Other</option>
                   </select>
                   <button

@@ -753,7 +753,7 @@ export interface RegistryDTO {
   hooks: HookItemDTO[]
 }
 
-export type ProjectRole = 'frontend' | 'backend' | 'automation-test' | 'contracts' | 'artifact' | 'other'
+export type ProjectRole = 'frontend' | 'backend' | 'automation-test' | 'contracts' | 'artifact' | 'infrastructure' | 'other'
 
 export interface ProjectRepo {
   id: string
@@ -766,6 +766,8 @@ export interface ProjectRepo {
   error?: string
   git_branch?: string
   files_count?: number
+  /** Technologies detected from the repository's files, e.g. "Go", "PostgreSQL". */
+  stack?: string[]
   created_at?: string
 }
 
@@ -787,6 +789,7 @@ export interface DetectedRepo {
   suggested_role: ProjectRole
   manifest_type: string
   files_count: number
+  stack?: string[]
 }
 
 export interface ScanDirResult {
@@ -805,6 +808,7 @@ export interface DirectoryItem {
   is_repo: boolean
   manifest: string
   suggested_role: ProjectRole
+  stack?: string[]
   has_children: boolean
   is_hidden?: boolean
 }
@@ -1283,4 +1287,64 @@ export interface ConsoleActivityDelta {
   id: string
   delta: string
   kind: 'assistant' | 'thinking'
+}
+
+// ── Toolchain: the command-line tools the repositories' stacks need on this machine ──
+
+export interface ToolchainMethod {
+  /** Index of the method in the tool's catalog entry; send it back to install with it. */
+  index: number
+  manager: 'brew' | 'npm' | 'go' | 'apt' | 'snap' | string
+  command: string
+  /** The orchestrator can run it for you (no sudo, password or GUI). */
+  auto: boolean
+  /** The package manager exists on this machine. */
+  available: boolean
+  unavailable?: string
+  note?: string
+}
+
+export interface ToolchainStatus {
+  installed: boolean
+  path?: string
+  version?: string
+  problem?: string
+  checked_at: string
+}
+
+export interface ToolchainJob {
+  id: string
+  tool: string
+  command: string
+  state: 'running' | 'succeeded' | 'failed'
+  log: string[]
+  message?: string
+  status?: ToolchainStatus
+  started: string
+  finished?: string
+}
+
+export interface ToolchainItem extends ToolchainStatus {
+  id: string
+  name: string
+  purpose: string
+  docs: string
+  binary?: string
+  needed: boolean
+  required: boolean
+  reasons?: string[]
+  methods: ToolchainMethod[] | null
+  /** MethodView.index of the method to offer first, or -1 when only the docs can help. */
+  recommended: number
+  job?: ToolchainJob | null
+}
+
+export interface ToolchainReport {
+  platform: string
+  items: ToolchainItem[]
+  missing: string[]
+  missing_recommended: string[]
+  ready: boolean
+  /** Task reports only: tools the operator chose to run without. */
+  acknowledged?: string[]
 }

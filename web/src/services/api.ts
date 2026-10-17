@@ -1,3 +1,4 @@
+import { useToolchainStore } from '../stores/toolchain'
 import type { 
   Task, TaskProcessDTO, ToolDTO, ProviderDTO, ProviderUsage, ProviderUsageWindow, ProviderQuota, ProviderConnection, WorkflowDefinition, RegistryDTO, BenchmarkCellDTO, 
   Project, ScanDirResult, BrowseFSResponse, CreateFolderResponse,
@@ -16,6 +17,16 @@ import type {
 
 
 const BASE_URL = '/api/v1'
+
+/**
+ * A stage that needs tools this machine lacks is not an error: open the install prompt (which
+ * starts the stage again once they are installed) and let the caller refresh the task.
+ */
+function askForTools(taskId: string, body: any, retry: 'run' | 'resume'): boolean {
+  if (body?.status !== 'needs_tools') return false
+  useToolchainStore().openPrompt(taskId, { stageId: body.task?.current_stage_id, retry, report: body.toolchain })
+  return true
+}
 
 export const api = {
   // Tasks
@@ -113,6 +124,7 @@ export const api = {
     })
     if (!res.ok) {
       const errData = await res.json().catch(() => null)
+      if (askForTools(taskId, errData, 'resume')) return errData
       throw new Error(errData?.error || `Failed to resume task ${taskId}`)
     }
     return res.json()
@@ -308,6 +320,7 @@ export const api = {
     })
     if (!res.ok) {
       const errData = await res.json().catch(() => null)
+      if (askForTools(taskId, errData, 'run')) return errData
       throw new Error(errData?.error || `Failed to execute task ${taskId} (HTTP ${res.status})`)
     }
     return res.json()

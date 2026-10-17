@@ -21,6 +21,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/registry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/toolchain"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/worker"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
@@ -57,6 +58,9 @@ func main() {
 	fmt.Println("================================================================")
 
 	cwd, _ := os.Getwd()
+	// Package-manager bin folders (Homebrew, go install, …) may be missing when the daemon is not
+	// started from a login shell; add them so installed tools are found by the daemon and agents.
+	toolchain.EnsurePath()
 
 	// 1. Cascading Configuration Resolver
 	configResolver := config.NewCascadingConfigResolver(cwd)

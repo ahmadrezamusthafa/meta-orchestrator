@@ -79,6 +79,11 @@ func TestHeuristicComplexity(t *testing.T) {
 		"Version the payments API contract":                "HIGH",
 		"Fix typo in README":                               "LOW",
 		"Add invoice line item endpoint":                   "MEDIUM",
+		"Add a Terragrunt unit for the billing worker":     "SYSTEM",
+		"Scale the Azure Container App for billing":        "SYSTEM",
+		"Add an invoice:approve permission to SpiceDB":     "HIGH",
+		"Map Keycloak realm roles to the billing admin":    "HIGH",
+		"Ship the wallet app to the Play Store":            "SYSTEM",
 	}
 	for title, want := range cases {
 		if got := HeuristicComplexity(title, "", []string{"one"}); got.Complexity != want {
