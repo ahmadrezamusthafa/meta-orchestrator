@@ -697,10 +697,14 @@ func applyProviderAuthUpdate(prev *ProviderAuthState, authMethod, apiKey string,
 	return state
 }
 
-// maskToken masks a token for safe display, showing first 6 and last 4 chars.
+// maskToken masks a token for safe display: first 6 and last 4 chars of long keys (their
+// non-secret prefix identifies the key type), only the last 4 of shorter ones.
 func maskToken(token string) string {
-	if len(token) <= 12 {
+	switch {
+	case len(token) <= 12:
 		return strings.Repeat("•", len(token))
+	case len(token) < 24:
+		return strings.Repeat("•", 16) + token[len(token)-4:]
 	}
 	return token[:6] + strings.Repeat("•", 16) + token[len(token)-4:]
 }
