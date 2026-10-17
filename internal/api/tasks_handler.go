@@ -619,6 +619,12 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 		stageChanged := body.CurrentStageID != "" && body.CurrentStageID != task.CurrentStageID
+		if stageChanged && task.State == types.TaskStateRunning {
+			// The live turn would settle as the review of the stage the card was moved to.
+			r.mu.Unlock()
+			r.writeError(w, http.StatusConflict, fmt.Sprintf("pause %s before moving it to another stage", taskID))
+			return
+		}
 		prevStage := task.CurrentStageID
 		if stageChanged {
 			task.CurrentStageID = body.CurrentStageID

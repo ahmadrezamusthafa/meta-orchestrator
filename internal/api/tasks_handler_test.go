@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
@@ -76,4 +77,23 @@ func TestPatchRejectsUnknownState(t *testing.T) {
 	if w := do(r, http.MethodPatch, "/api/v1/tasks/TASK-S", `{"state":"SUSPENDED"}`); w.Code != http.StatusOK {
 		t.Fatalf("known state → %d %s", w.Code, w.Body.String())
 	}
+}
+
+// Moving the card while its stage runs would settle the running turn's output as the review of
+// the stage it was moved to, so approving would skip that stage.
+func TestPatchRefusesStageMoveWhileRunning(t *testing.T) {
+	stub := &streamingStub{block: make(chan struct{})}
+	r := consoleRouter(t, stub)
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-C1/execute", ""); w.Code != http.StatusOK {
+		t.Fatalf("execute → %d %s", w.Code, w.Body.String())
+	}
+	if w := do(r, http.MethodPatch, "/api/v1/tasks/TASK-C1", `{"current_stage_id":"e2e_validation"}`); w.Code != http.StatusConflict {
+		t.Fatalf("stage move while running → %d, want 409", w.Code)
+	}
+	if s := r.taskSnapshot("TASK-C1"); s.CurrentStageID != "task_implementation" {
+		t.Fatalf("stage moved to %s while running", s.CurrentStageID)
+	}
+	do(r, http.MethodPost, "/api/v1/tasks/TASK-C1/pause", "")
+	waitState(t, r, "TASK-C1", types.TaskStateSuspended)
+	r.interruptAndWait("TASK-C1", 2*time.Second) // let the turn settle before the temp dir goes
 }
