@@ -155,7 +155,7 @@ func skillSuggestions(stages []string, options []skillOption) map[string][]strin
 }
 
 // normalizeStageSkills trims, de-duplicates and checks a stage's attached skills.
-func normalizeStageSkills(stage string, names []string, available map[string]*types.UniversalSkillContract) ([]string, error) {
+func (r *Router) normalizeStageSkills(stage string, names []string, available map[string]*types.UniversalSkillContract) ([]string, error) {
 	seen := map[string]bool{}
 	out := []string{}
 	for _, n := range names {
@@ -166,6 +166,9 @@ func normalizeStageSkills(stage string, names []string, available map[string]*ty
 		seen[n] = true
 		if _, ok := available[n]; !ok {
 			return nil, fmt.Errorf("skill %q for %s is not available: it is disabled, no longer installed, or has no instructions", n, stage)
+		}
+		if err := r.checkStageSkillAllowed(stage, n); err != nil {
+			return nil, err
 		}
 		out = append(out, n)
 	}

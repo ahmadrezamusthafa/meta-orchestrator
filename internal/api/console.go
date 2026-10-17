@@ -646,7 +646,7 @@ func (r *Router) startChatTurn(task *types.Task, message, model string) (string,
 		// The operator is at the console, so the agent may act; anything gated asks them first.
 		workDir := r.resolveWorkDir(task)
 		mode := r.editMode(task.ID, workDir)
-		system := taskSystemPrompt(task, decision.Method) + r.stackBrief(task) + r.connectorsBrief(task) + "\n" + permissionBrief(mode)
+		system := taskSystemPrompt(task, decision.Method) + r.stagePersona(task) + r.stackBrief(task) + r.connectorsBrief(task) + "\n" + permissionBrief(mode)
 		msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: system}}, history...)
 		msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: message})
 		resp, used, _ := r.runAgentTurn(ctx, agentTurn{Source: "chat", TurnID: turnID, Task: task, Decision: decision,

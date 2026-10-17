@@ -96,3 +96,19 @@ func (r *ProfileRegistry) CheckPermission(roleOrID string, skillName string) (bo
 
 	return false, nil
 }
+
+// IsDenied reports whether the profile explicitly denies skillName (by name or "*"). Unlike
+// CheckPermission it does not treat "not in allowed_skills" as a denial: allowed_skills names
+// abstract capabilities (read_ast_node, …), not installed skills, so only denies are enforceable.
+func (r *ProfileRegistry) IsDenied(roleOrID string, skillName string) bool {
+	profile, err := r.GetProfile(roleOrID)
+	if err != nil {
+		return false
+	}
+	for _, denied := range profile.DeniedSkills {
+		if denied == skillName || denied == "*" {
+			return true
+		}
+	}
+	return false
+}

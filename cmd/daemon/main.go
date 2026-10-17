@@ -75,7 +75,9 @@ func main() {
 	// 2. Registries Initialization
 	workflowReg := fsm.NewWorkflowRegistry()
 	profileReg := registry.NewProfileRegistry()
-	_ = profileReg.LoadFromFile("configs/profiles.json")
+	if err := profileReg.LoadFromFile(filepath.Join(cwd, "configs", "profiles.json")); err != nil {
+		fmt.Printf("[Profiles] Stage roles not loaded: %v\n", err)
+	}
 
 	promptReg := registry.NewPromptRegistry(cwd)
 	skillResolver := skills.NewMultiSourceSkillResolver(cwd)
@@ -147,6 +149,7 @@ func main() {
 		WorkflowReg:       workflowReg,
 		ToolManager:       toolMgr,
 		Toolchain:         toolchainSvc,
+		ProfileRegistry:   profileReg,
 		ArtifactManager:   artifactMgr,
 		ConfigResolver:    configResolver,
 		ProjectManager:    projectMgr,
