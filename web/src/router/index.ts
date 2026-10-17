@@ -1,14 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import MissionControlView from '../views/MissionControlView.vue'
-import TaskDetailView from '../views/TaskDetailView.vue'
-import ToolHubView from '../views/ToolHubView.vue'
-import ProviderSettingsView from '../views/ProviderSettingsView.vue'
-import WorkflowSettingsView from '../views/WorkflowSettingsView.vue'
-import RegistriesSettingsView from '../views/RegistriesSettingsView.vue'
-import ProjectSetupView from '../views/ProjectSetupView.vue'
-import ConnectorsView from '../views/ConnectorsView.vue'
-import SkillsView from '../views/SkillsView.vue'
-import AnalyticsView from '../views/AnalyticsView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -21,47 +12,51 @@ const router = createRouter({
     {
       path: '/projects',
       name: 'projects-setup',
-      component: ProjectSetupView,
+      component: () => import('../views/ProjectSetupView.vue'),
     },
     {
       path: '/connectors',
       name: 'connectors',
-      component: ConnectorsView,
+      component: () => import('../views/ConnectorsView.vue'),
     },
     {
       path: '/tasks/:id',
       name: 'task-detail',
-      component: TaskDetailView,
+      component: () => import('../views/TaskDetailView.vue'),
       props: true,
     },
     {
       path: '/analytics',
       name: 'analytics',
-      component: AnalyticsView,
+      component: () => import('../views/AnalyticsView.vue'),
     },
     {
       path: '/tools',
       name: 'tool-hub',
-      component: ToolHubView,
+      component: () => import('../views/ToolHubView.vue'),
     },
     {
       path: '/skills',
       name: 'skills-hub',
-      component: SkillsView,
+      component: () => import('../views/SkillsView.vue'),
     },
     {
       path: '/settings/providers',
       name: 'provider-settings',
-      component: ProviderSettingsView,
+      component: () => import('../views/ProviderSettingsView.vue'),
     },
     {
       path: '/settings/workflows',
       name: 'workflow-settings',
-      component: WorkflowSettingsView,
+      component: () => import('../views/WorkflowSettingsView.vue'),
     },
     {
       path: '/settings/registries',
       redirect: { path: '/skills', query: { tab: 'prompts' } },
+    },
+    {
+      path: '/:pathMatch(.*)*',
+      redirect: '/',
     },
   ],
 })
