@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// StaticContainers always samples the given containers.
+func StaticContainers(ids ...string) ContainerLister {
+	return func(context.Context) ([]string, error) { return ids, nil }
+}
+
 func TestDockerSamplerListsAndSumsContainers(t *testing.T) {
 	runner := func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		switch args[0] {

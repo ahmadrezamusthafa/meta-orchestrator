@@ -201,11 +201,6 @@ type Sampler interface {
 // ContainerLister returns the containers to sample now.
 type ContainerLister func(ctx context.Context) ([]string, error)
 
-// StaticContainers always samples the given containers.
-func StaticContainers(ids ...string) ContainerLister {
-	return func(context.Context) ([]string, error) { return ids, nil }
-}
-
 // ContainerMonitor samples a container periodically, tracking peaks and spikes.
 type ContainerMonitor struct {
 	mu         sync.Mutex
