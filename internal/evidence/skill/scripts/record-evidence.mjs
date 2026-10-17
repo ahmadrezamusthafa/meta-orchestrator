@@ -1036,8 +1036,9 @@ async function recordCase(browser, sc) {
       } else if (st.action === 'log') {
         const file = isAbsolute(st.file) ? st.file : join(outDir, st.file)
         const lines = stripAnsi(readFileSync(file, 'utf8')).split('\n').map(redact)
-        const s = st.status === 'failed' ? 'failed' : 'passed'
         const counts = countTests(lines)
+        // The status is the agent's claim; a log whose own summary reports failures never passes.
+        const s = st.status === 'failed' || (counts && counts.failed > 0) ? 'failed' : 'passed'
         Object.assign(part, { log: st.file, status: s })
         if (counts) part.summary = countLine(counts)
         if (s === 'failed') fail('failed')

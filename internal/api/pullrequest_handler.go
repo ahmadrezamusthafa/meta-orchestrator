@@ -172,6 +172,7 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 		if d.Blocker == "" && !prAllowed(t) {
 			d.Blocker = "pull requests open from the task_implementation stage onward"
 		}
+		d.Blocker = redactURLCredentials(d.Blocker) // git errors may quote a remote URL with its token
 		d.CanCreate = d.Blocker == ""
 		d.Sync, d.SyncNote = prSync(d)
 		d.Title, d.Body = pullrequest.Title(in), pullrequest.Body(in)
@@ -371,10 +372,10 @@ func (r *Router) openPullRequest(ctx context.Context, taskID string, body PullRe
 
 	committed, err := gitwt.CommitAll(ctx, d.wt.Checkout, d.wt.SubPath, d.CommitMsg)
 	if err != nil {
-		return nil, fmt.Errorf("commit pending changes: %w", err)
+		return nil, fmt.Errorf("commit pending changes: %s", redactURLCredentials(err.Error()))
 	}
 	if err := gitwt.Push(ctx, d.wt.Checkout, d.SourceBranch); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s", redactURLCredentials(err.Error()))
 	}
 	res, err := r.prClient.Open(ctx, d.Provider, creds, pullrequest.Request{Owner: d.remote.Owner, Repo: d.remote.Repo,
 		SourceBranch: d.SourceBranch, TargetBranch: d.TargetBranch, Title: title, Body: desc})
@@ -414,6 +415,12 @@ func (r *Router) openPullRequest(ctx context.Context, taskID string, body PullRe
 	r.broadcastTask(r.taskSnapshot(taskID))
 	return &prOpened{Repo: d.Repo, URL: res.URL, Number: res.Number, Updated: res.Updated, Committed: committed}, nil
 }
+
+// urlUserinfo matches the credentials part of a URL ("https://user:token@").
+var urlUserinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@'"]+@`)
+
+// redactURLCredentials masks credentials embedded in URLs, e.g. in a git remote or its errors.
+func redactURLCredentials(s string) string { return urlUserinfo.ReplaceAllString(s, "${1}***@") }
 
 var unsafeFileChars = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
