@@ -3,42 +3,45 @@ package worker
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"time"
-
-	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
-// TaskExecutionWorker executes a task within isolated process context and reports telemetry.
+// TaskExecutionWorker runs pool jobs with panic recovery and an optional timeout.
 type TaskExecutionWorker struct {
-	id      int
-	handler TaskHandler
+	id int
 }
 
 // NewTaskExecutionWorker creates a worker with an assigned numeric identifier.
-func NewTaskExecutionWorker(id int, handler TaskHandler) *TaskExecutionWorker {
-	return &TaskExecutionWorker{
-		id:      id,
-		handler: handler,
-	}
+func NewTaskExecutionWorker(id int) *TaskExecutionWorker {
+	return &TaskExecutionWorker{id: id}
 }
 
-// Execute runs the handler with timeout protection and panic recovery.
-func (w *TaskExecutionWorker) Execute(ctx context.Context, task *types.Task, timeout time.Duration) (err error) {
+// PanicError is the error a job that panicked fails with.
+type PanicError struct {
+	WorkerID int
+	Value    interface{}
+	Stack    []byte
+}
+
+func (e *PanicError) Error() string {
+	return fmt.Sprintf("worker %d recovered from a panic: %v", e.WorkerID, e.Value)
+}
+
+// Execute runs job, turning a panic into a *PanicError. A positive timeout bounds the job's context.
+func (w *TaskExecutionWorker) Execute(ctx context.Context, job Job, timeout time.Duration) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("worker %d panicked during task %s: %v", w.id, task.ID, r)
+			err = &PanicError{WorkerID: w.id, Value: r, Stack: debug.Stack()}
 		}
 	}()
-
-	if timeout <= 0 {
-		timeout = 30 * time.Minute
+	if job == nil {
+		return nil
 	}
-	taskCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	if w.handler != nil {
-		return w.handler(taskCtx, task)
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
-
-	return nil
+	return job(ctx)
 }

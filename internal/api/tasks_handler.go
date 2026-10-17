@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
@@ -152,42 +153,26 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 				assessment.Source, assessment.Rationale = body.ComplexitySource, body.ComplexityRationale
 			}
 		}
+		workflow, err := r.workflowForNewTask(body.WorkflowID)
+		if err != nil {
+			r.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		sliceStages, err := workflowSlice(workflow, body.ActiveSlice)
+		if err != nil {
+			r.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if !confirmed {
-			start, halt := "", ""
-			if body.ActiveSlice != nil {
-				start, halt = body.ActiveSlice.StartStageID, body.ActiveSlice.HaltStageID
-			}
-			plan = proposedPlan(r.strategyRouter.Plan(planStages(start, halt), assessment.Complexity, assessment.TaskType, body.AssignedRepos))
+			plan = proposedPlan(r.strategyRouter.Plan(sliceStages, assessment.Complexity, assessment.TaskType, body.AssignedRepos))
 		}
 
 		r.mu.Lock()
 		taskID := r.nextTaskIDLocked()
 
 		now := time.Now()
-		startStage := "prd_discovery"
-		startIndex := 0
-
-		// Handle Mid-Process Slicing
-		if body.ActiveSlice != nil && body.ActiveSlice.StartStageID != "" {
-			startStage = body.ActiveSlice.StartStageID
-			// Set stage index based on starting stage
-			switch startStage {
-			case "atdd_creation":
-				startIndex = 1
-			case "techdoc_rfc":
-				startIndex = 2
-			case "task_breakdown":
-				startIndex = 3
-			case "task_implementation":
-				startIndex = 4
-			case "e2e_validation":
-				startIndex = 5
-			case "uat_verification":
-				startIndex = 6
-			case "signoff_merge":
-				startIndex = 7
-			}
-		}
+		startStage := sliceStages[0]
+		startIndex := indexIn(fsm.StageIDs(workflow), startStage)
 
 		selectedMethod := body.SelectedMethod
 		if selectedMethod == "" || selectedMethod == "Auto" {
@@ -199,10 +184,7 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 
-		workflowID := body.WorkflowID
-		if workflowID == "" {
-			workflowID = "general_ai_sdlc"
-		}
+		workflowID := workflow.ID
 
 		maxBudget := body.MaxTokenBudget
 		if maxBudget == 0 {
@@ -323,7 +305,7 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 
 func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 	req.Body = http.MaxBytesReader(w, req.Body, maxTaskBodyBytes)
-	path :=strings.TrimPrefix(req.URL.Path, "/api/v1/tasks/")
+	path := strings.TrimPrefix(req.URL.Path, "/api/v1/tasks/")
 	parts := strings.Split(path, "/")
 	taskID := parts[0]
 
@@ -625,12 +607,20 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			r.writeError(w, http.StatusConflict, fmt.Sprintf("pause %s before moving it to another stage", taskID))
 			return
 		}
+		if stageChanged && r.stageIndexFor(task, body.CurrentStageID) < 0 {
+			r.mu.Unlock()
+			r.writeError(w, http.StatusBadRequest, fmt.Sprintf("stage %s is not part of %s's workflow (%v)", body.CurrentStageID, taskID, r.workflowStages(task.WorkflowID)))
+			return
+		}
+		if body.State != "" && body.State != types.TaskStateRunning && !fsm.CanTransition(task.State, body.State) {
+			r.mu.Unlock()
+			r.writeError(w, http.StatusConflict, fmt.Sprintf("%s is %s and cannot move to %s", taskID, task.State, body.State))
+			return
+		}
 		prevStage := task.CurrentStageID
 		if stageChanged {
 			task.CurrentStageID = body.CurrentStageID
-			if i := stageIndexOf(body.CurrentStageID); i >= 0 {
-				task.CurrentStageIndex = i
-			}
+			task.CurrentStageIndex = r.stageIndexFor(task, body.CurrentStageID)
 		}
 		wantRun := body.State == types.TaskStateRunning
 		switch {
@@ -655,7 +645,7 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			if err := r.startStage(taskID, "run", ""); err != nil && !errors.Is(err, errTaskBusy) {
 				var blocked *depsBlockedError
 				if !errors.As(err, &blocked) {
-					r.writeError(w, http.StatusConflict, err.Error())
+					r.writeError(w, stageStartStatus(err), err.Error())
 					return
 				}
 			}

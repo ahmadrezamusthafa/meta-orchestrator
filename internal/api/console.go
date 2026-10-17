@@ -430,11 +430,14 @@ func (r *Router) resolveWorkDir(task *types.Task) string {
 	case len(ready) > 1:
 		return r.taskWorktreeRoot(task.ID)
 	}
+	var procDir string
 	r.mu.RLock()
-	proc := r.taskProcesses[task.ID]
+	if proc := r.taskProcesses[task.ID]; proc != nil {
+		procDir = proc.WorkingDir
+	}
 	r.mu.RUnlock()
-	if proc != nil && proc.WorkingDir != "" && dirExists(proc.WorkingDir) {
-		return proc.WorkingDir
+	if procDir != "" && dirExists(procDir) {
+		return procDir
 	}
 	for _, repo := range task.AssignedRepos {
 		if p := r.repoPaths([]string{repo})[repo]; p != "" && dirExists(p) {
@@ -601,7 +604,7 @@ func (r *Router) handleTaskConsole(w http.ResponseWriter, req *http.Request, tas
 			turnID, userID, err = r.startChatTurn(task, msg, model)
 		}
 		if err != nil {
-			r.writeError(w, http.StatusConflict, err.Error())
+			r.writeError(w, stageStartStatus(err), err.Error())
 			return
 		}
 		r.writeJSON(w, http.StatusAccepted, map[string]string{"turn_id": turnID, "entry_id": userID, "mode": mode})

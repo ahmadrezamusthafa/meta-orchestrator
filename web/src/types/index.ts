@@ -449,6 +449,8 @@ export interface WorkflowDefinition {
   version: string
   stages: WorkflowStage[]
   default_role: string
+  // Built-in workflows are read-only; saving changes creates a custom copy.
+  builtin?: boolean
 }
 
 export interface OrchestratorEvent {

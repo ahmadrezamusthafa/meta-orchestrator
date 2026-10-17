@@ -16,7 +16,7 @@ func TestSliceIngestionAndUpstreamSynthesis(t *testing.T) {
 	ingestion := NewSliceIngestionEngine(artMgr)
 
 	reg := fsm.NewWorkflowRegistry()
-	general, _ := reg.Get("general-ai-sdlc")
+	general, _ := reg.Get("general_ai_sdlc")
 
 	task := &types.Task{
 		ID:          "task-slice-01",
@@ -33,8 +33,8 @@ func TestSliceIngestionAndUpstreamSynthesis(t *testing.T) {
 
 	// Slice starting at Stage 6 (IMPLEMENTATION_GREEN) and halting at Stage 7 (E2E_AUTOMATION)
 	slice := &types.StageSlice{
-		StartStageID: "IMPLEMENTATION_GREEN",
-		HaltStageID:  "E2E_AUTOMATION",
+		StartStageID: "task_implementation",
+		HaltStageID:  "e2e_validation",
 		ProduceVideo: true,
 	}
 
@@ -49,10 +49,10 @@ func TestSliceIngestionAndUpstreamSynthesis(t *testing.T) {
 		t.Fatalf("ingestion failed: %v", err)
 	}
 
-	if plan.EffectiveStages[0].ID != "IMPLEMENTATION_GREEN" {
+	if plan.EffectiveStages[0].ID != "task_implementation" {
 		t.Errorf("expected first stage to be IMPLEMENTATION_GREEN, got %s", plan.EffectiveStages[0].ID)
 	}
-	if task.CurrentStageID != "IMPLEMENTATION_GREEN" {
+	if task.CurrentStageID != "task_implementation" {
 		t.Errorf("expected task stage to be IMPLEMENTATION_GREEN, got %s", task.CurrentStageID)
 	}
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/telemetry"
@@ -23,11 +24,9 @@ import (
 //
 // Every transition is written to the task console with the next action the operator can take.
 
-// stagePipeline is the default SDLC stage order.
-var stagePipeline = []string{
-	"prd_discovery", "atdd_creation", "techdoc_rfc", "task_breakdown",
-	"task_implementation", "e2e_validation", "uat_verification", "signoff_merge",
-}
+// stagePipeline is the default SDLC stage order: the stages of the default workflow. A task's own
+// workflow (workflowStages) decides the stages it runs.
+var stagePipeline = fsm.StageIDs(fsm.GetGeneralAISDLCWorkflow())
 
 var stageInstructions = map[string]string{
 	"prd_discovery":    "Clarify the requirement: goals, scope and non-goals, acceptance criteria, assumptions and open questions.",
@@ -51,15 +50,6 @@ func stageIndexOf(stage string) int {
 		}
 	}
 	return -1
-}
-
-// nextStage returns the stage after current, or "" when current is the last one.
-func nextStage(current string) string {
-	i := stageIndexOf(current)
-	if i < 0 || i+1 >= len(stagePipeline) {
-		return ""
-	}
-	return stagePipeline[i+1]
 }
 
 func stageLabel(stage string) string {
@@ -97,6 +87,8 @@ type stageRun struct {
 	feedback string // gate rejection feedback, or the operator's message for the "message" trigger
 	lastErr  string // why the previous run of this stage ended, if it failed
 	model    string // operator-selected model; empty uses the router
+	// prevState is the state the task was claimed from, restored if the stage never starts.
+	prevState types.TaskState
 }
 
 // claimStage validates and marks a task RUNNING for its current stage. Only one claim can hold a
@@ -119,6 +111,11 @@ func (r *Router) claimStage(taskID, trigger, feedback string) (*stageRun, error)
 	if codeStages[task.CurrentStageID] && len(task.AssignedRepos) == 0 {
 		r.mu.Unlock()
 		return nil, errNoRepos
+	}
+	if !fsm.CanTransition(task.State, types.TaskStateRunning) {
+		state := task.State
+		r.mu.Unlock()
+		return nil, fmt.Errorf("a stage cannot run while the task is %s", state)
 	}
 	var unmet []string
 	for _, dep := range task.Dependencies {
@@ -153,7 +150,7 @@ func (r *Router) claimStage(taskID, trigger, feedback string) (*stageRun, error)
 		cancel()
 		return nil, errTaskBusy
 	}
-	lastErr := task.Metadata["last_error"]
+	lastErr, prevState := task.Metadata["last_error"], task.State
 	delete(task.Metadata, "unmet_dependencies")
 	delete(task.Metadata, "last_error")
 	r.setTaskState(task, types.TaskStateRunning)
@@ -166,7 +163,7 @@ func (r *Router) claimStage(taskID, trigger, feedback string) (*stageRun, error)
 	r.mu.Unlock()
 
 	r.broadcastTask(snap)
-	return &stageRun{task: snap, turnID: turnID, ctx: ctx, cancel: cancel, trigger: trigger, feedback: feedback, lastErr: lastErr}, nil
+	return &stageRun{task: snap, turnID: turnID, ctx: ctx, cancel: cancel, trigger: trigger, feedback: feedback, lastErr: lastErr, prevState: prevState}, nil
 }
 
 // agentTurnTimeout backstops one stage or chat turn. The driver stops a turn first — after
@@ -190,8 +187,7 @@ func (r *Router) startStage(taskID, trigger, feedback string) error {
 	if err != nil {
 		return err
 	}
-	go r.executeStage(run)
-	return nil
+	return r.dispatchStage(run)
 }
 
 // stageIdleStates are the states in which a typed message continues the current stage rather than
@@ -224,7 +220,9 @@ func (r *Router) startStageWithMessage(taskID, message, model string) (turnID, e
 	}
 	run.model = model
 	user := r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindUser, TurnID: run.turnID, Content: message})
-	go r.executeStage(run)
+	if err := r.dispatchStage(run); err != nil {
+		return "", "", err
+	}
 	return run.turnID, user.ID, nil
 }
 
@@ -569,7 +567,7 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 		task.Metadata["active_model"] = servedModel(model, resp)
 		proc.Status = "IDLE"
 		proc.CurrentStep = "Awaiting review of " + stage
-		if next := nextStage(stage); next != "" {
+		if next := r.nextStageFor(task, stage); next != "" {
 			note = fmt.Sprintf("✓ %s finished. Review the output above, then approve to continue to %s — or reject with feedback to re-run it.", stage, next)
 		} else {
 			note = fmt.Sprintf("✓ %s finished. This is the final stage — approve to complete the task, or reject with feedback.", stage)
@@ -585,6 +583,7 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 	}
 	r.addEntry(taskID, types.ConsoleEntry{Kind: kind, Content: note})
 	r.broadcastTask(snap)
+	r.afterStageSettled(taskID, stage, execErr)
 }
 
 // timedOut reports whether a turn ended because it ran out of time rather than because it failed.
@@ -668,15 +667,21 @@ func (r *Router) reviewStage(taskID string, approved bool, feedback string) (*ty
 			return nil, errors.New("tell the agent what to change: feedback is required to reject a stage")
 		}
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindUser, Content: "Rejected " + stage + ": " + feedback})
+		r.gateDecided(r.taskSnapshot(taskID), stage, false)
 		if err := r.startStage(taskID, "gate_rejected", feedback); err != nil {
 			return nil, err
 		}
 		return r.taskSnapshot(taskID), nil
 	}
 
-	next := nextStage(stage)
+	next := r.nextStageFor(task, stage)
+	gated := cloneTask(task)
+	defer r.gateDecided(gated, stage, true)
 	if next == "" {
-		r.setTaskState(task, types.TaskStateCompleted)
+		if err := r.transitionLocked(task, types.TaskStateCompleted); err != nil {
+			r.mu.Unlock()
+			return nil, err
+		}
 		task.UpdatedAt = time.Now()
 		proc := r.getOrCreateTaskProcessLocked(taskID)
 		proc.Status = "COMPLETED"
@@ -689,11 +694,15 @@ func (r *Router) reviewStage(taskID string, approved bool, feedback string) (*ty
 		r.startUnblockedDependents(taskID)
 		return snap, nil
 	}
-	task.CurrentStageID = next
-	task.CurrentStageIndex = stageIndexOf(next)
 	// The approved output is settled: the next stage has not run, so it is pending until it starts.
 	// Left in review, a stage that cannot start (no repositories, busy, missing tools) would be
 	// skipped by the next approve.
+	if !fsm.CanTransition(task.State, types.TaskStatePending) {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("%s is %s and cannot move on to %s", taskID, task.State, next)
+	}
+	task.CurrentStageID = next
+	task.CurrentStageIndex = r.stageIndexFor(task, next)
 	r.setTaskState(task, types.TaskStatePending)
 	task.UpdatedAt = time.Now()
 	r.mu.Unlock()
@@ -797,6 +806,9 @@ func (r *Router) respondStageStart(w http.ResponseWriter, taskID string, err err
 			"error": err.Error(), "unmet": blocked.Unmet, "task": r.taskSnapshot(taskID)})
 	case errors.Is(err, errTaskBusy):
 		r.writeJSON(w, http.StatusConflict, map[string]interface{}{"status": "busy", "task_id": taskID, "error": err.Error()})
+	case errors.Is(err, errStageCapacity):
+		r.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"status": "no_capacity", "task_id": taskID,
+			"error": err.Error(), "task": r.taskSnapshot(taskID)})
 	case errors.Is(err, errNoRepos):
 		r.writeJSON(w, http.StatusConflict, map[string]interface{}{"status": "needs_repositories", "task_id": taskID,
 			"error": err.Error(), "task": r.taskSnapshot(taskID)})

@@ -151,7 +151,7 @@ export const api = {
   // Passing complexity re-plans with the operator's grade instead of asking the AI.
   async analyzeTask(payload: {
     title: string; description?: string; assigned_repos?: string[]; complexity?: string; task_type?: string
-    start_stage?: string; halt_stage?: string
+    start_stage?: string; halt_stage?: string; workflow_id?: string
   }): Promise<TaskAnalysisDTO> {
     const res = await fetch(`${BASE_URL}/tasks/analyze`, {
       method: 'POST',
@@ -544,6 +544,23 @@ export const api = {
     })
     if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to save workflow')
     return res.json()
+  },
+
+  async updateWorkflow(workflow: WorkflowDefinition): Promise<any> {
+    const res = await fetch(`${BASE_URL}/workflows/${encodeURIComponent(workflow.id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(workflow)
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to save workflow')
+    return res.json()
+  },
+
+  // Stage IDs a workflow may use: the stages the orchestrator can run.
+  async getWorkflowStages(): Promise<string[]> {
+    const res = await fetch(`${BASE_URL}/workflows/stages`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to fetch workflow stages')
+    return (await res.json()).stages ?? []
   },
 
   async getRegistries(): Promise<RegistryDTO> {

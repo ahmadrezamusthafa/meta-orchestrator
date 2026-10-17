@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/config"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/connectors"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/fsm"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/hooks"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/projects"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/pullrequest"
@@ -20,6 +22,7 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/telemetry"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/toolchain"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/worker"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
@@ -53,6 +56,13 @@ type RouterConfig struct {
 	// Toolchain checks and installs the tools the repositories' stacks need. Nil checks this
 	// machine (toolchain.New).
 	Toolchain *toolchain.Toolchain
+	// MaxConcurrentStages bounds the stages (agent turns) running at once; 0 uses 10.
+	MaxConcurrentStages int
+	// StageQueueSize is how many claimed stages may wait for a free slot; 0 uses 100.
+	StageQueueSize int
+	// HookEngine runs lifecycle hooks; nil creates one for RootDir. Hooks in RootDir/.sdlc/hooks.json
+	// are loaded into it.
+	HookEngine *hooks.HookEngine
 }
 
 // Router provides the HTTP REST API handler for the Mission Control frontend.
@@ -82,6 +92,12 @@ type Router struct {
 	prClient      *pullrequest.Client  // opens pull requests; tests point it at a fake API
 	uatRunner     uatScreenshotRunner  // captures UAT screenshots; tests stub it
 	lastPersisted []byte
+	stages        *worker.Pool // bounded pool every stage turn runs on
+	hookCtx       context.Context
+	hookCancel    context.CancelFunc
+	hookWG        sync.WaitGroup
+	mirrored      map[string][]byte // task snapshots last written to cfg.TaskStore; guarded by persistMu
+	mirrorFailing bool              // guarded by persistMu
 	stop          chan struct{}
 	closeOnce     sync.Once
 }
@@ -105,6 +121,9 @@ func NewRouter(cfg RouterConfig) *Router {
 	}
 	if cfg.WSHub != nil && cfg.ConnectorsManager != nil {
 		cfg.ConnectorsManager.SetBroadcastFunc(cfg.WSHub.BroadcastEvent)
+	}
+	if cfg.WorkflowReg == nil {
+		cfg.WorkflowReg = fsm.NewWorkflowRegistry()
 	}
 
 	var orchCfg *config.OrchestratorConfig
@@ -144,6 +163,8 @@ func NewRouter(cfg RouterConfig) *Router {
 		docker:         newDockerGate(cfg.Docker),
 		toolchain:      cfg.Toolchain,
 		prClient:       &pullrequest.Client{},
+		stages:         newStagePool(cfg),
+		mirrored:       map[string][]byte{},
 		stop:           make(chan struct{}),
 	}
 	if r.toolchain == nil {
@@ -156,8 +177,11 @@ func NewRouter(cfg RouterConfig) *Router {
 		stratRouter.SetSettings(*saved)
 	}
 	r.initTelemetry()
+	r.initHooks()
+	r.loadWorkflows()
 	r.loadBoard()
 	r.loadConsoles()
+	r.recoverFromMirror()
 	r.reconcileIdleRunning()
 	r.registerRoutes()
 	r.startBackgroundProcessMonitor()
@@ -209,6 +233,8 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/v1/providers/oauth/disconnect", r.handleOAuthDisconnect)
 	r.mux.HandleFunc("/api/v1/providers/oauth/providers", r.handleOAuthProviders)
 	r.mux.HandleFunc("/api/v1/workflows", r.handleWorkflows)
+	r.mux.HandleFunc("/api/v1/workflows/", r.handleWorkflowItem)
+	r.mux.HandleFunc("/api/v1/hooks", r.handleHooks)
 	r.mux.HandleFunc("/api/v1/registries", r.handleRegistries)
 	r.mux.HandleFunc("/api/v1/benchmarks", r.handleBenchmarks)
 	r.mux.Handle("/api/v1/telemetry/", telemetry.NewHandler(r.telemetry.store))

@@ -16,6 +16,7 @@ type TaskStateStore interface {
 	SaveTask(ctx context.Context, task *types.Task) error
 	GetTask(ctx context.Context, taskID string) (*types.Task, error)
 	ListActiveTasks(ctx context.Context) ([]*types.Task, error)
+	DeleteTask(ctx context.Context, taskID string) error
 }
 
 // RedisTaskStateStore implements TaskStateStore backed by Redis.
@@ -101,6 +102,19 @@ func (s *RedisTaskStateStore) ListActiveTasks(ctx context.Context) ([]*types.Tas
 	return active, nil
 }
 
+func (s *RedisTaskStateStore) DeleteTask(ctx context.Context, taskID string) error {
+	if s.client == nil {
+		return fmt.Errorf("redis client is nil")
+	}
+	pipe := s.client.Pipeline()
+	pipe.Del(ctx, taskKey(taskID))
+	pipe.SRem(ctx, activeTasksSetKey, taskID)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("failed to delete task state from redis: %w", err)
+	}
+	return nil
+}
+
 // MemoryTaskStateStore provides an in-memory implementation for testing or local running.
 type MemoryTaskStateStore struct {
 	mu    sync.RWMutex
@@ -152,41 +166,49 @@ func (m *MemoryTaskStateStore) ListActiveTasks(ctx context.Context) ([]*types.Ta
 	return active, nil
 }
 
-// RecoverActiveTasks loads all active tasks to resume execution after process restart.
-func RecoverActiveTasks(ctx context.Context, store TaskStateStore, reg *WorkflowRegistry) ([]*StateMachine, error) {
+func (m *MemoryTaskStateStore) DeleteTask(ctx context.Context, taskID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.tasks, taskID)
+	return nil
+}
+
+// RecoverActiveTasks loads all active tasks to resume execution after process restart. Tasks that
+// cannot be restored (unknown workflow, stage outside it) are returned in skipped with the reason.
+func RecoverActiveTasks(ctx context.Context, store TaskStateStore, reg *WorkflowRegistry) (restored []*StateMachine, skipped map[string]error, err error) {
 	start := time.Now()
 	tasks, err := store.ListActiveTasks(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to recover active tasks: %w", err)
+		return nil, nil, fmt.Errorf("failed to recover active tasks: %w", err)
 	}
 
 	hydrator := NewSliceHydrator()
-	var restoredFSMs []*StateMachine
-
+	skipped = map[string]error{}
 	for _, task := range tasks {
 		def, err := reg.Get(task.WorkflowID)
 		if err != nil {
+			skipped[task.ID] = err
 			continue
 		}
 
 		slicePlan, err := hydrator.HydrateSlice(def, task.ActiveSlice, nil)
 		if err != nil {
+			skipped[task.ID] = err
 			continue
 		}
 
 		fsm, err := NewStateMachine(task, def, slicePlan, func(t *types.Task) error {
 			return store.SaveTask(context.Background(), t)
 		}, nil)
-		if err == nil {
-			restoredFSMs = append(restoredFSMs, fsm)
+		if err != nil {
+			skipped[task.ID] = err
+			continue
 		}
+		restored = append(restored, fsm)
 	}
 
-	elapsed := time.Since(start)
-	if elapsed > 5*time.Second {
-		// Log warning if recovery took longer than target 5s RTO
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		fmt.Printf("WARNING: Task recovery exceeded 5s RTO (took %v)\n", elapsed)
 	}
-
-	return restoredFSMs, nil
+	return restored, skipped, nil
 }

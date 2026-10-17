@@ -24,7 +24,6 @@ import (
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/skills"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/toolchain"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/tools"
-	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/worker"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/ws"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 	"github.com/redis/go-redis/v9"
@@ -81,7 +80,6 @@ func main() {
 	skillResolver := skills.NewMultiSourceSkillResolver(cwd)
 	artifactMgr := artifacts.NewArtifactManager(".sdlc/artifacts")
 	hookEngine := hooks.NewHookEngine(cwd)
-	taskStore := fsm.NewMemoryTaskStateStore()
 	projectMgr := projects.NewProjectManager(cwd)
 	fmt.Printf("[Projects] Loaded %d registered multi-repo workspaces\n", len(projectMgr.List()))
 
@@ -113,26 +111,8 @@ func main() {
 	_ = circuitBreaker
 	_ = skillResolver
 	_ = artifactMgr
-	_ = hookEngine
 
-	// 7. Crash Recovery
-	ctx := context.Background()
-	recoveredFSMs, err := fsm.RecoverActiveTasks(ctx, taskStore, workflowReg)
-	if err != nil {
-		fmt.Printf("[Recovery] Failed to recover active tasks: %v\n", err)
-	} else {
-		fmt.Printf("[Recovery] Successfully recovered %d active tasks in < 5s RTO\n", len(recoveredFSMs))
-	}
-
-	// 8. Asynchronous Worker Pool
-	workerPool := worker.NewPool(10, 100, func(ctx context.Context, task *types.Task) error {
-		activeTools, _ := skillResolver.ListSkills()
-		fmt.Printf("[Worker] Executing task %s (%s) with %d active AI tools (including dynamic MCP connectors)...\n",
-			task.ID, task.Title, len(activeTools))
-		return nil
-	})
-
-	// 9. HTTP Server with REST API & WebSocket endpoints
+	// 7. HTTP Server with REST API & WebSocket endpoints
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHub.HandleWebSocket)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -141,21 +121,24 @@ func main() {
 	})
 
 	apiRouter := api.NewRouter(api.RouterConfig{
-		TaskStore:         taskStore,
-		WorkflowReg:       workflowReg,
-		ToolManager:       toolMgr,
-		ArtifactManager:   artifactMgr,
-		ConfigResolver:    configResolver,
-		ProjectManager:    projectMgr,
-		SkillResolver:     skillResolver,
-		PromptRegistry:    promptReg,
-		WSHub:             wsHub,
-		RootDir:           cwd,
-		Telemetry:         telemetryConfig(cwd),
-		TaskStorePath:     filepath.Join(cwd, ".sdlc", "tasks.json"),
-		ProviderStatePath: filepath.Join(cwd, ".sdlc", "providers.json"),
-		EnableJiraSync:    true,
-		Docker:            dockerLimits(),
+		TaskStore:   taskStateMirror(),
+		WorkflowReg: workflowReg,
+		HookEngine:  hookEngine,
+		// Stages run on a bounded pool (MO_MAX_CONCURRENT_STAGES, default 10) owned by the router.
+		MaxConcurrentStages: maxConcurrentStages(),
+		ToolManager:         toolMgr,
+		ArtifactManager:     artifactMgr,
+		ConfigResolver:      configResolver,
+		ProjectManager:      projectMgr,
+		SkillResolver:       skillResolver,
+		PromptRegistry:      promptReg,
+		WSHub:               wsHub,
+		RootDir:             cwd,
+		Telemetry:           telemetryConfig(cwd),
+		TaskStorePath:       filepath.Join(cwd, ".sdlc", "tasks.json"),
+		ProviderStatePath:   filepath.Join(cwd, ".sdlc", "providers.json"),
+		EnableJiraSync:      true,
+		Docker:              dockerLimits(),
 	})
 	mux.Handle("/api/", apiRouter)
 
@@ -173,13 +156,12 @@ func main() {
 		}
 	}()
 
-	// 10. Graceful Shutdown
+	// 8. Graceful Shutdown
 	stopSig := make(chan os.Signal, 1)
 	signal.Notify(stopSig, syscall.SIGINT, syscall.SIGTERM)
 	<-stopSig
 
-	fmt.Println("\n[Shutdown] Received termination signal, gracefully draining workers...")
-	workerPool.Stop(5 * time.Second)
+	fmt.Println("\n[Shutdown] Received termination signal, interrupting running stages...")
 	if err := apiRouter.Close(); err != nil {
 		fmt.Printf("[Shutdown] Failed to flush task board: %v\n", err)
 	}
@@ -197,4 +179,21 @@ func main() {
 func dockerLimits() api.DockerLimits {
 	n, _ := strconv.Atoi(os.Getenv("MO_DOCKER_MAX_CONCURRENT"))
 	return api.DockerLimits{MaxConcurrent: n, CPUs: os.Getenv("MO_DOCKER_CPUS")}
+}
+
+// taskStateMirror mirrors task snapshots to Redis when REDIS_ADDR is set, so active tasks the board
+// file lacks can be restored at startup. Without it the JSON board is the only store.
+func taskStateMirror() fsm.TaskStateStore {
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		return nil
+	}
+	fmt.Printf("[Recovery] Mirroring task state to Redis at %s\n", addr)
+	return fsm.NewRedisTaskStateStore(redis.NewClient(&redis.Options{Addr: addr}))
+}
+
+// maxConcurrentStages reads MO_MAX_CONCURRENT_STAGES; unset or invalid uses the router default.
+func maxConcurrentStages() int {
+	n, _ := strconv.Atoi(os.Getenv("MO_MAX_CONCURRENT_STAGES"))
+	return n
 }

@@ -128,7 +128,7 @@ func (p *WorkspaceProvisioner) Provision(ctx context.Context, taskID string, rep
 			StageID:       "WORKSPACE_PROVISION",
 			WorkspacePath: taskDir,
 		}
-		if err := p.hookEngine.TriggerEvent(ctx, hooks.HookPreStage, hookCtx); err != nil {
+		if _, err := p.hookEngine.TriggerEvent(ctx, hooks.HookPreStage, hookCtx); err != nil {
 			return nil, fmt.Errorf("pre-stage hook failed during workspace provisioning: %w", err)
 		}
 	}
