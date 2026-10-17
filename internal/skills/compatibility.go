@@ -15,16 +15,16 @@ var validSkillNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-\.]+$`)
 
 // Standard SDLC recognized roles
 var standardRoles = map[string]bool{
-	"system_architect":        true,
-	"lead_developer":          true,
-	"atdd_qa_engineer":        true,
-	"devops_superpower":       true,
-	"product_manager":         true,
-	"tech_writer":             true,
-	"security_specialist":     true,
-	"senior_fullstack_dev":    true,
+	"system_architect":         true,
+	"lead_developer":           true,
+	"atdd_qa_engineer":         true,
+	"devops_superpower":        true,
+	"product_manager":          true,
+	"tech_writer":              true,
+	"security_specialist":      true,
+	"senior_fullstack_dev":     true,
 	"qa_automation_specialist": true,
-	"code_reviewer":           true,
+	"code_reviewer":            true,
 }
 
 // CheckSkillCompatibility performs a multi-dimensional audit of a skill contract against Meta-Orchestrator requirements.

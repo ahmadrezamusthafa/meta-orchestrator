@@ -101,8 +101,8 @@ Run smoke tests and verify zero regressions.
 		t.Fatalf("check-compatibility returned %d", rec.Code)
 	}
 	var checkResp struct {
-		Compatible      bool                          `json:"compatible"`
-		DiscoveredCount int                           `json:"discovered_count"`
+		Compatible      bool                            `json:"compatible"`
+		DiscoveredCount int                             `json:"discovered_count"`
 		Skills          []*types.UniversalSkillContract `json:"skills"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &checkResp); err != nil {

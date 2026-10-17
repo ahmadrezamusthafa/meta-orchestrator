@@ -26,10 +26,10 @@ var upgrader = websocket.Upgrader{
 
 // Client represents a connected WebSocket client.
 type Client struct {
-	hub      *Hub
-	conn     *websocket.Conn
-	send     chan []byte
-	taskID   string // Filter events for specific task (or empty for all)
+	hub    *Hub
+	conn   *websocket.Conn
+	send   chan []byte
+	taskID string // Filter events for specific task (or empty for all)
 }
 
 // Hub maintains the set of active clients and broadcasts events.

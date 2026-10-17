@@ -46,7 +46,7 @@ type OAuthTokenInfo struct {
 // OAuthStore holds in-memory OAuth sessions and tokens.
 type OAuthStore struct {
 	mu       sync.RWMutex
-	sessions map[string]*OAuthSession  // state -> session
+	sessions map[string]*OAuthSession   // state -> session
 	tokens   map[string]*OAuthTokenInfo // provider_id -> token info
 }
 

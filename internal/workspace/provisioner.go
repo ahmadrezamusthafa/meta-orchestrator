@@ -15,11 +15,11 @@ import (
 
 // WorkspaceProvisioner manages ephemeral sandboxes, git worktrees, and cloned repository directories.
 type WorkspaceProvisioner struct {
-	mu            sync.RWMutex
+	mu                sync.RWMutex
 	rootWorkspacesDir string
-	hookEngine    *hooks.HookEngine
-	activeSpaces  map[string]*Workspace
-	sourceDirMap  map[string]map[string]string // taskID -> (repo -> srcPath)
+	hookEngine        *hooks.HookEngine
+	activeSpaces      map[string]*Workspace
+	sourceDirMap      map[string]map[string]string // taskID -> (repo -> srcPath)
 }
 
 // NewWorkspaceProvisioner initializes provisioner rooted at rootWorkspacesDir.

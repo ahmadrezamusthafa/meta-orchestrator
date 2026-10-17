@@ -148,4 +148,3 @@ func TestBillingPromptsRealDirectory(t *testing.T) {
 		t.Errorf("Rendering failed to produce expected content")
 	}
 }
-

@@ -367,7 +367,6 @@ func (r *PromptRegistry) parsePromptFile(filePath string, sourceName string, ove
 	varSet := make(map[string]bool)
 	vars := make([]string, 0)
 
-
 	addVar := func(v string) {
 		v = strings.TrimSpace(v)
 		// Ignore common markdown/noise words

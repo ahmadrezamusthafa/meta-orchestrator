@@ -51,8 +51,8 @@ func TestAllLLMDriversNormalizedContract(t *testing.T) {
 	}
 
 	testTool := &types.UniversalSkillContract{
-		Name:        "run_playwright_e2e",
-		Description: "Run end-to-end tests",
+		Name:         "run_playwright_e2e",
+		Description:  "Run end-to-end tests",
 		SourceFormat: types.SkillFormatNative,
 	}
 

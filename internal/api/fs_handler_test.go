@@ -164,4 +164,3 @@ func TestFSMkdirAPI(t *testing.T) {
 		t.Errorf("Expected 405 Method Not Allowed, got %d", wGet.Code)
 	}
 }
-

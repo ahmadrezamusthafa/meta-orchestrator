@@ -188,7 +188,7 @@ func TestProvidersAndBenchmarksAPI(t *testing.T) {
 	}
 
 	var benchResp struct {
-		TotalCells int                `json:"total_cells"`
+		TotalCells int                 `json:"total_cells"`
 		Matrix     []shadow.MatrixCell `json:"matrix"`
 	}
 	_ = json.NewDecoder(wBench.Body).Decode(&benchResp)
@@ -542,5 +542,3 @@ func TestRouterSettingsEndpoint(t *testing.T) {
 		t.Errorf("Expected claude-opus-5-5-custom in all_models after registration")
 	}
 }
-
-

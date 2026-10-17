@@ -626,6 +626,3 @@ func TestBillingSkillsRealDirectory(t *testing.T) {
 		}
 	}
 }
-
-
-

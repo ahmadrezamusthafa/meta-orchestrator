@@ -73,11 +73,11 @@ func setupTestRouterWithConnectors(t *testing.T) (*Router, string, *httptest.Ser
 		ProjectKey: "PAY",
 	})
 	_ = mgr.UpdateConfluence(types.ConfluenceConfig{
-		Enabled:   true,
-		BaseURL:   mockServer.URL,
-		Username:  "devops@test.local",
-		APIToken:  "test-token",
-		SpaceKey:  "ARCH",
+		Enabled:  true,
+		BaseURL:  mockServer.URL,
+		Username: "devops@test.local",
+		APIToken: "test-token",
+		SpaceKey: "ARCH",
 	})
 
 	router := NewRouter(RouterConfig{
@@ -429,7 +429,6 @@ func TestConnectorsCatalogEndpoints(t *testing.T) {
 		t.Errorf("expected .sdlc/mcp.json to exist on disk: %v", err)
 	}
 }
-
 
 // isolateJiraEnv hides the developer's real JIRA credentials so tests only ever talk to httptest servers.
 func isolateJiraEnv(t *testing.T) {
