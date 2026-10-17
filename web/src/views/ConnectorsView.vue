@@ -167,6 +167,7 @@ const recentlyPingedIds = ref<Set<string>>(new Set())
 const lastPingTime = ref<Date | null>(null)
 let unsubscribeWS: (() => void) | null = null
 let backgroundSyncTimer: any = null
+let isUnmounted = false
 
 // Explorer Tab State (for JIRA)
 const explorerQuery = ref('')
@@ -767,6 +768,8 @@ function formatRelativeTime(dateStr?: string): string {
 onMounted(async () => {
   await loadCatalog()
   await loadPingConfig()
+  // Left the page while loading: onUnmounted already ran, so do not start the listener or poll.
+  if (isUnmounted) return
 
   // Deep link from a "Connect" button: /connectors?focus=grafana opens that connector's setup.
   const focus = route.query.focus
@@ -825,6 +828,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  isUnmounted = true
   if (unsubscribeWS) unsubscribeWS()
   if (backgroundSyncTimer) clearInterval(backgroundSyncTimer)
 })
