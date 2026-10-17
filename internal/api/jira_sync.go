@@ -42,14 +42,15 @@ type jiraTaskOptions struct {
 // newJiraTaskLocked builds a PENDING task for issue and adds it to the board. Caller holds r.mu.
 func (r *Router) newJiraTaskLocked(issue types.JiraIssueDTO, opts jiraTaskOptions) *types.Task {
 	taskID := r.nextTaskIDLocked()
-	stage := opts.StartStageID
-	idx := stageIndexOf(stage)
-	if idx < 0 {
-		stage, idx = "prd_discovery", 0
-	}
 	workflowID := opts.WorkflowID
 	if workflowID == "" {
 		workflowID = "general_ai_sdlc"
+	}
+	stages := r.workflowStages(workflowID)
+	stage := opts.StartStageID
+	idx := indexIn(stages, stage)
+	if idx < 0 {
+		stage, idx = stages[0], 0
 	}
 	method := opts.SelectedMethod
 	if method == "" || method == "Auto" {

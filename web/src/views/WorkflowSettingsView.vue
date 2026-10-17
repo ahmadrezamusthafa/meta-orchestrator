@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useWorkflowStore } from '../stores/workflows'
 import { useToastStore } from '../stores/toast'
+import { api } from '../services/api'
 import WorkflowCatalog from '../components/workflows/WorkflowCatalog.vue'
 import WorkflowStageBuilder from '../components/workflows/WorkflowStageBuilder.vue'
 import KanbanProjectionPreview from '../components/workflows/KanbanProjectionPreview.vue'
@@ -13,8 +14,11 @@ const workflowStore = useWorkflowStore()
 const toastStore = useToastStore()
 
 const currentStages = ref<any[]>([])
+// Stage IDs the orchestrator can run; a workflow may only use these.
+const runnableStages = ref<string[]>([])
 
 onMounted(async () => {
+  api.getWorkflowStages().then((s) => (runnableStages.value = s)).catch(() => {})
   await workflowStore.fetchWorkflows()
   if (workflowStore.activeWorkflow) {
     currentStages.value = JSON.parse(JSON.stringify(workflowStore.activeWorkflow.stages))
@@ -30,8 +34,14 @@ function onSelectWorkflow(id: string) {
 
 function addStage() {
   const num = currentStages.value.length + 1
+  const used = new Set(currentStages.value.map((s) => s.id))
+  const id = runnableStages.value.find((s) => !used.has(s))
+  if (!id) {
+    toastStore.error('No stage left', 'Every stage the orchestrator can run is already in this workflow')
+    return
+  }
   currentStages.value.push({
-    id: `custom_stage_${num}`,
+    id,
     name: `Custom Stage ${num}`,
     type: 'automated',
     assigned_role: 'developer',
@@ -107,12 +117,20 @@ async function saveWorkflowChanges() {
   if (!workflowStore.activeWorkflow) return
   isSaving.value = true
   try {
-    const updated = {
-      ...workflowStore.activeWorkflow,
-      stages: currentStages.value,
+    const active = workflowStore.activeWorkflow
+    if (active.builtin) {
+      // Built-in workflows are read-only: save the changes as a custom copy.
+      let id = `${active.id}_custom`
+      for (let n = 2; workflowStore.workflows.some((w) => w.id === id); n++) id = `${active.id}_custom_${n}`
+      const copy = { ...active, id, name: `${active.name} (custom)`, builtin: false, stages: currentStages.value }
+      await workflowStore.createWorkflow(copy)
+      workflowStore.activeWorkflowId = id
+      toastStore.success('Workflow Saved', `Built-in workflows are read-only — saved as ${copy.name}`)
+    } else {
+      const updated = { ...active, stages: currentStages.value }
+      await workflowStore.updateWorkflow(updated)
+      toastStore.success('Workflow Saved', `${updated.name} updated with ${currentStages.value.length} stages`)
     }
-    await workflowStore.createWorkflow(updated)
-    toastStore.success('Workflow Saved', `${updated.name} updated with ${currentStages.value.length} stages`)
   } catch (err: any) {
     toastStore.error('Save Failed', err?.message || 'Server error')
   } finally {

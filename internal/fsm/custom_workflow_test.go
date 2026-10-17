@@ -2,6 +2,7 @@ package fsm
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,23 +14,67 @@ import (
 func TestWorkflowRegistry(t *testing.T) {
 	reg := NewWorkflowRegistry()
 
-	// Verify standard workflows exist
-	general, err := reg.Get("general-ai-sdlc")
-	if err != nil || general == nil {
-		t.Fatalf("expected general-ai-sdlc to exist: %v", err)
+	general, err := reg.Get(DefaultWorkflowID)
+	if err != nil || len(general.Stages) != 8 || !general.Builtin {
+		t.Fatalf("expected the 8-stage built-in %s: %v %+v", DefaultWorkflowID, err, general)
 	}
-	if len(general.Stages) != 9 {
-		t.Errorf("expected 9 stages in general AI SDLC, got %d", len(general.Stages))
+	for legacy, want := range map[string]int{"general-ai-sdlc": 8, "hotfix-fast-track": 3, "microservice-api": 4} {
+		def, err := reg.Get(legacy)
+		if err != nil || len(def.Stages) != want {
+			t.Fatalf("legacy ID %s should resolve to a %d-stage workflow: %v", legacy, want, err)
+		}
 	}
+	if err := reg.Add(&types.WorkflowDefinition{ID: "general-ai-sdlc", Stages: []types.WorkflowStage{{ID: "x"}}}, true); !errors.Is(err, ErrWorkflowExists) {
+		t.Fatalf("a legacy built-in ID must not be replaceable, got %v", err)
+	}
+	if err := reg.Add(&types.WorkflowDefinition{ID: DefaultWorkflowID, Stages: []types.WorkflowStage{{ID: "x"}}}, true); !errors.Is(err, ErrWorkflowExists) {
+		t.Fatalf("a built-in workflow must not be replaceable, got %v", err)
+	}
+	custom := &types.WorkflowDefinition{ID: "lean", Stages: []types.WorkflowStage{{ID: "a"}, {ID: "b"}}}
+	if err := reg.Add(custom, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Add(custom, false); !errors.Is(err, ErrWorkflowExists) {
+		t.Fatalf("duplicate custom ID without replace must conflict, got %v", err)
+	}
+	if err := reg.Add(&types.WorkflowDefinition{ID: "dup", Stages: []types.WorkflowStage{{ID: "a"}, {ID: "a"}}}, false); err == nil {
+		t.Fatal("duplicate stage IDs must be rejected")
+	}
+	list := reg.List()
+	if list[0].ID != DefaultWorkflowID || list[len(list)-1].ID != "lean" {
+		t.Fatalf("List should keep built-ins first in a stable order, got %v", list)
+	}
+	if c := reg.Custom(); len(c) != 1 || c[0].ID != "lean" {
+		t.Fatalf("Custom() = %+v", c)
+	}
+}
 
-	hotfix, err := reg.Get("hotfix-fast-track")
-	if err != nil || len(hotfix.Stages) != 3 {
-		t.Fatalf("expected 3 stages in hotfix-fast-track: %v", err)
+func TestCanTransitionMatchesLiveLifecycle(t *testing.T) {
+	allowed := [][2]types.TaskState{
+		{types.TaskStatePending, types.TaskStateRunning},
+		{types.TaskStateRunning, types.TaskStateWaitingGateApproval},
+		{types.TaskStateWaitingGateApproval, types.TaskStatePending},
+		{types.TaskStateWaitingGateApproval, types.TaskStateRunning},
+		{types.TaskStateWaitingGateApproval, types.TaskStateCompleted},
+		{types.TaskStateFailed, types.TaskStateRunning},
+		{types.TaskStateSuspended, types.TaskStateRunning},
+		{types.TaskStateRunning, types.TaskStateSuspended},
+		{types.TaskStateCompleted, types.TaskStatePending},
 	}
-
-	micro, err := reg.Get("microservice-api")
-	if err != nil || len(micro.Stages) != 4 {
-		t.Fatalf("expected 4 stages in microservice-api: %v", err)
+	for _, tr := range allowed {
+		if !CanTransition(tr[0], tr[1]) {
+			t.Errorf("%s → %s should be allowed", tr[0], tr[1])
+		}
+	}
+	denied := [][2]types.TaskState{
+		{types.TaskStatePending, types.TaskStateWaitingGateApproval}, // no output to review
+		{types.TaskStateRunning, types.TaskStateCompleted},           // must be reviewed first
+		{types.TaskStateCompleted, types.TaskStateRunning},
+	}
+	for _, tr := range denied {
+		if CanTransition(tr[0], tr[1]) {
+			t.Errorf("%s → %s should be denied", tr[0], tr[1])
+		}
 	}
 }
 
@@ -83,17 +128,15 @@ stages:
 
 func TestSliceHydrator(t *testing.T) {
 	reg := NewWorkflowRegistry()
-	general, _ := reg.Get("general-ai-sdlc")
+	general, _ := reg.Get(DefaultWorkflowID)
 	hydrator := NewSliceHydrator()
 
-	// Test 1: Mid-process slice from IMPLEMENTATION_GREEN to E2E_AUTOMATION
 	slice := &types.StageSlice{
-		StartStageID: "IMPLEMENTATION_GREEN",
-		HaltStageID:  "E2E_AUTOMATION",
+		StartStageID: "task_implementation",
+		HaltStageID:  "e2e_validation",
 		ProduceVideo: true,
 	}
 
-	// Without existing prerequisites (PRD.md, ATDD_SUITE.md, TECH_DOC_RFC.md, TASK_PLAN.md)
 	plan, err := hydrator.HydrateSlice(general, slice, nil)
 	if err != nil {
 		t.Fatalf("failed to hydrate slice: %v", err)
@@ -102,23 +145,17 @@ func TestSliceHydrator(t *testing.T) {
 	if len(plan.EffectiveStages) != 2 {
 		t.Fatalf("expected 2 effective stages, got %d", len(plan.EffectiveStages))
 	}
-	if plan.EffectiveStages[0].ID != "IMPLEMENTATION_GREEN" {
-		t.Errorf("expected first stage IMPLEMENTATION_GREEN, got %s", plan.EffectiveStages[0].ID)
-	}
-	if plan.EffectiveStages[1].ID != "E2E_AUTOMATION" {
-		t.Errorf("expected second stage E2E_AUTOMATION, got %s", plan.EffectiveStages[1].ID)
+	if plan.EffectiveStages[0].ID != "task_implementation" || plan.EffectiveStages[1].ID != "e2e_validation" {
+		t.Errorf("unexpected effective stages %+v", plan.EffectiveStages)
 	}
 	if !plan.RequiresVideo {
 		t.Errorf("expected ProduceVideo to be true")
 	}
-	if len(plan.MissingArtifacts) == 0 {
-		t.Errorf("expected missing prerequisite artifacts to be reported")
-	}
 
 	// Test 2: Invalid slice range (start after halt)
 	invalidSlice := &types.StageSlice{
-		StartStageID: "E2E_AUTOMATION",
-		HaltStageID:  "IMPLEMENTATION_GREEN",
+		StartStageID: "e2e_validation",
+		HaltStageID:  "task_implementation",
 	}
 	_, err = hydrator.HydrateSlice(general, invalidSlice, nil)
 	if err == nil {
@@ -128,7 +165,7 @@ func TestSliceHydrator(t *testing.T) {
 
 func TestFSMExecutionAndGateApproval(t *testing.T) {
 	reg := NewWorkflowRegistry()
-	general, _ := reg.Get("general-ai-sdlc")
+	general, _ := reg.Get(DefaultWorkflowID)
 	store := NewMemoryTaskStateStore()
 	ctx := context.Background()
 
@@ -136,104 +173,76 @@ func TestFSMExecutionAndGateApproval(t *testing.T) {
 		ID:             "task-fsm-test-1",
 		WorkflowID:     general.ID,
 		Title:          "Implement Order API",
-		AssignedRepos:  []string{"backend-api"},
-		CurrentStageID: "TECH_DOC_RFC", // Index 3
-		State:          types.TaskStateRunning,
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
+		CurrentStageID: "techdoc_rfc",
+		State:          types.TaskStatePending,
 	}
-
-	slicePlan := &SliceExecutionPlan{
-		WorkflowID:      general.ID,
-		OriginalStages:  general.Stages,
-		EffectiveStages: general.Stages,
-		StartIndex:      3,
-		HaltIndex:       8,
-	}
-
-	fsm, err := NewStateMachine(task, general, slicePlan, func(t *types.Task) error {
+	fsm, err := NewStateMachine(task, general, nil, func(t *types.Task) error {
 		return store.SaveTask(ctx, t)
 	}, nil)
 	if err != nil {
 		t.Fatalf("failed to create FSM: %v", err)
 	}
-
-	// 1. Advance from TECH_DOC_RFC (Index 3) to GATE_TECH_DOC_REVIEW (Index 4)
-	err = fsm.CompleteCurrentStage()
-	if err != nil {
-		t.Fatalf("failed to complete TECH_DOC_RFC: %v", err)
+	if err := fsm.CompleteCurrentStage(); err == nil {
+		t.Fatal("a stage that is not running cannot complete")
 	}
-
-	current := fsm.GetTask()
-	if current.CurrentStageID != "GATE_TECH_DOC_REVIEW" {
-		t.Errorf("expected stage GATE_TECH_DOC_REVIEW, got %s", current.CurrentStageID)
+	if err := fsm.Start(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if current.State != types.TaskStateWaitingGateApproval {
-		t.Errorf("expected state WAITING_GATE_APPROVAL, got %s", current.State)
+	if err := fsm.CompleteCurrentStage(); err != nil {
+		t.Fatal(err)
 	}
-
-	// 2. Reject early completion without approval
-	err = fsm.CompleteCurrentStage()
-	// Next stage should still be blocked or require explicit gate approval
-	// In our FSM, ApproveGate is required
-	err = fsm.ApproveGate("lead_architect", "Tech RFC reviewed and approved")
-	if err != nil {
+	if cur := fsm.GetTask(); cur.State != types.TaskStateWaitingGateApproval || cur.CurrentStageID != "techdoc_rfc" {
+		t.Fatalf("a finished stage awaits review of its own output, got %s on %s", cur.State, cur.CurrentStageID)
+	}
+	if err := fsm.ApproveGate("lead_architect", "Tech RFC reviewed and approved"); err != nil {
 		t.Fatalf("failed to approve gate: %v", err)
 	}
-
-	approvedTask := fsm.GetTask()
-	if approvedTask.CurrentStageID != "TASK_BREAKDOWN" {
-		t.Errorf("expected stage TASK_BREAKDOWN after approval, got %s", approvedTask.CurrentStageID)
+	approved := fsm.GetTask()
+	if approved.CurrentStageID != "task_breakdown" || approved.State != types.TaskStatePending {
+		t.Errorf("approval should move to task_breakdown PENDING, got %s %s", approved.CurrentStageID, approved.State)
 	}
-	if approvedTask.State != types.TaskStateRunning {
-		t.Errorf("expected state RUNNING, got %s", approvedTask.State)
-	}
-	if approvedTask.Metadata["gate_approved_by"] != "lead_architect" {
+	if approved.Metadata["gate_approved_by"] != "lead_architect" {
 		t.Errorf("metadata missing gate_approved_by")
+	}
+	if saved, _ := store.GetTask(ctx, task.ID); saved == nil || saved.CurrentStageID != "task_breakdown" {
+		t.Errorf("every transition is persisted")
 	}
 }
 
 func TestCrashRecovery(t *testing.T) {
 	reg := NewWorkflowRegistry()
-	general, _ := reg.Get("general-ai-sdlc")
 	store := NewMemoryTaskStateStore()
 	ctx := context.Background()
 
-	// Simulate active interrupted task
-	task := &types.Task{
-		ID:                "crash-recovery-task-99",
-		WorkflowID:        general.ID,
-		Title:             "Interrupted Task",
-		CurrentStageID:    "IMPLEMENTATION_GREEN",
-		CurrentStageIndex: 6,
-		State:             types.TaskStateRunning,
-		CreatedAt:         time.Now(),
-		UpdatedAt:         time.Now(),
+	seed := []*types.Task{
+		{ID: "crash-recovery-task-99", WorkflowID: "general-ai-sdlc", Title: "Interrupted Task", CurrentStageID: "task_implementation", State: types.TaskStateRunning},
+		{ID: "orphan", WorkflowID: "no-such-workflow", CurrentStageID: "task_implementation", State: types.TaskStatePending},
+		{ID: "done", WorkflowID: DefaultWorkflowID, CurrentStageID: "signoff_merge", State: types.TaskStateCompleted},
 	}
-	if err := store.SaveTask(ctx, task); err != nil {
-		t.Fatalf("failed to seed task: %v", err)
+	for _, task := range seed {
+		if err := store.SaveTask(ctx, task); err != nil {
+			t.Fatalf("failed to seed task: %v", err)
+		}
 	}
 
-	// Simulate daemon recovery
 	start := time.Now()
-	recovered, err := RecoverActiveTasks(ctx, store, reg)
-	duration := time.Since(start)
-
+	recovered, skipped, err := RecoverActiveTasks(ctx, store, reg)
 	if err != nil {
 		t.Fatalf("crash recovery failed: %v", err)
 	}
-	if len(recovered) != 1 {
-		t.Fatalf("expected 1 recovered task, got %d", len(recovered))
+	if time.Since(start) > 5*time.Second {
+		t.Errorf("crash recovery exceeded 5s RTO")
 	}
-	if duration > 5*time.Second {
-		t.Errorf("crash recovery exceeded 5s RTO: took %v", duration)
+	if len(recovered) != 1 || recovered[0].GetTask().ID != "crash-recovery-task-99" || recovered[0].GetTask().CurrentStageIndex != 4 {
+		t.Fatalf("expected the interrupted task restored at stage index 4, got %d", len(recovered))
 	}
-
-	recoveredTask := recovered[0].GetTask()
-	if recoveredTask.ID != "crash-recovery-task-99" {
-		t.Errorf("unexpected recovered task ID: %s", recoveredTask.ID)
+	if skipped["orphan"] == nil || len(skipped) != 1 {
+		t.Fatalf("a task with an unknown workflow must be reported, got %v", skipped)
 	}
-	if recoveredTask.CurrentStageID != "IMPLEMENTATION_GREEN" {
-		t.Errorf("expected stage IMPLEMENTATION_GREEN, got %s", recoveredTask.CurrentStageID)
+	if err := store.DeleteTask(ctx, "crash-recovery-task-99"); err != nil {
+		t.Fatal(err)
+	}
+	if active, _ := store.ListActiveTasks(ctx); len(active) != 1 {
+		t.Fatalf("deleted tasks are no longer active, got %d", len(active))
 	}
 }

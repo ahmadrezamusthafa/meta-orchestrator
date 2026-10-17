@@ -370,9 +370,15 @@ func (r *Router) openPullRequest(ctx context.Context, taskID string, body PullRe
 		desc = d.Body
 	}
 
+	if err := r.preCommitHooks(ctx, t, d.wt.Dir); err != nil {
+		return nil, err
+	}
 	committed, err := gitwt.CommitAll(ctx, d.wt.Checkout, d.wt.SubPath, d.CommitMsg)
 	if err != nil {
 		return nil, fmt.Errorf("commit pending changes: %s", redactURLCredentials(err.Error()))
+	}
+	if committed {
+		r.postCommitHooks(t, d.wt.Dir)
 	}
 	if err := gitwt.Push(ctx, d.wt.Checkout, d.SourceBranch); err != nil {
 		return nil, fmt.Errorf("%s", redactURLCredentials(err.Error()))

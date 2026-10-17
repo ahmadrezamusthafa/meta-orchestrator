@@ -47,6 +47,12 @@ export const useWorkflowStore = defineStore('workflows', () => {
     return res
   }
 
+  async function updateWorkflow(wf: WorkflowDefinition) {
+    const res = await api.updateWorkflow(wf)
+    await fetchWorkflows()
+    return res
+  }
+
   return {
     workflows,
     activeWorkflowId,
@@ -55,5 +61,6 @@ export const useWorkflowStore = defineStore('workflows', () => {
     isLoading,
     fetchWorkflows,
     createWorkflow,
+    updateWorkflow,
   }
 })

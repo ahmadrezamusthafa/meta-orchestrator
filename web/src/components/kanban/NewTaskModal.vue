@@ -68,6 +68,7 @@ async function analyze(complexity?: Complexity) {
       task_type: complexity ? analysis.value?.assessment.task_type : undefined,
       start_stage: slice ? startStage.value : undefined,
       halt_stage: slice ? haltStage.value : undefined,
+      workflow_id: selectedWorkflowId.value,
     })
     // Re-grading keeps the rows the operator already changed and refreshes the rest.
     const kept = new Map(planRows.value.filter((r) => r.overridden).map((r) => [r.stage_id, r]))
