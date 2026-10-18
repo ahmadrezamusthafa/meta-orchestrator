@@ -207,12 +207,15 @@ The daemon runs agents with shell access and holds provider and connector creden
 
 | Command | Description |
 |---|---|
-| `make dev` | **Runs both backend Go daemon (:8080) and frontend Vite server (:5173)** |
+| `make setup` | Installs required system tools (Node.js, Git, Claude Code) and all project dependencies |
+| `make install-deps` | Installs/updates Go and frontend dependencies (`npm install` in `web/`) |
+| `make dev` | **Runs both backend Go daemon (:8080) and frontend Vite server (:5173)** (auto-installs dependencies on first run) |
 | `make run-daemon` | Starts the Go daemon server in the current terminal |
-| `make run-web` | Starts the frontend Vite dev server in the current terminal |
+| `make run-web` | Starts the frontend Vite dev server in the current terminal (ensures npm dependencies installed) |
 | `make build` | Builds `bin/daemon` binary and compiles production frontend to `web/dist/` |
 | `make test` | Runs all backend Go test suites with race detector and checks Vue types |
 | `make clean` | Removes compiled binaries (`bin/`) and frontend build artifacts (`web/dist/`) |
+| `make clean-all` | Removes compiled binaries, build artifacts, and frontend `node_modules` |
 | `make help` | Displays available make targets |
 
 ---

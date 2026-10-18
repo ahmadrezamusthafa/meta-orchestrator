@@ -21,12 +21,21 @@ This runbook provides end-to-end instructions for launching, operating, steering
 
 You can run the platform using `make` commands or by starting the Go backend and Vue 3 frontend in separate terminals.
 
+### First Initialization on a New Device
+For a brand new device or fresh clone, you can run:
+```bash
+make setup
+```
+This automatically verifies and installs missing system tools (Node.js, Git, Claude Code CLI), downloads Go modules, and installs frontend npm packages.
+
 ### Method A: Single Command via `make dev` (Recommended)
 From the repository root:
 ```bash
 make dev
 ```
-This automatically starts:
+*(On first run, `make dev` automatically verifies your environment, downloads Go modules, and installs missing frontend dependencies via `npm install` before launching).*
+
+This starts:
 * **Go Daemon:** Listening on `http://127.0.0.1:8080` (REST API & WebSockets)
 * **Vite Dev Server:** Listening on `http://localhost:5173` (Frontend Mission Control)
 
