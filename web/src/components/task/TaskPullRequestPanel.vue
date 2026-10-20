@@ -7,7 +7,7 @@ import MarkdownView from '../common/MarkdownView.vue'
 import type { Task, PullRequestDraftDTO, PushDivergenceDTO } from '../../types'
 import { GitPullRequest, GitBranch, ExternalLink, Loader2, RefreshCw, AlertCircle, Copy, Check, Eye, Pencil, UploadCloud, CheckCircle2, AlertTriangle, X } from 'lucide-vue-next'
 
-const props = defineProps<{ task: Task }>()
+const props = defineProps<{ task: Task; /** bumped when the worktree's git state changes, also from outside the orchestrator */ revision?: number }>()
 const emit = defineEmits<{ (e: 'refresh'): void }>()
 const toast = useToastStore()
 
@@ -102,6 +102,24 @@ async function copy(text: string, key: string) {
 }
 
 watch(() => [props.task.state, props.task.current_stage_id, props.task.metadata?.pr_out_of_sync], () => load(true))
+
+// Git used outside the orchestrator (a terminal push, force push, rebase or commit) reloads the
+// tab at once. A push diagnosis that no longer matches the branch is closed, so nobody force-pushes
+// against a state that is gone.
+watch(() => props.revision, async () => {
+  if (opening.value) return // our own push; open() reloads when it finishes
+  await load(true)
+  const r = rejected.value
+  const d = drafts.value.find((x) => x.repo === r?.repo)
+  if (!r || !d) return
+  if (d.head_sha === r.divergence.local_sha && d.remote_sha === r.divergence.remote_sha) return
+  rejected.value = null
+  if (d.head_sha && d.head_sha === d.remote_sha) {
+    toast.success('Branch pushed outside meta-orchestrator', `origin/${r.divergence.branch} now matches the local branch.`)
+  } else {
+    toast.info('Branch changed outside meta-orchestrator', 'The push diagnosis was out of date and has been closed. Push again to re-check.')
+  }
+})
 onMounted(() => load())
 </script>
 

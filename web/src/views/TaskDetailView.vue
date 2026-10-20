@@ -3,6 +3,7 @@ import { safeHref } from '../utils/safeHref'
 import { ref, computed, onMounted, watch, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTaskStore } from '../stores/tasks'
+import { wsService } from '../services/websocket'
 import AgentConsole from '../components/console/AgentConsole.vue'
 import TaskReasoningPanel from '../components/task/TaskReasoningPanel.vue'
 import TaskScopePanel from '../components/task/TaskScopePanel.vue'
@@ -49,6 +50,8 @@ const activeTab = computed<Tab>({
 })
 
 const worktree = ref<TaskWorktreeDTO | null>(null)
+/** bumped whenever the worktree's git state changes, so the Changes and Pull Request tabs reload */
+const gitRevision = ref(0)
 const dependencies = ref<TaskDependencyInfoDTO | null>(null)
 const notFound = ref(false)
 const copied = ref('')
@@ -137,6 +140,33 @@ watch(() => [task.value?.state, task.value?.current_stage_id, (task.value?.assig
   if (before && task.value) loadContext()
 })
 watch(taskId, load)
+
+// The daemon watches every task worktree, so git run in a terminal (commit, rebase, push, force
+// push) reaches this view within seconds. Bursts (an agent editing many files) collapse into one
+// reload.
+let gitReload: ReturnType<typeof setTimeout> | null = null
+function gitChanged() {
+  if (gitReload) clearTimeout(gitReload)
+  gitReload = setTimeout(() => {
+    gitReload = null
+    gitRevision.value++
+    loadContext()
+  }, 400)
+}
+const unsubscribe = wsService.subscribe((event) => {
+  if (event.type === 'worktree.changed' && event.task_id === taskId.value) gitChanged()
+})
+// Coming back to the tab re-checks too, in case live updates were disconnected meanwhile.
+function onVisible() {
+  if (document.visibilityState === 'visible' && task.value) gitChanged()
+}
+document.addEventListener('visibilitychange', onVisible)
+onBeforeUnmount(() => {
+  unsubscribe()
+  document.removeEventListener('visibilitychange', onVisible)
+  if (gitReload) clearTimeout(gitReload)
+})
+
 onMounted(() => {
   taskStore.initWebSocketSync()
   load()
@@ -245,10 +275,10 @@ onMounted(() => {
         <TaskReasoningPanel v-else-if="activeTab === 'reasoning'" :task-id="taskId" @open-console="activeTab = 'console'" />
         <TaskScopePanel v-else-if="activeTab === 'scope'" :task="task" :dependencies="dependencies" @updated="load" />
         <TaskRoutingPanel v-else-if="activeTab === 'routing'" :task="task" @updated="load" />
-        <TaskDiffViewer v-else-if="activeTab === 'changes'" :task-id="taskId" :worktree="worktree" />
+        <TaskDiffViewer v-else-if="activeTab === 'changes'" :task-id="taskId" :worktree="worktree" :revision="gitRevision" />
         <TaskEvidencePanel v-else-if="activeTab === 'evidence'" :task="task" :read-only="!onEvidenceStage" @open-routing="activeTab = 'routing'"
           @open-console="activeTab = 'console'" />
-        <TaskPullRequestPanel v-else-if="activeTab === 'pr'" :task="task" @refresh="loadContext" />
+        <TaskPullRequestPanel v-else-if="activeTab === 'pr'" :task="task" :revision="gitRevision" @refresh="loadContext" />
         <TaskUATGuidePanel v-else-if="activeTab === 'uat'" :task="task" />
         <TaskWorkspacePanel v-else-if="activeTab === 'workspace'" :task="task" :worktree="worktree" :start-editing="route.query.edit === 'repos'"
           @open-changes="activeTab = 'changes'" @refresh="loadContext" />

@@ -172,6 +172,15 @@ export interface PullRequestDraftDTO {
   unpushed: number
   /** false until the branch has been pushed */
   on_remote: boolean
+  /** local HEAD and origin's tip of the branch (as of the last fetch or push) */
+  head_sha?: string
+  remote_sha?: string
+  /** HEAD has exactly origin's files even though the commits differ */
+  same_content?: boolean
+  /** the branch the worktree is on, when it is not source_branch */
+  checked_out_branch?: string
+  /** the other checkout that has source_branch */
+  held_by?: string
   /** whether the opened pull request has every change in the worktree */
   sync: 'not_opened' | 'in_sync' | 'out_of_sync'
   sync_note?: string

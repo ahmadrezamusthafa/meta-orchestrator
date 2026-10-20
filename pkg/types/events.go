@@ -21,6 +21,9 @@ const (
 	EventRouterMatrixUpdated EventType = "router.matrix.updated"
 	// EventToolchainNeeded asks the operator to install the tools a stage needs before it runs.
 	EventToolchainNeeded EventType = "toolchain.needed"
+	// EventWorktreeChanged reports that git state of a task worktree changed, inside the
+	// orchestrator or outside it (a terminal commit, rebase or push). Payload: {"repos": []string}.
+	EventWorktreeChanged EventType = "worktree.changed"
 )
 
 // OrchestratorEvent encapsulates payload broadcast via Redis and WebSocket.

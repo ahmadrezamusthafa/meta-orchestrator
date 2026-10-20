@@ -213,6 +213,7 @@ func NewRouter(cfg RouterConfig) *Router {
 	r.registerRoutes()
 	r.startBackgroundProcessMonitor()
 	r.startBoardPersister()
+	r.startGitWatcher()
 	if cfg.EnableJiraSync {
 		r.startJiraSync()
 	}

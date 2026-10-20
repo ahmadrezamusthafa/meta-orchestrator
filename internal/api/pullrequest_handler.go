@@ -40,6 +40,17 @@ type prDraft struct {
 	// Unpushed counts local commits origin does not have yet; OnRemote is false before the first push.
 	Unpushed int  `json:"unpushed"`
 	OnRemote bool `json:"on_remote"`
+	// HeadSHA and RemoteSHA are the local and origin tips; the UI compares them with a push
+	// diagnosis to notice git run outside the orchestrator.
+	HeadSHA   string `json:"head_sha,omitempty"`
+	RemoteSHA string `json:"remote_sha,omitempty"`
+	// SameContent is true when HEAD holds exactly the files of origin's branch, even if the
+	// commits differ (a rebase or squash done in another clone and force-pushed from there).
+	SameContent bool `json:"same_content"`
+	// CheckedOut names the branch the worktree is on when it is not SourceBranch (switched or
+	// renamed outside the orchestrator); HeldBy is the other work tree that has SourceBranch.
+	CheckedOut string `json:"checked_out_branch,omitempty"`
+	HeldBy     string `json:"held_by,omitempty"`
 	// Sync tells whether an opened pull request shows the worktree: prNotOpened, prInSync or
 	// prOutOfSync; SyncNote says what is missing from it.
 	Sync      string `json:"sync"`
@@ -159,6 +170,14 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 			}
 			d.Uncommitted, _ = gitwt.IsDirty(ctx, wt.Dir)
 			d.Unpushed, d.OnRemote, _ = gitwt.Unpushed(ctx, wt.Checkout, d.SourceBranch)
+			d.HeadSHA, d.RemoteSHA = gitwt.BranchTips(ctx, wt.Checkout, d.SourceBranch)
+			d.SameContent = d.OnRemote && gitwt.SameTree(ctx, wt.Checkout, "HEAD", d.RemoteSHA)
+			if cur := gitwt.CurrentBranch(ctx, wt.Checkout); cur != "" && cur != d.SourceBranch {
+				d.CheckedOut, d.HeldBy = cur, gitwt.CheckedOutAt(ctx, wt.Checkout, d.SourceBranch)
+				if d.Blocker == "" {
+					d.Blocker = branchBlocker(d)
+				}
+			}
 			in.Commits, _ = gitwt.CommitSubjects(ctx, wt.Checkout, wt.BaseRef, wt.SubPath)
 			if d.Uncommitted {
 				in.Commits = append(in.Commits, d.CommitMsg+" (pending — committed when the pull request is opened)")
@@ -193,6 +212,18 @@ const (
 func prSync(d *prDraft) (state, note string) {
 	if d.ExistingURL == "" {
 		return prNotOpened, ""
+	}
+	if d.SameContent && !d.Uncommitted {
+		note := "The pull request has every change in the worktree."
+		if d.Unpushed > 0 {
+			note = fmt.Sprintf("The pull request has the same files as the worktree; only the history differs (%d local "+
+				"commit(s) were replaced on origin, e.g. by a rebase pushed from another clone).", d.Unpushed)
+		}
+		return prInSync, note
+	}
+	if d.CheckedOut != "" {
+		return prOutOfSync, fmt.Sprintf("The worktree is on branch %s, but the pull request follows %s — its changes do not "+
+			"reach the pull request. %s", d.CheckedOut, d.SourceBranch, switchHint(d))
 	}
 	var missing []string
 	switch {
@@ -310,6 +341,7 @@ func (r *Router) handleTaskPullRequest(w http.ResponseWriter, req *http.Request,
 		defer cancel()
 		r.writeJSON(w, http.StatusOK, map[string]interface{}{"task_id": t.ID, "stage_ready": prAllowed(t), "drafts": r.buildPRDrafts(ctx, t)})
 		go r.notePRSync(t.ID, "") // the worktree may have changed outside an agent turn; keep the tab badge current
+		r.fetchTaskBranches(t.ID) // pushes from another clone show up through the git watcher
 	case http.MethodPost:
 		var body PullRequestRequest
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -507,6 +539,20 @@ func dependencyBlocker(deps map[string]int) string {
 	return "the branch commits installed dependencies: " + strings.Join(limit(dirs, 5), ", ") + ". They are local tool " +
 		"output, not part of the change — ask the agent to take them out of the branch's commits (keep the files on disk), " +
 		"then open the pull request"
+}
+
+// branchBlocker explains why a worktree on another branch cannot update the task's pull request.
+func branchBlocker(d *prDraft) string {
+	return fmt.Sprintf("the worktree is on branch %s, not the task branch %s (switched or renamed outside the orchestrator). %s",
+		d.CheckedOut, d.SourceBranch, switchHint(d))
+}
+
+func switchHint(d *prDraft) string {
+	hint := fmt.Sprintf("Switch the worktree back with `git -C %s switch %s`", d.wt.Checkout, d.SourceBranch)
+	if d.HeldBy != "" {
+		hint += fmt.Sprintf(" after moving %s off it (git allows a branch in one checkout at a time)", d.HeldBy)
+	}
+	return hint + "."
 }
 
 // conflictBlocker explains why a pull request cannot be opened while a conflict is unfinished.

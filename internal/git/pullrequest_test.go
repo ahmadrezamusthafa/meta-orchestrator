@@ -156,3 +156,102 @@ func TestForeignRemoteCommitsBlockSafeForce(t *testing.T) {
 		t.Fatalf("foreign commit: %+v", d)
 	}
 }
+
+func TestStateSignatureFollowsGitUsedOutsideTheOrchestrator(t *testing.T) {
+	ctx := context.Background()
+	origin := t.TempDir()
+	gitT(t, origin, "init", "-q", "--bare")
+	dir := newRepo(t)
+	gitT(t, dir, "remote", "add", "origin", origin)
+	gitT(t, dir, "checkout", "-q", "-b", "feat/x")
+	commitFile(t, dir, "a.go", "feat: a")
+
+	sig := func() string {
+		t.Helper()
+		s, err := StateSignature(ctx, dir, "feat/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	prev := sig()
+	if sig() != prev {
+		t.Fatal("an untouched checkout must keep its signature")
+	}
+	steps := []struct {
+		name string
+		do   func()
+	}{
+		{"push", func() { gitT(t, dir, "push", "-q", "-u", "origin", "feat/x") }},
+		{"edit", func() { _ = os.WriteFile(filepath.Join(dir, "a.go"), []byte("package app // edited\n"), 0o644) }},
+		{"commit", func() { gitT(t, dir, "commit", "-q", "-am", "feat: edit") }},
+		{"amend", func() { gitT(t, dir, "commit", "-q", "--amend", "-m", "feat: edit (amended)") }},
+		{"force push", func() { gitT(t, dir, "push", "-q", "-f", "origin", "feat/x") }},
+		{"reset", func() { gitT(t, dir, "reset", "-q", "--hard", "HEAD~1") }},
+	}
+	for _, s := range steps {
+		s.do()
+		now := sig()
+		if now == prev {
+			t.Fatalf("%s did not change the signature", s.name)
+		}
+		prev = now
+	}
+
+	// A push from another clone reaches the checkout through FetchBranch.
+	other := t.TempDir()
+	gitT(t, other, "clone", "-q", "-b", "feat/x", origin, ".")
+	commitFile(t, other, "c.go", "fix: elsewhere")
+	gitT(t, other, "push", "-q", "origin", "feat/x")
+	if sig() != prev {
+		t.Fatal("nothing local changed before the fetch")
+	}
+	if err := FetchBranch(ctx, dir, "feat/x"); err != nil {
+		t.Fatal(err)
+	}
+	if sig() == prev {
+		t.Fatal("a fetched remote push must change the signature")
+	}
+	if err := FetchBranch(ctx, dir, "feat/never-pushed"); err != nil {
+		t.Fatalf("a branch origin lacks is not an error: %v", err)
+	}
+}
+
+// Mirrors a rebase done in the main checkout and force-pushed from there, while the task worktree
+// was left on a renamed copy of the branch.
+func TestBranchRenamedAndRewrittenInAnotherCheckout(t *testing.T) {
+	ctx := context.Background()
+	origin := t.TempDir()
+	gitT(t, origin, "init", "-q", "--bare")
+	main := newRepo(t)
+	gitT(t, main, "remote", "add", "origin", origin)
+	gitT(t, main, "push", "-q", "origin", "master")
+	wt := filepath.Join(t.TempDir(), "wt")
+	gitT(t, main, "worktree", "add", "-q", "-b", "feat/x", wt, "master")
+	commitFile(t, wt, "a.go", "feat: a")
+	gitT(t, wt, "push", "-q", "-u", "origin", "feat/x")
+
+	gitT(t, wt, "commit", "-q", "--amend", "-m", "feat: a (squashed)") // the worktree's own rewrite
+	gitT(t, wt, "branch", "-m", "feat/x", "feat/x-BACK")
+	gitT(t, main, "branch", "feat/x", "origin/feat/x")
+	gitT(t, main, "checkout", "-q", "feat/x")
+	gitT(t, main, "commit", "-q", "--amend", "-m", "feat: a (reworded)")
+	gitT(t, main, "push", "-q", "-f", "origin", "feat/x")
+
+	if b := CurrentBranch(ctx, wt); b != "feat/x-BACK" {
+		t.Fatalf("CurrentBranch = %q", b)
+	}
+	if at := CheckedOutAt(ctx, wt, "feat/x"); filepath.Base(at) != filepath.Base(main) {
+		t.Fatalf("feat/x should be reported as checked out in the main checkout, got %q", at)
+	}
+	if at := CheckedOutAt(ctx, wt, "feat/x-BACK"); at != "" {
+		t.Fatalf("the worktree's own branch is not held elsewhere, got %q", at)
+	}
+	if !SameTree(ctx, wt, "HEAD", "origin/feat/x") {
+		t.Fatal("both rewrites hold the same files")
+	}
+	commitFile(t, wt, "b.go", "feat: b")
+	if SameTree(ctx, wt, "HEAD", "origin/feat/x") {
+		t.Fatal("a new file makes the trees differ")
+	}
+}
