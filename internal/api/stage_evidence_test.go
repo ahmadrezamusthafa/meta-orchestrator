@@ -319,7 +319,7 @@ func TestEvidenceIsPlannedFromTheSpecAndReportsCoverage(t *testing.T) {
 	stub.mu.Unlock()
 	for _, want := range []string{"Prove that every flow this change touches works end to end", "scheduled jobs and schedulers", "`watch`, `expect_log`", filepath.Join(adir, "PRD.md"),
 		"#### RF-TC-001 — Finance refunds a paid invoice (P1, WEB)", "1. The invoice shows Refunded", "`flow` — FLOW-1", "set \"blocked\"",
-		"record the presentation", "--summary"} {
+		"record the presentation", "--summary", "signs in once, off camera", "--session <name> --explore <path>"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("brief is missing %q:\n%s", want, prompt)
 		}

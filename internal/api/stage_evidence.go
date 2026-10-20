@@ -64,6 +64,7 @@ type evidencePrep struct {
 	Dir        string // evidence directory (absolute)
 	Recorder   string // command that records one case, for the built-in skill
 	Presenter  string // command that records the presentation video, for the built-in skill
+	Explorer   string // command that signs in as a session and lists what is on pages of the app, for the built-in skill
 	RecorderOK bool   // playwright-core is installed for the built-in recorder
 }
 
@@ -110,6 +111,7 @@ func (r *Router) prepareEvidence(ctx context.Context, task *types.Task) (p *evid
 		base = "EVIDENCE_PLAYWRIGHT_DIR=" + shellQuote(pwDir) + " " + base
 	}
 	p.Recorder, p.Presenter = base+" --case <id>", base+" --summary"
+	p.Explorer = base + " --session <name> --explore <path>"
 	p.RecorderOK = err == nil
 	if err != nil {
 		notes = append(notes, fmt.Sprintf("⚠ The evidence recorder could not install Playwright (%v). The agent still runs the tests completely "+
@@ -154,6 +156,10 @@ func (r *Router) evidenceBrief(task *types.Task, p *evidencePrep) string {
 	b.WriteString("- Run the complete test suites of every repository you changed, for real. Fix what your change broke and re-run until they pass; " +
 		"a failure that also happens without your change is pre-existing — keep it and say so. Never report a result you did not run.\n")
 	if p.Builtin {
+		b.WriteString("- An app behind a login (a dashboard, a frontend): define each test user as a session in the storyboard's \"sessions\" so it signs in " +
+			"once, off camera, and every case starts signed in on the screen under test (and its API calls are signed too) — see Sessions in the skill.\n")
+		fmt.Fprintf(&b, "- Before writing the steps, explore every screen the cases pass through, signed in, to take real targets from it "+
+			"(repeat --explore for several pages): %s\n", p.Explorer)
 		fmt.Fprintf(&b, "- Record one case per call (timeout 600000 ms): %s\n", p.Recorder)
 		fmt.Fprintf(&b, "- When every case is recorded, record the presentation — one video that presents the whole evidence to the reviewer "+
 			"(verdict, spec coverage, a chapter per case with its key steps, results) — and again after any re-take (timeout 600000 ms): %s\n", p.Presenter)
