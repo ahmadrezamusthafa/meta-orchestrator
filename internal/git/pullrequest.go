@@ -3,6 +3,7 @@ package git
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os/exec"
@@ -103,10 +104,28 @@ func CommitAll(ctx context.Context, dir, pathspec, message string) (bool, error)
 
 // Push publishes branch to origin and sets it as the upstream. The operator's own git
 // credentials (SSH agent or credential helper) are used; nothing is passed on the command line.
+// A push origin refuses because the branch history diverged (e.g. after a rebase) fails with
+// ErrPushRejected, so the caller can diagnose it and offer ForcePushWithLease.
 func Push(ctx context.Context, dir, branch string) error {
+	return push(ctx, dir, "-u", "origin", branch)
+}
+
+// ForcePushWithLease overwrites origin's branch only while it still points at expectSHA, the
+// commit the operator reviewed; anything pushed there since makes the push fail instead.
+func ForcePushWithLease(ctx context.Context, dir, branch, expectSHA string) error {
+	if expectSHA == "" {
+		return fmt.Errorf("a force push needs the remote commit it replaces")
+	}
+	return push(ctx, dir, "--force-with-lease=refs/heads/"+branch+":"+expectSHA, "-u", "origin", branch)
+}
+
+// ErrPushRejected marks a push origin refused because it is not a fast-forward.
+var ErrPushRejected = errors.New("push rejected: the remote branch has commits the local branch does not")
+
+func push(ctx context.Context, dir string, args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, pushTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "push", "-u", "origin", branch)
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir, "push"}, args...)...)
 	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0") // never hang on a password prompt
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -115,9 +134,116 @@ func Push(ctx context.Context, dir, branch string) error {
 		if msg == "" {
 			msg = err.Error()
 		}
+		if nonFastForward(msg) {
+			return fmt.Errorf("git push: %w: %s", ErrPushRejected, msg)
+		}
 		return fmt.Errorf("git push: %s", msg)
 	}
 	return nil
+}
+
+// nonFastForward recognizes git's refusal to replace remote history. A stale lease is not one:
+// it means the remote moved after the operator reviewed it.
+func nonFastForward(stderr string) bool {
+	if strings.Contains(stderr, "stale info") {
+		return false
+	}
+	return strings.Contains(stderr, "non-fast-forward") || (strings.Contains(stderr, "[rejected]") && strings.Contains(stderr, "fetch first"))
+}
+
+// RemoteCommit is a commit on origin's branch that HEAD lacks.
+type RemoteCommit struct {
+	SHA     string `json:"sha"`
+	Subject string `json:"subject"`
+	Author  string `json:"author"`
+	// Rewritten is true when HEAD holds the same patch under another commit (a rebased copy),
+	// so overwriting the remote loses nothing.
+	Rewritten bool `json:"rewritten"`
+}
+
+// Divergence explains how a local branch and origin's copy of it parted.
+type Divergence struct {
+	Branch      string         `json:"branch"`
+	RemoteSHA   string         `json:"remote_sha"` // origin's tip when diagnosed: the force-push lease
+	LocalSHA    string         `json:"local_sha"`
+	LocalOnly   int            `json:"local_only"` // commits HEAD has that origin lacks
+	RemoteOnly  []RemoteCommit `json:"remote_only"`
+	Foreign     int            `json:"foreign"` // remote-only commits with no copy in HEAD: lost on a force push
+	MergeBase   string         `json:"merge_base,omitempty"`
+	SafeToForce bool           `json:"safe_to_force"`
+	Explanation string         `json:"explanation"`
+}
+
+// Diverge fetches origin's branch and compares it with HEAD. Remote-only commits whose patch
+// HEAD already carries (git cherry) are the old copies a rebase or amend replaced; any other
+// remote-only commit is someone else's work that a force push would discard.
+func Diverge(ctx context.Context, dir, branch string) (Divergence, error) {
+	d := Divergence{Branch: branch}
+	if _, err := run(ctx, dir, "fetch", "-q", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch); err != nil {
+		return d, err
+	}
+	remote := "refs/remotes/origin/" + branch
+	out, err := run(ctx, dir, "rev-parse", remote, "HEAD")
+	if err != nil {
+		return d, err
+	}
+	shas := strings.Fields(out)
+	if len(shas) != 2 {
+		return d, fmt.Errorf("could not resolve %s and HEAD", remote)
+	}
+	d.RemoteSHA, d.LocalSHA = shas[0], shas[1]
+	if out, err := run(ctx, dir, "merge-base", remote, "HEAD"); err == nil {
+		d.MergeBase = strings.TrimSpace(out)
+	}
+	if out, err := run(ctx, dir, "rev-list", "--count", remote+"..HEAD"); err == nil {
+		d.LocalOnly, _ = strconv.Atoi(strings.TrimSpace(out))
+	}
+
+	// `git cherry HEAD remote` lists remote-only commits; "-" marks a patch HEAD already has.
+	out, err = run(ctx, dir, "cherry", "HEAD", remote)
+	if err != nil {
+		return d, err
+	}
+	rewritten := map[string]bool{}
+	var order []string
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		order = append(order, f[1])
+		rewritten[f[1]] = f[0] == "-"
+	}
+	for _, sha := range order {
+		c := RemoteCommit{SHA: sha, Rewritten: rewritten[sha]}
+		if info, err := run(ctx, dir, "log", "-1", "--format=%an%x00%s", sha); err == nil {
+			if parts := strings.SplitN(strings.TrimSpace(info), "\x00", 2); len(parts) == 2 {
+				c.Author, c.Subject = parts[0], parts[1]
+			}
+		}
+		if !c.Rewritten {
+			d.Foreign++
+		}
+		d.RemoteOnly = append(d.RemoteOnly, c)
+	}
+	d.SafeToForce = d.Foreign == 0
+	d.Explanation = d.explain()
+	return d, nil
+}
+
+func (d Divergence) explain() string {
+	switch {
+	case len(d.RemoteOnly) == 0:
+		return fmt.Sprintf("origin/%s has nothing HEAD lacks; a plain push should succeed now.", d.Branch)
+	case d.Foreign == 0:
+		return fmt.Sprintf("The %d commit(s) only on origin/%s are earlier copies of commits HEAD already carries — the branch "+
+			"history was rewritten (rebase or amend). Pulling would merge the old and new copies and duplicate them; "+
+			"force-push with a lease instead.", len(d.RemoteOnly), d.Branch)
+	default:
+		return fmt.Sprintf("%d of the %d commit(s) only on origin/%s have no copy in HEAD — someone else may have pushed "+
+			"to the branch. A force push discards them; integrate them first unless you are sure they are obsolete.",
+			d.Foreign, len(d.RemoteOnly), d.Branch)
+	}
 }
 
 // Unpushed counts the commits on HEAD that origin's copy of branch does not have yet, as of the

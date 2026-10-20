@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -39,6 +40,17 @@ type prDraft struct {
 	// Unpushed counts local commits origin does not have yet; OnRemote is false before the first push.
 	Unpushed int  `json:"unpushed"`
 	OnRemote bool `json:"on_remote"`
+	// HeadSHA and RemoteSHA are the local and origin tips; the UI compares them with a push
+	// diagnosis to notice git run outside the orchestrator.
+	HeadSHA   string `json:"head_sha,omitempty"`
+	RemoteSHA string `json:"remote_sha,omitempty"`
+	// SameContent is true when HEAD holds exactly the files of origin's branch, even if the
+	// commits differ (a rebase or squash done in another clone and force-pushed from there).
+	SameContent bool `json:"same_content"`
+	// CheckedOut names the branch the worktree is on when it is not SourceBranch (switched or
+	// renamed outside the orchestrator); HeldBy is the other work tree that has SourceBranch.
+	CheckedOut string `json:"checked_out_branch,omitempty"`
+	HeldBy     string `json:"held_by,omitempty"`
 	// Sync tells whether an opened pull request shows the worktree: prNotOpened, prInSync or
 	// prOutOfSync; SyncNote says what is missing from it.
 	Sync      string `json:"sync"`
@@ -158,6 +170,14 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 			}
 			d.Uncommitted, _ = gitwt.IsDirty(ctx, wt.Dir)
 			d.Unpushed, d.OnRemote, _ = gitwt.Unpushed(ctx, wt.Checkout, d.SourceBranch)
+			d.HeadSHA, d.RemoteSHA = gitwt.BranchTips(ctx, wt.Checkout, d.SourceBranch)
+			d.SameContent = d.OnRemote && gitwt.SameTree(ctx, wt.Checkout, "HEAD", d.RemoteSHA)
+			if cur := gitwt.CurrentBranch(ctx, wt.Checkout); cur != "" && cur != d.SourceBranch {
+				d.CheckedOut, d.HeldBy = cur, gitwt.CheckedOutAt(ctx, wt.Checkout, d.SourceBranch)
+				if d.Blocker == "" {
+					d.Blocker = branchBlocker(d)
+				}
+			}
 			in.Commits, _ = gitwt.CommitSubjects(ctx, wt.Checkout, wt.BaseRef, wt.SubPath)
 			if d.Uncommitted {
 				in.Commits = append(in.Commits, d.CommitMsg+" (pending — committed when the pull request is opened)")
@@ -192,6 +212,18 @@ const (
 func prSync(d *prDraft) (state, note string) {
 	if d.ExistingURL == "" {
 		return prNotOpened, ""
+	}
+	if d.SameContent && !d.Uncommitted {
+		note := "The pull request has every change in the worktree."
+		if d.Unpushed > 0 {
+			note = fmt.Sprintf("The pull request has the same files as the worktree; only the history differs (%d local "+
+				"commit(s) were replaced on origin, e.g. by a rebase pushed from another clone).", d.Unpushed)
+		}
+		return prInSync, note
+	}
+	if d.CheckedOut != "" {
+		return prOutOfSync, fmt.Sprintf("The worktree is on branch %s, but the pull request follows %s — its changes do not "+
+			"reach the pull request. %s", d.CheckedOut, d.SourceBranch, switchHint(d))
 	}
 	var missing []string
 	switch {
@@ -288,6 +320,17 @@ type PullRequestRequest struct {
 	Repo  string `json:"repo"`
 	Title string `json:"title"`
 	Body  string `json:"body"`
+	// ForceWithLease is origin's branch tip the operator reviewed in the push-rejected dialog; when
+	// set the branch is force-pushed, but only while origin still points there.
+	ForceWithLease string `json:"force_with_lease,omitempty"`
+}
+
+// pushRejected is returned when origin refuses the push because the branch history diverged;
+// the operator decides from Divergence whether to force-push with a lease or cancel.
+type pushRejected struct{ Divergence gitwt.Divergence }
+
+func (e *pushRejected) Error() string {
+	return fmt.Sprintf("push rejected: %s and origin/%s have diverged. %s", e.Divergence.Branch, e.Divergence.Branch, e.Divergence.Explanation)
 }
 
 // handleTaskPullRequest serves GET (drafts) and POST (open) /api/v1/tasks/{id}/pull-request.
@@ -298,6 +341,7 @@ func (r *Router) handleTaskPullRequest(w http.ResponseWriter, req *http.Request,
 		defer cancel()
 		r.writeJSON(w, http.StatusOK, map[string]interface{}{"task_id": t.ID, "stage_ready": prAllowed(t), "drafts": r.buildPRDrafts(ctx, t)})
 		go r.notePRSync(t.ID, "") // the worktree may have changed outside an agent turn; keep the tab badge current
+		r.fetchTaskBranches(t.ID) // pushes from another clone show up through the git watcher
 	case http.MethodPost:
 		var body PullRequestRequest
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -305,6 +349,11 @@ func (r *Router) handleTaskPullRequest(w http.ResponseWriter, req *http.Request,
 			return
 		}
 		res, err := r.openPullRequest(req.Context(), t.ID, body)
+		var rejected *pushRejected
+		if errors.As(err, &rejected) {
+			r.writeJSON(w, http.StatusConflict, map[string]interface{}{"error": err.Error(), "push_rejected": rejected.Divergence})
+			return
+		}
 		if err != nil {
 			r.writeError(w, http.StatusConflict, err.Error())
 			return
@@ -380,8 +429,9 @@ func (r *Router) openPullRequest(ctx context.Context, taskID string, body PullRe
 	if committed {
 		r.postCommitHooks(t, d.wt.Dir)
 	}
-	if err := gitwt.Push(ctx, d.wt.Checkout, d.SourceBranch); err != nil {
-		return nil, fmt.Errorf("%s", redactURLCredentials(err.Error()))
+	forced, err := r.pushBranch(ctx, taskID, d, body.ForceWithLease)
+	if err != nil {
+		return nil, err
 	}
 	res, err := r.prClient.Open(ctx, d.Provider, creds, pullrequest.Request{Owner: d.remote.Owner, Repo: d.remote.Repo,
 		SourceBranch: d.SourceBranch, TargetBranch: d.TargetBranch, Title: title, Body: desc})
@@ -416,10 +466,55 @@ func (r *Router) openPullRequest(ctx context.Context, taskID string, body PullRe
 	if committed {
 		note += "\nPending edits were committed as \"" + d.CommitMsg + "\"."
 	}
+	if forced {
+		note += "\nThe rewritten branch was force-pushed with a lease on " + shortSHA(body.ForceWithLease) + "."
+	}
 	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: note})
 	r.notePRSync(taskID, "") // clears the out-of-sync flag
 	r.broadcastTask(r.taskSnapshot(taskID))
 	return &prOpened{Repo: d.Repo, URL: res.URL, Number: res.Number, Updated: res.Updated, Committed: committed}, nil
+}
+
+// pushBranch pushes the draft's branch, force-pushing with a lease when the operator confirmed
+// one. A non-fast-forward rejection is diagnosed and returned as *pushRejected; nothing is
+// forced without that confirmation. forced reports whether the remote history was replaced.
+func (r *Router) pushBranch(ctx context.Context, taskID string, d *prDraft, lease string) (forced bool, err error) {
+	if lease != "" {
+		if err := gitwt.ForcePushWithLease(ctx, d.wt.Checkout, d.SourceBranch, lease); err != nil {
+			return false, fmt.Errorf("force push refused — origin/%s changed after you reviewed it, review it again: %s",
+				d.SourceBranch, redactURLCredentials(err.Error()))
+		}
+		return true, nil
+	}
+	err = gitwt.Push(ctx, d.wt.Checkout, d.SourceBranch)
+	if err == nil || !errors.Is(err, gitwt.ErrPushRejected) {
+		if err != nil {
+			err = fmt.Errorf("%s", redactURLCredentials(err.Error()))
+		}
+		return false, err
+	}
+	div, derr := gitwt.Diverge(ctx, d.wt.Checkout, d.SourceBranch)
+	if derr != nil {
+		return false, fmt.Errorf("%s (diagnosing it failed: %s)", redactURLCredentials(err.Error()), redactURLCredentials(derr.Error()))
+	}
+	if len(div.RemoteOnly) == 0 { // origin caught up between the push and the fetch
+		if err := gitwt.Push(ctx, d.wt.Checkout, d.SourceBranch); err != nil {
+			return false, fmt.Errorf("%s", redactURLCredentials(err.Error()))
+		}
+		return false, nil
+	}
+	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
+		"⚠ Push of %s was rejected: origin has %d commit(s) the local branch lacks (%d rebased copies, %d not in the local branch). %s "+
+			"Nothing was force-pushed — confirm or cancel in the Pull Request tab.",
+		d.SourceBranch, len(div.RemoteOnly), len(div.RemoteOnly)-div.Foreign, div.Foreign, div.Explanation)})
+	return false, &pushRejected{Divergence: div}
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 10 {
+		return sha[:10]
+	}
+	return sha
 }
 
 // urlUserinfo matches the credentials part of a URL ("https://user:token@").
@@ -444,6 +539,20 @@ func dependencyBlocker(deps map[string]int) string {
 	return "the branch commits installed dependencies: " + strings.Join(limit(dirs, 5), ", ") + ". They are local tool " +
 		"output, not part of the change — ask the agent to take them out of the branch's commits (keep the files on disk), " +
 		"then open the pull request"
+}
+
+// branchBlocker explains why a worktree on another branch cannot update the task's pull request.
+func branchBlocker(d *prDraft) string {
+	return fmt.Sprintf("the worktree is on branch %s, not the task branch %s (switched or renamed outside the orchestrator). %s",
+		d.CheckedOut, d.SourceBranch, switchHint(d))
+}
+
+func switchHint(d *prDraft) string {
+	hint := fmt.Sprintf("Switch the worktree back with `git -C %s switch %s`", d.wt.Checkout, d.SourceBranch)
+	if d.HeldBy != "" {
+		hint += fmt.Sprintf(" after moving %s off it (git allows a branch in one checkout at a time)", d.HeldBy)
+	}
+	return hint + "."
 }
 
 // conflictBlocker explains why a pull request cannot be opened while a conflict is unfinished.

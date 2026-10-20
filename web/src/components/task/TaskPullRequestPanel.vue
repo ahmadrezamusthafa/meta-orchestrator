@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { safeHref } from '../../utils/safeHref'
 import { computed, onMounted, ref, watch } from 'vue'
-import { api } from '../../services/api'
+import { api, PushRejectedError } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import MarkdownView from '../common/MarkdownView.vue'
-import type { Task, PullRequestDraftDTO } from '../../types'
-import { GitPullRequest, GitBranch, ExternalLink, Loader2, RefreshCw, AlertCircle, Copy, Check, Eye, Pencil, UploadCloud, CheckCircle2 } from 'lucide-vue-next'
+import type { Task, PullRequestDraftDTO, PushDivergenceDTO } from '../../types'
+import { GitPullRequest, GitBranch, ExternalLink, Loader2, RefreshCw, AlertCircle, Copy, Check, Eye, Pencil, UploadCloud, CheckCircle2, AlertTriangle, X } from 'lucide-vue-next'
 
-const props = defineProps<{ task: Task }>()
+const props = defineProps<{ task: Task; /** bumped when the worktree's git state changes, also from outside the orchestrator */ revision?: number }>()
 const emit = defineEmits<{ (e: 'refresh'): void }>()
 const toast = useToastStore()
 
@@ -20,6 +20,8 @@ const body = ref('')
 const mode = ref<'preview' | 'edit'>('preview')
 const opening = ref(false)
 const copied = ref('')
+/** set when origin refused the push: the operator force-pushes with a lease or cancels */
+const rejected = ref<{ repo: string; divergence: PushDivergenceDTO } | null>(null)
 
 const draft = computed(() => drafts.value.find((d) => d.repo === selected.value) || drafts.value[0] || null)
 const running = computed(() => props.task.state === 'RUNNING')
@@ -55,22 +57,39 @@ function pick(repo: string) {
   adopt(draft.value)
 }
 
-async function open() {
+async function open(forceWithLease = '') {
   const d = draft.value
   if (!d || !d.can_create || opening.value) return
   opening.value = true
   try {
-    const res = await api.openPullRequest(props.task.id, { repo: d.repo, title: title.value, body: body.value })
+    const res = await api.openPullRequest(props.task.id, { repo: d.repo, title: title.value, body: body.value, force_with_lease: forceWithLease || undefined })
+    rejected.value = null
+    const pushed = forceWithLease ? 'Branch force-pushed with lease.' : 'Branch pushed.'
     toast.success(res.updated ? `Pull request #${res.number} updated` : `Pull request #${res.number} opened`,
-      res.committed ? 'Pending edits were committed and pushed.' : 'Branch pushed.')
+      res.committed ? `Pending edits were committed. ${pushed}` : pushed)
     await load()
     emit('refresh')
   } catch (err: any) {
-    toast.error('Could not open the pull request', err?.message || 'Unknown error')
+    if (err instanceof PushRejectedError) {
+      rejected.value = { repo: d.repo, divergence: err.divergence }
+      await load(true) // pending edits may have been committed before the push
+    } else {
+      rejected.value = null
+      toast.error('Could not open the pull request', err?.message || 'Unknown error')
+    }
   } finally {
     opening.value = false
   }
 }
+
+function forcePush() {
+  const r = rejected.value
+  if (!r) return
+  selected.value = r.repo
+  open(r.divergence.remote_sha)
+}
+
+const short = (sha: string) => sha.slice(0, 10)
 
 async function copy(text: string, key: string) {
   try {
@@ -83,6 +102,24 @@ async function copy(text: string, key: string) {
 }
 
 watch(() => [props.task.state, props.task.current_stage_id, props.task.metadata?.pr_out_of_sync], () => load(true))
+
+// Git used outside the orchestrator (a terminal push, force push, rebase or commit) reloads the
+// tab at once. A push diagnosis that no longer matches the branch is closed, so nobody force-pushes
+// against a state that is gone.
+watch(() => props.revision, async () => {
+  if (opening.value) return // our own push; open() reloads when it finishes
+  await load(true)
+  const r = rejected.value
+  const d = drafts.value.find((x) => x.repo === r?.repo)
+  if (!r || !d) return
+  if (d.head_sha === r.divergence.local_sha && d.remote_sha === r.divergence.remote_sha) return
+  rejected.value = null
+  if (d.head_sha && d.head_sha === d.remote_sha) {
+    toast.success('Branch pushed outside meta-orchestrator', `origin/${r.divergence.branch} now matches the local branch.`)
+  } else {
+    toast.info('Branch changed outside meta-orchestrator', 'The push diagnosis was out of date and has been closed. Push again to re-check.')
+  }
+})
 onMounted(() => load())
 </script>
 
@@ -183,7 +220,7 @@ onMounted(() => load())
 
           <div class="flex items-center gap-2 pt-1">
             <button v-if="edited" type="button" @click="adopt(draft)" class="text-xs text-slate-400 hover:text-slate-100">Reset to standard format</button>
-            <button type="button" @click="open" :disabled="!draft.can_create || opening || running"
+            <button type="button" @click="open()" :disabled="!draft.can_create || opening || running"
               :title="running ? 'Wait for the stage to finish' : draft.blocker || ''"
               class="ml-auto h-9 px-4 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
               <Loader2 v-if="opening" class="w-3.5 h-3.5 animate-spin" /><GitPullRequest v-else class="w-3.5 h-3.5" />
@@ -192,6 +229,73 @@ onMounted(() => load())
           </div>
         </section>
       </template>
+    </div>
+    <div v-if="rejected" class="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+      role="dialog" aria-modal="true" aria-labelledby="push-rejected-title" @click.self="!opening && (rejected = null)">
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden"
+        :class="rejected.divergence.safe_to_force ? 'ring-1 ring-amber-500/20' : 'ring-1 ring-rose-500/30'">
+        <div class="p-5 border-b border-slate-800/80 flex items-start justify-between bg-slate-950/40">
+          <div class="flex items-center gap-3">
+            <div class="p-2.5 rounded-xl border" :class="rejected.divergence.safe_to_force ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400'">
+              <AlertTriangle class="w-5 h-5" />
+            </div>
+            <div>
+              <h3 id="push-rejected-title" class="font-bold text-base text-white">Push rejected — branch history diverged</h3>
+              <p class="text-xs text-slate-400 mt-0.5 font-mono">{{ rejected.divergence.branch }}</p>
+            </div>
+          </div>
+          <button type="button" @click="rejected = null" :disabled="opening" aria-label="Cancel" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition">
+            <X class="w-5 h-5" />
+          </button>
+        </div>
+
+        <div class="p-5 space-y-4 text-xs">
+          <p class="text-slate-300 leading-relaxed">{{ rejected.divergence.explanation }}</p>
+
+          <dl class="grid grid-cols-2 gap-x-4 gap-y-1 p-3 rounded-xl bg-slate-950 border border-slate-800/80 font-mono text-[11px]">
+            <dt class="text-slate-500">local HEAD</dt><dd class="text-slate-200">{{ short(rejected.divergence.local_sha) }} · {{ rejected.divergence.local_only }} commit(s) origin lacks</dd>
+            <dt class="text-slate-500">origin/{{ rejected.divergence.branch }}</dt><dd class="text-slate-200">{{ short(rejected.divergence.remote_sha) }} · {{ rejected.divergence.remote_only.length }} commit(s) HEAD lacks</dd>
+            <template v-if="rejected.divergence.merge_base"><dt class="text-slate-500">merge base</dt><dd class="text-slate-200">{{ short(rejected.divergence.merge_base) }}</dd></template>
+          </dl>
+
+          <div class="space-y-1.5">
+            <div class="text-[11px] uppercase tracking-wide text-slate-500">Remote-only commits</div>
+            <ul class="max-h-48 overflow-y-auto rounded-xl border border-slate-800 divide-y divide-slate-800">
+              <li v-for="c in rejected.divergence.remote_only" :key="c.sha" class="px-3 py-2 flex items-start gap-2">
+                <span class="font-mono text-slate-400 flex-shrink-0">{{ short(c.sha) }}</span>
+                <span class="flex-1 min-w-0 text-slate-200 break-words">{{ c.subject }} <span class="text-slate-500">· {{ c.author }}</span></span>
+                <span v-if="c.rewritten" class="flex-shrink-0 px-1.5 py-0.5 rounded bg-emerald-950/60 border border-emerald-800/60 text-emerald-300 text-[10px]">rebased copy</span>
+                <span v-else class="flex-shrink-0 px-1.5 py-0.5 rounded bg-rose-950/60 border border-rose-800/60 text-rose-300 text-[10px]">lost on force push</span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="p-3 rounded-xl border text-[11px] leading-relaxed"
+            :class="rejected.divergence.safe_to_force ? 'bg-slate-950 border-slate-800 text-slate-400' : 'bg-rose-950/30 border-rose-800/60 text-rose-200'">
+            <template v-if="rejected.divergence.safe_to_force">
+              Do not pull: it would merge the old and rebased copies and duplicate the commits. Force push uses a lease on
+              <code class="font-mono text-slate-200">{{ short(rejected.divergence.remote_sha) }}</code> — it fails if anyone pushes to the branch in the meantime.
+            </template>
+            <template v-else>
+              {{ rejected.divergence.foreign }} commit(s) above exist only on origin. Force pushing deletes them from the branch. Cancel and ask
+              the agent to integrate them (e.g. rebase onto origin/{{ rejected.divergence.branch }}) unless you are sure they are obsolete.
+            </template>
+          </div>
+        </div>
+
+        <div class="p-4 border-t border-slate-800 bg-slate-950/60 flex items-center justify-end gap-2.5">
+          <button type="button" @click="rejected = null" :disabled="opening"
+            class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition disabled:opacity-50">
+            Cancel
+          </button>
+          <button type="button" @click="forcePush" :disabled="opening"
+            class="px-4 py-2 rounded-lg text-white text-xs font-semibold flex items-center gap-1.5 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            :class="rejected.divergence.safe_to_force ? 'bg-amber-600 hover:bg-amber-500' : 'bg-rose-600 hover:bg-rose-500'">
+            <Loader2 v-if="opening" class="w-3.5 h-3.5 animate-spin" /><UploadCloud v-else class="w-3.5 h-3.5" />
+            {{ rejected.divergence.safe_to_force ? 'Force push with lease' : 'Discard remote commits & force push' }}
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>

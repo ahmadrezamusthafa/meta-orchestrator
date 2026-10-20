@@ -11,6 +11,8 @@ import {
 const props = defineProps<{
   taskId: string
   worktree?: TaskWorktreeDTO | null
+  /** bumped when the worktree's git state changes, also from outside the orchestrator */
+  revision?: number
 }>()
 
 const MAX_RENDERED_LINES = 3000 // per file; larger diffs stay collapsed until asked for
@@ -170,6 +172,7 @@ const hunkText = (header: string) => header.replace(/^(@@[^@]*@@)(.*)$/, '$1  $2
 
 watch(against, load)
 watch(() => props.taskId, load)
+watch(() => props.revision, load)
 watch(selectedRepo, () => {
   collapsed.value = {}
   viewed.value = {}

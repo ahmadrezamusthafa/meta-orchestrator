@@ -11,7 +11,7 @@ import type {
   OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO, RoutePreviewDTO, TierAssignmentDTO,
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
   TaskActivityResponse, TaskChatResponse, TaskDiffDTO, DiffAgainst, TaskArtifactDTO,
-  PullRequestDraftDTO, PullRequestOpenedDTO, UATGuideStatusDTO, UATGuideSettings,
+  PullRequestDraftDTO, PullRequestOpenedDTO, PushDivergenceDTO, UATGuideStatusDTO, UATGuideSettings,
   TaskAnalysisDTO, TaskRoutingDTO, StageRoute, RouteMatrixCellDTO, TaskEvidenceDTO, EvidenceVerifyDTO,
   PackagesResponse, PackageVersions, PackageJob, PackageManual, PackageSetupResult,
   ProjectDependencies, DependencyInstallCommand
@@ -19,6 +19,16 @@ import type {
 
 
 const BASE_URL = '/api/v1'
+
+/** A push origin refused because the branch diverged; carries the diagnosis for the force-push dialog. */
+export class PushRejectedError extends Error {
+  readonly divergence: PushDivergenceDTO
+  constructor(message: string, divergence: PushDivergenceDTO) {
+    super(message)
+    this.divergence = divergence
+    this.name = 'PushRejectedError'
+  }
+}
 
 /** Reads a JSON answer, throwing the server's `error` text when the request failed. */
 async function readJSON<T>(res: Response, what: string): Promise<T> {
@@ -287,13 +297,15 @@ export const api = {
     return res.json()
   },
 
-  async openPullRequest(taskId: string, body: { repo: string; title: string; body: string }): Promise<PullRequestOpenedDTO> {
+  /** Throws PushRejectedError when origin refuses the push because the branch history diverged. */
+  async openPullRequest(taskId: string, body: { repo: string; title: string; body: string; force_with_lease?: string }): Promise<PullRequestOpenedDTO> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/pull-request`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
     const data = await res.json().catch(() => null)
+    if (res.status === 409 && data?.push_rejected) throw new PushRejectedError(data.error, data.push_rejected)
     if (!res.ok) throw new Error(data?.error || `Could not open the pull request for ${taskId}`)
     return data
   },

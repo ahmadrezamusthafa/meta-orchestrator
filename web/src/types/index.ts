@@ -172,11 +172,44 @@ export interface PullRequestDraftDTO {
   unpushed: number
   /** false until the branch has been pushed */
   on_remote: boolean
+  /** local HEAD and origin's tip of the branch (as of the last fetch or push) */
+  head_sha?: string
+  remote_sha?: string
+  /** HEAD has exactly origin's files even though the commits differ */
+  same_content?: boolean
+  /** the branch the worktree is on, when it is not source_branch */
+  checked_out_branch?: string
+  /** the other checkout that has source_branch */
+  held_by?: string
   /** whether the opened pull request has every change in the worktree */
   sync: 'not_opened' | 'in_sync' | 'out_of_sync'
   sync_note?: string
   can_create: boolean
   blocker?: string
+}
+
+/** A commit on origin's branch that the local branch lacks. */
+export interface RemoteCommitDTO {
+  sha: string
+  subject: string
+  author: string
+  /** the local branch carries the same patch under another commit (a rebased copy) */
+  rewritten: boolean
+}
+
+/** Why origin refused a push: the local branch and origin's copy diverged. */
+export interface PushDivergenceDTO {
+  branch: string
+  /** origin's tip when diagnosed — the lease a force push is bound to */
+  remote_sha: string
+  local_sha: string
+  local_only: number
+  remote_only: RemoteCommitDTO[]
+  /** remote-only commits with no copy locally: a force push discards them */
+  foreign: number
+  merge_base?: string
+  safe_to_force: boolean
+  explanation: string
 }
 
 export interface PullRequestOpenedDTO {
