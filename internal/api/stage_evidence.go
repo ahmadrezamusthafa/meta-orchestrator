@@ -127,6 +127,29 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// evidenceOffNote tells a resumed session, which may have been briefed with test evidence on an
+// earlier turn, that the operator turned evidence off.
+const evidenceOffNote = "\n\n## Test evidence is now off\nThe operator turned test evidence off for this stage. Ignore any earlier " +
+	"instruction in this conversation to record test evidence: do not run the evidence recorder, record videos, or write evidence.json, " +
+	"and leave out the \"## Test evidence\" report section. Still run the tests your change needs."
+
+// rememberEvidenceBrief records what the task's session now knows about test evidence: briefed
+// with ev's skill, or told it is off.
+func (r *Router) rememberEvidenceBrief(taskID string, ev *evidencePrep) {
+	h := r.console
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	c := h.get(taskID)
+	if c.sessionID == "" {
+		return
+	}
+	c.evidenceSession, c.evidenceSkill = c.sessionID, ""
+	if ev != nil {
+		c.evidenceSkill = ev.Skill.Name
+	}
+	h.markDirty(taskID)
+}
+
 // evidenceRunPrompt is the turn that records evidence for an implementation already in the
 // worktree (the operator pressed Record evidence): test and record, do not re-implement.
 func evidenceRunPrompt(t *types.Task, sameSession bool) string {
