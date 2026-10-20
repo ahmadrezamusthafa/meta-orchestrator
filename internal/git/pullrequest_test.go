@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,5 +76,83 @@ func TestUnpushedCountsCommitsOriginLacks(t *testing.T) {
 	}
 	if n, onRemote, err := Unpushed(ctx, dir, "feat/x"); err != nil || !onRemote || n != 2 {
 		t.Fatalf("two local commits: n=%d onRemote=%v err=%v", n, onRemote, err)
+	}
+}
+
+func commitFile(t *testing.T, dir, name, msg string) {
+	t.Helper()
+	_ = os.WriteFile(filepath.Join(dir, name), []byte("package app // "+msg+"\n"), 0o644)
+	gitT(t, dir, "add", name)
+	gitT(t, dir, "commit", "-q", "-m", msg)
+}
+
+func TestRebasedBranchIsDiagnosedAndForcePushedWithLease(t *testing.T) {
+	ctx := context.Background()
+	origin := t.TempDir()
+	gitT(t, origin, "init", "-q", "--bare")
+	dir := newRepo(t)
+	gitT(t, dir, "remote", "add", "origin", origin)
+	gitT(t, dir, "push", "-q", "origin", "master")
+	gitT(t, dir, "checkout", "-q", "-b", "feat/x")
+	commitFile(t, dir, "a.go", "feat: a")
+	commitFile(t, dir, "b.go", "feat: b")
+	if err := Push(ctx, dir, "feat/x"); err != nil {
+		t.Fatal(err)
+	}
+
+	// master moves on and the branch is rebased onto it: same patches, new commits.
+	gitT(t, dir, "checkout", "-q", "master")
+	commitFile(t, dir, "m.go", "chore: m")
+	gitT(t, dir, "push", "-q", "origin", "master")
+	gitT(t, dir, "checkout", "-q", "feat/x")
+	gitT(t, dir, "rebase", "-q", "master")
+
+	err := Push(ctx, dir, "feat/x")
+	if !errors.Is(err, ErrPushRejected) {
+		t.Fatalf("push after a rebase should be rejected as non-fast-forward, got %v", err)
+	}
+	d, err := Diverge(ctx, dir, "feat/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.RemoteOnly) != 2 || d.Foreign != 0 || !d.SafeToForce || d.LocalOnly != 3 {
+		t.Fatalf("rebased copies: %+v", d)
+	}
+	if err := ForcePushWithLease(ctx, dir, "feat/x", "0000000000000000000000000000000000000000"); err == nil || errors.Is(err, ErrPushRejected) {
+		t.Fatalf("a stale lease must fail without being reported as a plain rejection, got %v", err)
+	}
+	if err := ForcePushWithLease(ctx, dir, "feat/x", d.RemoteSHA); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, _ := Unpushed(ctx, dir, "feat/x"); n != 0 {
+		t.Fatalf("after the force push %d commit(s) are still unpushed", n)
+	}
+}
+
+func TestForeignRemoteCommitsBlockSafeForce(t *testing.T) {
+	ctx := context.Background()
+	origin := t.TempDir()
+	gitT(t, origin, "init", "-q", "--bare")
+	dir := newRepo(t)
+	gitT(t, dir, "remote", "add", "origin", origin)
+	gitT(t, dir, "checkout", "-q", "-b", "feat/x")
+	commitFile(t, dir, "a.go", "feat: a")
+	gitT(t, dir, "push", "-q", "-u", "origin", "feat/x")
+
+	other := t.TempDir()
+	gitT(t, other, "clone", "-q", "-b", "feat/x", origin, ".")
+	commitFile(t, other, "c.go", "fix: teammate change")
+	gitT(t, other, "push", "-q", "origin", "feat/x")
+
+	commitFile(t, dir, "b.go", "feat: b")
+	if err := Push(ctx, dir, "feat/x"); !errors.Is(err, ErrPushRejected) {
+		t.Fatalf("want rejection, got %v", err)
+	}
+	d, err := Diverge(ctx, dir, "feat/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Foreign != 1 || d.SafeToForce || len(d.RemoteOnly) != 1 || d.RemoteOnly[0].Subject != "fix: teammate change" {
+		t.Fatalf("foreign commit: %+v", d)
 	}
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -288,6 +289,17 @@ type PullRequestRequest struct {
 	Repo  string `json:"repo"`
 	Title string `json:"title"`
 	Body  string `json:"body"`
+	// ForceWithLease is origin's branch tip the operator reviewed in the push-rejected dialog; when
+	// set the branch is force-pushed, but only while origin still points there.
+	ForceWithLease string `json:"force_with_lease,omitempty"`
+}
+
+// pushRejected is returned when origin refuses the push because the branch history diverged;
+// the operator decides from Divergence whether to force-push with a lease or cancel.
+type pushRejected struct{ Divergence gitwt.Divergence }
+
+func (e *pushRejected) Error() string {
+	return fmt.Sprintf("push rejected: %s and origin/%s have diverged. %s", e.Divergence.Branch, e.Divergence.Branch, e.Divergence.Explanation)
 }
 
 // handleTaskPullRequest serves GET (drafts) and POST (open) /api/v1/tasks/{id}/pull-request.
@@ -305,6 +317,11 @@ func (r *Router) handleTaskPullRequest(w http.ResponseWriter, req *http.Request,
 			return
 		}
 		res, err := r.openPullRequest(req.Context(), t.ID, body)
+		var rejected *pushRejected
+		if errors.As(err, &rejected) {
+			r.writeJSON(w, http.StatusConflict, map[string]interface{}{"error": err.Error(), "push_rejected": rejected.Divergence})
+			return
+		}
 		if err != nil {
 			r.writeError(w, http.StatusConflict, err.Error())
 			return
@@ -380,8 +397,9 @@ func (r *Router) openPullRequest(ctx context.Context, taskID string, body PullRe
 	if committed {
 		r.postCommitHooks(t, d.wt.Dir)
 	}
-	if err := gitwt.Push(ctx, d.wt.Checkout, d.SourceBranch); err != nil {
-		return nil, fmt.Errorf("%s", redactURLCredentials(err.Error()))
+	forced, err := r.pushBranch(ctx, taskID, d, body.ForceWithLease)
+	if err != nil {
+		return nil, err
 	}
 	res, err := r.prClient.Open(ctx, d.Provider, creds, pullrequest.Request{Owner: d.remote.Owner, Repo: d.remote.Repo,
 		SourceBranch: d.SourceBranch, TargetBranch: d.TargetBranch, Title: title, Body: desc})
@@ -416,10 +434,55 @@ func (r *Router) openPullRequest(ctx context.Context, taskID string, body PullRe
 	if committed {
 		note += "\nPending edits were committed as \"" + d.CommitMsg + "\"."
 	}
+	if forced {
+		note += "\nThe rewritten branch was force-pushed with a lease on " + shortSHA(body.ForceWithLease) + "."
+	}
 	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: note})
 	r.notePRSync(taskID, "") // clears the out-of-sync flag
 	r.broadcastTask(r.taskSnapshot(taskID))
 	return &prOpened{Repo: d.Repo, URL: res.URL, Number: res.Number, Updated: res.Updated, Committed: committed}, nil
+}
+
+// pushBranch pushes the draft's branch, force-pushing with a lease when the operator confirmed
+// one. A non-fast-forward rejection is diagnosed and returned as *pushRejected; nothing is
+// forced without that confirmation. forced reports whether the remote history was replaced.
+func (r *Router) pushBranch(ctx context.Context, taskID string, d *prDraft, lease string) (forced bool, err error) {
+	if lease != "" {
+		if err := gitwt.ForcePushWithLease(ctx, d.wt.Checkout, d.SourceBranch, lease); err != nil {
+			return false, fmt.Errorf("force push refused — origin/%s changed after you reviewed it, review it again: %s",
+				d.SourceBranch, redactURLCredentials(err.Error()))
+		}
+		return true, nil
+	}
+	err = gitwt.Push(ctx, d.wt.Checkout, d.SourceBranch)
+	if err == nil || !errors.Is(err, gitwt.ErrPushRejected) {
+		if err != nil {
+			err = fmt.Errorf("%s", redactURLCredentials(err.Error()))
+		}
+		return false, err
+	}
+	div, derr := gitwt.Diverge(ctx, d.wt.Checkout, d.SourceBranch)
+	if derr != nil {
+		return false, fmt.Errorf("%s (diagnosing it failed: %s)", redactURLCredentials(err.Error()), redactURLCredentials(derr.Error()))
+	}
+	if len(div.RemoteOnly) == 0 { // origin caught up between the push and the fetch
+		if err := gitwt.Push(ctx, d.wt.Checkout, d.SourceBranch); err != nil {
+			return false, fmt.Errorf("%s", redactURLCredentials(err.Error()))
+		}
+		return false, nil
+	}
+	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
+		"⚠ Push of %s was rejected: origin has %d commit(s) the local branch lacks (%d rebased copies, %d not in the local branch). %s "+
+			"Nothing was force-pushed — confirm or cancel in the Pull Request tab.",
+		d.SourceBranch, len(div.RemoteOnly), len(div.RemoteOnly)-div.Foreign, div.Foreign, div.Explanation)})
+	return false, &pushRejected{Divergence: div}
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 10 {
+		return sha[:10]
+	}
+	return sha
 }
 
 // urlUserinfo matches the credentials part of a URL ("https://user:token@").
