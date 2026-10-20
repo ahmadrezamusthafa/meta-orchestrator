@@ -277,6 +277,9 @@ func (r *Router) executeStage(run *stageRun) {
 	history := chatHistory(c.entries)
 	sessionID := c.sessionID
 	canContinue := sessionID != "" && c.sessionStage == task.CurrentStageID
+	// What the session was already told about test evidence; unknown for sessions from before this was tracked.
+	evidenceKnown := sessionID != "" && c.evidenceSession == sessionID
+	briefedEvidence := c.evidenceSkill
 	r.console.mu.Unlock()
 
 	msgs := append([]llm.Message{{Role: llm.RoleSystem, Content: taskSystemPrompt(task, decision.Method) + r.stageContext(task) + r.stackBrief(task) + r.connectorsBrief(task)}}, history...)
@@ -351,6 +354,11 @@ func (r *Router) executeStage(run *stageRun) {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
 			"Test evidence is on for this stage: after implementing, the agent runs the tests completely and records a video per test case with %s into %s. "+
 				"Turn it off or pick another skill in the Routing tab.", ev.Skill.Name, ev.Dir)})
+	} else if sessionID != "" && task.CurrentStageID == evidenceStage && (!evidenceKnown || briefedEvidence != "") {
+		// The resumed session may hold an earlier turn's evidence brief: say it no longer applies.
+		prompt += evidenceOffNote
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: "Test evidence is off for this stage: " +
+			"the agent is told to skip recording, even where its session was briefed with evidence earlier. Turn it on in the Routing tab."})
 	}
 	if len(skills) > 0 {
 		// A continued session already holds the skills from the stage's first turn — except an
@@ -360,6 +368,9 @@ func (r *Router) executeStage(run *stageRun) {
 			if ev != nil {
 				prompt += r.evidenceBrief(task, ev)
 			}
+		} else if ev != nil && !(evidenceKnown && briefedEvidence == ev.Skill.Name) {
+			// Evidence was turned on, or its skill changed, after the session was briefed.
+			prompt += skillsBrief([]*types.UniversalSkillContract{ev.Skill}) + r.evidenceBrief(task, ev)
 		}
 		if attached := len(skills) - btoi(ev != nil && !wasAttached); attached > 0 {
 			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: fmt.Sprintf(
@@ -392,6 +403,9 @@ func (r *Router) executeStage(run *stageRun) {
 		TaskType: taskType, Messages: msgs, SessionID: sessionID, WorkDir: workDir, AddDirs: addDirs, MaxTokens: 8192,
 		PermissionMode: permission, Approver: guard.approver(r.approverFor(taskID, run.turnID, planExit)), OnTool: guard.onTool, OnDecision: guard.decided})
 	r.endTurn(taskID, run.turnID, resp, used)
+	if task.CurrentStageID == evidenceStage {
+		r.rememberEvidenceBrief(taskID, ev)
+	}
 	r.notePRSync(taskID, run.turnID)
 	if resp != nil && len(skills) > 0 {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: skillUsageReport(skills, resp.ToolCalls)})

@@ -198,6 +198,110 @@ func TestImplementationStageWithoutEvidenceWarnsAndDisabledSkipsIt(t *testing.T)
 	}
 }
 
+func TestTurningEvidenceOffTellsAContinuedSession(t *testing.T) {
+	stub := &evidenceStub{}
+	r, _ := evidenceRouter(t, stub)
+	model := r.strategyRouter.ModelOptions()[0].Model
+	r.mu.Lock()
+	r.tasks["TASK-E7"] = &types.Task{ID: "TASK-E7", Title: "Refund flow", CurrentStageID: "task_implementation", State: types.TaskStatePending,
+		AssignedRepos: []string{"backend-core"}, Metadata: map[string]string{"complexity": "LOW"},
+		RoutingPlan: []types.StageRoute{{StageID: "task_implementation", Method: "react", Model: model, Evidence: &types.StageEvidence{Disabled: true}}}}
+	r.mu.Unlock()
+	// The session's first turn was briefed with evidence on; the operator turned it off since.
+	r.console.mu.Lock()
+	c := r.console.get("TASK-E7")
+	c.sessionID, c.sessionStage = "sess-1", "task_implementation"
+	r.console.mu.Unlock()
+
+	if w := do(r, "POST", "/api/v1/tasks/TASK-E7/execute", ""); w.Code != 200 {
+		t.Fatalf("execute → %d %s", w.Code, w.Body.String())
+	}
+	waitState(t, r, "TASK-E7", types.TaskStateWaitingGateApproval)
+	waitIdleTask(t, r, "TASK-E7")
+
+	stub.mu.Lock()
+	prompt := stub.reqs[len(stub.reqs)-1].Messages[len(stub.reqs[len(stub.reqs)-1].Messages)-1].Content
+	stub.mu.Unlock()
+	if !strings.Contains(prompt, "Test evidence is now off") || strings.Contains(prompt, "## Test evidence (required") {
+		t.Fatalf("a continued session should be told evidence is off:\n%s", prompt)
+	}
+	if !strings.Contains(consoleText(r, "TASK-E7"), "Test evidence is off for this stage") {
+		t.Fatal("the console should say evidence is off")
+	}
+}
+
+// resumeImplementation continues the task's session ("sess-1") on the Implementation stage, with
+// the session's evidence brief state as given, and returns the turn's prompt.
+func resumeImplementation(t *testing.T, r *Router, stub *evidenceStub, taskID string, known bool, briefed string) string {
+	t.Helper()
+	r.mu.Lock()
+	r.tasks[taskID].State = types.TaskStatePending
+	r.mu.Unlock()
+	r.console.mu.Lock()
+	c := r.console.get(taskID)
+	c.sessionID, c.sessionStage, c.evidenceSession, c.evidenceSkill = "sess-1", "task_implementation", "", briefed
+	if known {
+		c.evidenceSession = "sess-1"
+	}
+	r.console.mu.Unlock()
+	if err := r.startStage(taskID, "resume", ""); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	waitState(t, r, taskID, types.TaskStateWaitingGateApproval)
+	waitIdleTask(t, r, taskID)
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	req := stub.reqs[len(stub.reqs)-1]
+	return req.Messages[len(req.Messages)-1].Content
+}
+
+func TestTurningEvidenceOnBriefsAContinuedSession(t *testing.T) {
+	stub := &evidenceStub{}
+	r, _ := evidenceRouter(t, stub)
+	model := r.strategyRouter.ModelOptions()[0].Model
+	r.mu.Lock()
+	r.tasks["TASK-E8"] = &types.Task{ID: "TASK-E8", Title: "Refund flow", CurrentStageID: "task_implementation",
+		AssignedRepos: []string{"backend-core"}, Metadata: map[string]string{"complexity": "LOW"},
+		RoutingPlan: []types.StageRoute{{StageID: "task_implementation", Method: "react", Model: model}}}
+	r.mu.Unlock()
+
+	// The session was told evidence is off; the operator turned it on since.
+	prompt := resumeImplementation(t, r, stub, "TASK-E8", true, "")
+	if !strings.Contains(prompt, "## Test evidence (required") || !strings.Contains(prompt, `<skill name="test-evidence-video"`) {
+		t.Fatalf("a continued session should be briefed when evidence is turned on:\n%s", prompt)
+	}
+	r.console.mu.Lock()
+	c := r.console.get("TASK-E8")
+	got := c.evidenceSession + "/" + c.evidenceSkill
+	r.console.mu.Unlock()
+	if got != "sess-1/test-evidence-video" {
+		t.Fatalf("evidence brief state = %q", got)
+	}
+
+	// Already briefed with the same skill: no second brief.
+	if prompt := resumeImplementation(t, r, stub, "TASK-E8", true, "test-evidence-video"); strings.Contains(prompt, "## Test evidence") {
+		t.Fatalf("a session briefed with the same skill should not be briefed again:\n%s", prompt)
+	}
+}
+
+func TestEvidenceOffNoteIsNotRepeated(t *testing.T) {
+	stub := &evidenceStub{}
+	r, _ := evidenceRouter(t, stub)
+	model := r.strategyRouter.ModelOptions()[0].Model
+	r.mu.Lock()
+	r.tasks["TASK-E9"] = &types.Task{ID: "TASK-E9", Title: "Refund flow", CurrentStageID: "task_implementation",
+		AssignedRepos: []string{"backend-core"}, Metadata: map[string]string{"complexity": "LOW"},
+		RoutingPlan: []types.StageRoute{{StageID: "task_implementation", Method: "react", Model: model, Evidence: &types.StageEvidence{Disabled: true}}}}
+	r.mu.Unlock()
+
+	if prompt := resumeImplementation(t, r, stub, "TASK-E9", true, "test-evidence-video"); !strings.Contains(prompt, "Test evidence is now off") {
+		t.Fatalf("a session briefed with evidence should be told it is off:\n%s", prompt)
+	}
+	if prompt := resumeImplementation(t, r, stub, "TASK-E9", true, ""); strings.Contains(prompt, "Test evidence") {
+		t.Fatalf("a session already told evidence is off should not be told again:\n%s", prompt)
+	}
+}
+
 func TestLibraryEvidenceSkillIsBriefedInsteadOfBuiltin(t *testing.T) {
 	stub := &evidenceStub{}
 	r, root := evidenceRouter(t, stub)

@@ -36,6 +36,10 @@ type taskConsole struct {
 	// sessionStage is the stage whose run last reached the session; only that stage can be continued.
 	sessionStage string
 	model        string // last model that answered
+	// evidenceSession is the session whose test evidence brief is known; evidenceSkill is the
+	// evidence skill it was briefed with ("" when told evidence is off).
+	evidenceSession string
+	evidenceSkill   string
 }
 
 // consoleHub holds all task consoles behind its own lock (independent of Router.mu).
@@ -566,6 +570,7 @@ func (r *Router) handleTaskConsole(w http.ResponseWriter, req *http.Request, tas
 			c := h.get(taskID)
 			c.entries = nil
 			c.sessionID, c.sessionStage = "", "" // /clear starts a fresh conversation, like the CLI
+			c.evidenceSession, c.evidenceSkill = "", ""
 			h.markDirty(taskID)
 			h.mu.Unlock()
 			r.broadcast(taskID, types.EventAgentActivityClear, map[string]string{"task_id": taskID})
