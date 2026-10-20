@@ -137,6 +137,7 @@ function kind(p: EvidencePartDTO): { label: string; cls: string } {
   if (p.action === 'watch' || p.action === 'expect_log') return { label: 'Log check', cls: 'text-emerald-300 bg-emerald-950/60 border-emerald-900' }
   if (p.action === 'api') return { label: 'API', cls: 'text-indigo-300 bg-indigo-950/60 border-indigo-900' }
   if (p.action === 'log') return { label: 'Test log', cls: 'text-sky-300 bg-sky-950/60 border-sky-900' }
+  if (p.action === 'session') return { label: 'Sign in', cls: 'text-rose-300 bg-rose-950/60 border-rose-900' }
   if (p.action === 'card') return { label: 'Note', cls: 'text-slate-300 bg-slate-800 border-slate-700' }
   if (p.action === 'annotate') return { label: 'Look here', cls: 'text-purple-300 bg-purple-950/60 border-purple-900' }
   if (p.verified || p.action.startsWith('expect')) return { label: 'Check', cls: 'text-emerald-300 bg-emerald-950/60 border-emerald-900' }

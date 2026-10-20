@@ -13,24 +13,37 @@
 // console errors; per suite the real test counts.
 //
 //   node record-evidence.mjs <storyboard.json> [--case <id> ...] [--summary]
+//   node record-evidence.mjs <storyboard.json> --explore <path> [--explore <path> ...] [--session <name>]
+//   node record-evidence.mjs <storyboard.json> --session <name> [--fresh]
+//   node record-evidence.mjs <storyboard.json> --clear-sessions
 //
 // --summary (after the cases are recorded) makes SUMMARY.mp4: one video that presents the whole
 // evidence — verdict, spec coverage, a chapter per case with its key steps, and the results.
+// --explore opens pages of the running app (signed in with --session) and prints what is on them —
+// headings, links, buttons, fields, tables — with the storyboard target for each, and a screenshot.
+// --session alone signs in (or checks the saved session still works) and reports it.
 //
 // playwright-core is resolved from this script's folders, then from EVIDENCE_PLAYWRIGHT_DIR.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, rmSync, readdirSync, createWriteStream } from 'node:fs'
 import { join, dirname, basename, resolve as resolvePath, isAbsolute } from 'node:path'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 
 const args = process.argv.slice(2)
-const boardPath = args.find((a) => !a.startsWith('--'))
+const VALUE_FLAGS = ['--case', '--explore', '--session']
+const boardPath = args.find((a, i) => !a.startsWith('--') && !VALUE_FLAGS.includes(args[i - 1]))
 if (!boardPath) {
-  console.error('usage: node record-evidence.mjs <storyboard.json> [--case <id> ...] [--summary]')
+  console.error('usage: node record-evidence.mjs <storyboard.json> [--case <id> ...] [--summary] | --explore <path> [--session <name>] | --session <name> [--fresh] | --clear-sessions')
   process.exit(2)
 }
-const only = []
-for (let i = 0; i < args.length; i++) if (args[i] === '--case' && args[i + 1]) only.push(args[++i])
+const flagValues = (name) => {
+  const out = []
+  for (let i = 0; i < args.length; i++) if (args[i] === name && args[i + 1]) out.push(args[++i])
+  return out
+}
+const only = flagValues('--case')
 
 const board = JSON.parse(readFileSync(boardPath, 'utf8'))
 const boardDir = dirname(resolvePath(boardPath))
@@ -76,7 +89,9 @@ const esc = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 // eslint-disable-next-line no-control-regex
 const stripAnsi = (t) => String(t ?? '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
 const safeName = (id) => String(id).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80) || 'case'
-const env = (v) => String(v ?? '').replace(/\$\{([A-Z0-9_]+)\}/g, (m, k) => process.env[k] ?? m)
+// ${NAME}: a token captured by a session's sign-in (see Sessions), else the environment.
+const vars = {}
+const env = (v) => String(v ?? '').replace(/\$\{([A-Z0-9_]+)\}/g, (m, k) => vars[k] ?? process.env[k] ?? m)
 const usesEnv = (v) => /\$\{[A-Z0-9_]+\}/.test(String(v ?? ''))
 const pathOf = (u) => { try { const x = new URL(u); return x.pathname + (x.search ? '?…' : '') } catch { return String(u).split('?')[0] } }
 const clock = () => new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
@@ -680,11 +695,19 @@ const RUNNING = (h) => [`● running ${fmtSecs(Math.round((Date.now() - h.starte
 
 // API calls to the service running locally: the request (credentials come from the environment and
 // are never shown), the response and the checks on it. The redacted exchange is saved in logs/.
-async function apiCall(st, base, logPath) {
+// With the case's session, the call is made as the signed-in user: the session's api_headers and
+// its cookies for the API's host are added, unless the step sets them itself (or "session": false).
+async function apiCall(st, base, logPath, sess) {
   const method = String(st.method || 'GET').toUpperCase()
   const raw = env(st.url || st.target)
   const target = /^https?:\/\//.test(raw) ? raw : String(base || '').replace(/\/$/, '') + (raw.startsWith('/') ? raw : '/' + raw)
   const headers = Object.fromEntries(Object.entries(st.headers || {}).map(([k, v]) => [k, env(v)]))
+  if (sess && st.session !== false) {
+    const has = (k) => Object.keys(headers).some((h) => h.toLowerCase() === k.toLowerCase())
+    for (const [k, v] of Object.entries(sess.apiHeaders)) if (!has(k)) headers[k] = env(v)
+    const cookie = cookieHeader(sess.storage, target)
+    if (cookie && !has('cookie')) headers.Cookie = cookie
+  }
   let body
   if (st.body !== undefined) {
     body = typeof st.body === 'string' ? env(st.body) : env(JSON.stringify(st.body))
@@ -786,6 +809,312 @@ function toMP4(webm, mp4) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Sessions: sign in once, off camera, and reuse it. A storyboard's "sessions" name the test users
+// (or roles) the cases act as; a case with "session": "<name>" starts already signed in, on the
+// screen under test, instead of every video opening with the same login form. The session —
+// cookies, local and session storage, a captured token — is saved outside the evidence directory
+// (it is never published with the evidence), checked before each use and signed in again when it
+// expired. Its cookies and token also sign the case's `api` calls.
+// ---------------------------------------------------------------------------------------------
+const SESSION_DIR = resolvePath(process.env.EVIDENCE_SESSION_DIR || board.session_dir ||
+  join(tmpdir(), 'evidence-sessions', createHash('sha1').update(outDir).digest('hex').slice(0, 12)))
+const SESSION_MAX_AGE_MIN = 120
+// A URL that is a sign-in page: being sent there means the session is not (or no longer) valid.
+const SIGNED_OUT = /(log-?in|sign-?in|sign_in|\/auth\b|\/sso\b|oauth|openid|\/session\/new)/i
+const sessionFile = (name) => join(SESSION_DIR, safeName(name) + '.json')
+const tokenVar = (name, cfg) => cfg.token_var || `${String(name).toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_TOKEN`
+const dig = (o, path) => String(path || '').split('.').filter(Boolean).reduce((x, k) => (x == null ? x : x[k]), o)
+const contextOptions = (extra = {}) => ({
+  viewport: { width: W, height: H }, ignoreHTTPSErrors: true, locale: board.locale || undefined, timezoneId: board.timezone || undefined, ...extra,
+})
+const expandAll = (o) => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k, env(v)]))
+
+// The Cookie header the browser would send to url, from a saved storage state.
+function cookieHeader(storage, url) {
+  let u
+  try { u = new URL(url) } catch { return '' }
+  const now = Date.now() / 1000
+  return (storage?.cookies || []).filter((c) => {
+    const d = String(c.domain || '').replace(/^\./, '')
+    return (u.hostname === d || u.hostname.endsWith('.' + d)) && u.pathname.startsWith(c.path || '/') &&
+      (!c.expires || c.expires < 0 || c.expires > now) && (!c.secure || u.protocol === 'https:' || u.hostname === 'localhost')
+  }).map((c) => `${c.name}=${c.value}`).join('; ')
+}
+
+// sessionStorage is not part of Playwright's storage state: it is put back on each page load
+// of its origin, without overwriting what the app set itself.
+async function restoreSessionStorage(context, saved) {
+  if (!saved.session_storage || !Object.keys(saved.session_storage).length) return
+  await context.addInitScript((byOrigin) => {
+    const items = byOrigin[location.origin]
+    if (!items) return
+    try { for (const [k, v] of Object.entries(items)) if (sessionStorage.getItem(k) == null) sessionStorage.setItem(k, v) } catch {}
+  }, saved.session_storage)
+}
+
+async function sessionContext(browser, cfg, saved, extra = {}) {
+  const headers = expandAll(cfg.headers)
+  const context = await browser.newContext(contextOptions({ storageState: saved.storage, ...(Object.keys(headers).length ? { extraHTTPHeaders: headers } : {}), ...extra }))
+  await restoreSessionStorage(context, saved)
+  return context
+}
+
+// Signed in: the session's home page opens without a detour to a sign-in page (or, with
+// "signed_in", shows that element — e.g. the user menu).
+async function checkSignedIn(page, cfg, base) {
+  const home = cfg.home || '/'
+  const res = await page.goto(/^https?:\/\//.test(home) ? home : base.replace(/\/$/, '') + (home.startsWith('/') ? home : '/' + home),
+    { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e) => { throw new Error(`could not open ${home}: ${String(e.message).split('\n')[0]}`) })
+  await settle(page)
+  if (res && (res.status() === 401 || res.status() === 403)) return `HTTP ${res.status()} at ${home}`
+  if (cfg.signed_in) {
+    const ok = await findTarget(page, cfg.signed_in, 10000).then(() => true, () => false)
+    return ok ? '' : `${cfg.signed_in} is not on ${pathOf(page.url())}`
+  }
+  const where = pathOf(page.url())
+  let re = SIGNED_OUT
+  try { if (cfg.signed_out_url) re = new RegExp(cfg.signed_out_url, 'i') } catch {}
+  return re.test(where) ? `sent to the sign-in page (${where})` : ''
+}
+
+async function apiLogin(name, cfg, context, base) {
+  const a = cfg.api_login
+  const apiBase = a.base_url || cfg.api_base || board.api_base || base
+  const raw = env(a.url)
+  const target = /^https?:\/\//.test(raw) ? raw : String(apiBase).replace(/\/$/, '') + (raw.startsWith('/') ? raw : '/' + raw)
+  const headers = expandAll(a.headers)
+  let body
+  if (a.body !== undefined) {
+    body = typeof a.body === 'string' ? env(a.body) : env(JSON.stringify(a.body))
+    if (typeof a.body !== 'string' && !Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) headers['Content-Type'] = 'application/json'
+  }
+  const res = await fetch(target, { method: String(a.method || 'POST').toUpperCase(), headers, body, redirect: 'manual', signal: AbortSignal.timeout(30000) })
+  const text = await res.text()
+  if (res.status >= 400) throw new Error(`api_login ${pathOf(target)}: HTTP ${res.status} ${redact(text).slice(0, 160)}`)
+  if (a.token_path) {
+    let json = null
+    try { json = JSON.parse(text) } catch {}
+    const tok = dig(json, a.token_path)
+    if (tok == null || tok === '') throw new Error(`api_login ${pathOf(target)}: no token at ${a.token_path} in the response`)
+    vars[tokenVar(name, cfg)] = String(tok)
+  }
+  const host = new URL(target)
+  const cookies = (res.headers.getSetCookie?.() || []).map((c) => {
+    const [nv, ...attrs] = c.split(';')
+    const at = nv.indexOf('=')
+    const path = attrs.map((x) => x.trim()).find((x) => /^path=/i.test(x))
+    return at > 0 ? { name: nv.slice(0, at).trim(), value: nv.slice(at + 1).trim(), domain: host.hostname, path: path ? path.slice(5) : '/' } : null
+  }).filter(Boolean)
+  if (cookies.length) await context.addCookies(cookies)
+}
+
+// signIn establishes the session in a browser that is not recorded, by any mix of: an API login
+// (api_login), cookies, local or session storage set directly, and the login steps played in the
+// browser like a case's steps. It fails with a screenshot of where it stopped.
+async function signIn(browser, name, cfg) {
+  const base = cfg.base_url || board.base_url || ''
+  const headers = expandAll(cfg.headers)
+  const context = await browser.newContext(contextOptions(Object.keys(headers).length ? { extraHTTPHeaders: headers } : {}))
+  const page = await context.newPage()
+  page.setDefaultTimeout(STEP_TIMEOUT)
+  const failShot = join(SESSION_DIR, `${safeName(name)}-sign-in-failed.png`)
+  let at = 'start'
+  try {
+    if (cfg.api_login) { at = 'api_login'; await apiLogin(name, cfg, context, base) }
+    if (cfg.cookies?.length) {
+      at = 'cookies'
+      await context.addCookies(cfg.cookies.map((c) => ({ name: c.name, value: env(c.value),
+        ...(c.domain ? { domain: c.domain, path: c.path || '/' } : { url: c.url || base }) })))
+    }
+    if (cfg.local_storage || cfg.session_storage) {
+      at = 'storage'
+      await page.goto(base, { waitUntil: 'domcontentloaded', timeout: 30000 })
+      await page.evaluate(({ l, s }) => {
+        for (const [k, v] of Object.entries(l)) localStorage.setItem(k, v)
+        for (const [k, v] of Object.entries(s)) sessionStorage.setItem(k, v)
+      }, { l: expandAll(cfg.local_storage), s: expandAll(cfg.session_storage) })
+    }
+    const ctx = { base, cursor: null, show: async () => {} }
+    for (const [i, st] of (cfg.login || []).entries()) {
+      at = `login step ${i + 1} (${stepCaption(st)})`
+      await browserStep(page, ctx, { ...st, zoom: false })
+    }
+    await settle(page)
+    if (cfg.token_from) {
+      at = 'token_from'
+      const [where, ...rest] = String(cfg.token_from).split(':')
+      const key = rest.join(':')
+      let v = where === 'cookie'
+        ? (await context.cookies()).find((c) => c.name === key)?.value
+        : await page.evaluate(({ where, key }) => (where === 'session_storage' ? sessionStorage : localStorage).getItem(key), { where, key })
+      if (v != null && cfg.token_path) { try { v = dig(JSON.parse(v), cfg.token_path) } catch { v = null } }
+      if (v == null || v === '') throw new Error(`no token in ${cfg.token_from}${cfg.token_path ? ` at ${cfg.token_path}` : ''}`)
+      vars[tokenVar(name, cfg)] = String(v)
+    }
+    at = 'the check that the session is signed in'
+    const why = await checkSignedIn(page, cfg, base)
+    if (why) throw new Error(why)
+    const session_storage = {}
+    const origin = new URL(page.url()).origin
+    const ss = await page.evaluate(() => Object.fromEntries(Object.entries(sessionStorage))).catch(() => ({}))
+    if (Object.keys(ss).length) session_storage[origin] = ss
+    const tv = tokenVar(name, cfg)
+    const saved = { name, saved_at: new Date().toISOString(), storage: await context.storageState(), session_storage, vars: vars[tv] ? { [tv]: vars[tv] } : {} }
+    rmSync(failShot, { force: true })
+    return saved
+  } catch (err) {
+    await maskedShot(page, failShot)
+    console.log(`  session "${name}": sign-in stopped at ${at} — the screen it stopped on: ${failShot}`)
+    throw new Error(`signing in as "${name}" failed at ${at}: ${redact(String(err?.message || err).split('\n')[0])}`)
+  } finally {
+    await context.close()
+  }
+}
+
+async function maskedShot(page, path) {
+  await page.evaluate(() => {
+    if (document.getElementById('__ev_overlay')) return
+    const root = document.createElement('div')
+    root.id = '__ev_overlay'
+    root.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647'
+    document.documentElement.appendChild(root)
+  }).catch(() => {})
+  await maskPII(page)
+  await page.screenshot({ path }).catch(() => {})
+}
+
+// ensureSession returns the named session, signed in: the saved one when it is recent and still
+// works, else a new sign-in (saved for the next recorder call).
+const sessionCache = new Map()
+async function ensureSession(browser, name, { fresh = false } = {}) {
+  const cfg = (board.sessions || {})[name]
+  if (!cfg) throw new Error(`no session named "${name}" in the storyboard's "sessions" (${Object.keys(board.sessions || {}).join(', ') || 'none defined'})`)
+  if (!fresh && sessionCache.has(name)) return sessionCache.get(name)
+  mkdirSync(SESSION_DIR, { recursive: true, mode: 0o700 })
+  const file = sessionFile(name)
+  const base = cfg.base_url || board.base_url || ''
+  let saved = null
+  let reused = false
+  if (!fresh && existsSync(file)) {
+    try { saved = JSON.parse(readFileSync(file, 'utf8')) } catch {}
+    const age = saved ? (Date.now() - Date.parse(saved.saved_at)) / 60000 : Infinity
+    if (saved && age < (cfg.max_age_min || SESSION_MAX_AGE_MIN)) {
+      const context = await sessionContext(browser, cfg, saved)
+      const why = await checkSignedIn(await context.newPage(), cfg, base).catch((e) => String(e.message || e))
+      await context.close()
+      reused = !why
+      if (!reused) console.log(`  session "${name}": the saved one no longer works (${why}) — signing in again`)
+    }
+  }
+  if (!reused) {
+    console.log(`  session "${name}": signing in …`)
+    saved = await signIn(browser, name, cfg)
+    writeFileSync(file, JSON.stringify(saved), { mode: 0o600 })
+  }
+  Object.assign(vars, saved.vars || {})
+  const tv = tokenVar(name, cfg)
+  const apiHeaders = cfg.api_headers || (vars[tv] ? { Authorization: `Bearer \${${tv}}` } : {})
+  const sess = { name, cfg, saved, storage: saved.storage, apiHeaders, reused }
+  sessionCache.set(name, sess)
+  return sess
+}
+
+// ---------------------------------------------------------------------------------------------
+// Explore (--explore): open pages of the running app, signed in, and list what is on them with the
+// storyboard target for each — so the storyboard is written from the real screen, not guessed.
+// ---------------------------------------------------------------------------------------------
+async function explorePages(browser, paths, sessName) {
+  const sess = sessName ? await ensureSession(browser, sessName) : null
+  const base = sess?.cfg.base_url || board.base_url || ''
+  const context = sess ? await sessionContext(browser, sess.cfg, sess.saved) : await browser.newContext(contextOptions())
+  const page = await context.newPage()
+  const dir = join(SESSION_DIR, 'explore')
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  try {
+    for (const p of paths) {
+      const url = /^https?:\/\//.test(p) ? p : base.replace(/\/$/, '') + (p.startsWith('/') ? p : '/' + p)
+      const res = await page.goto(env(url), { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e) => { console.log(`✗ ${p}: ${String(e.message).split('\n')[0]}`); return undefined })
+      if (res === undefined) continue
+      await settle(page)
+      await page.waitForTimeout(600)
+      const map = await page.evaluate(pageMap)
+      const shot = join(dir, `${safeName(p.replace(/^https?:\/\/[^/]+/, '') || 'home')}.png`)
+      await maskedShot(page, shot)
+      const signedOut = SIGNED_OUT.test(pathOf(page.url()))
+      const out = [`\n━━ ${p} → ${pathOf(page.url())}${res ? ` (HTTP ${res.status()})` : ''} · "${map.title}"${sess ? ` · session ${sess.name}` : ''}`]
+      if (signedOut && sess) out.push('  ⚠ this looks like a sign-in page: the session may not reach this screen (check the session\'s home / signed_in)')
+      out.push(`  screenshot: ${shot}`)
+      const sect = (title, rows) => { if (rows.length) out.push(`  ${title}:`, ...rows.map((r) => `    ${r}`)) }
+      sect('headings', map.headings)
+      sect('links', map.links.map((l) => `${l.target}  → ${l.href}`))
+      sect('buttons', map.buttons)
+      sect('fields', map.fields.map((f) => `${f.target}  (${f.kind}${f.options ? `: ${f.options.join(' | ')}` : ''})`))
+      sect('tables', map.tables.map((t) => `${t.target}  ${t.rows} rows · columns: ${t.cols.join(' | ')}`))
+      sect('test ids', map.testids)
+      sect('dialogs', map.dialogs)
+      console.log(redact(out.join('\n')))
+    }
+  } finally {
+    await context.close()
+  }
+}
+
+// Runs in the page: the visible landmarks of the screen, each with a target the recorder accepts.
+function pageMap() {
+  const vis = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' }
+  const clean = (t, n = 60) => String(t || '').replace(/\s+/g, ' ').trim().slice(0, n)
+  const q = (t) => JSON.stringify(t)
+  const tid = (el) => ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy'].map((a) => el.getAttribute(a)).find(Boolean)
+  // A <label> wrapping its control: its own text, without the control's (a select's options).
+  const labelText = (l) => {
+    if (!l) return ''
+    const c = l.cloneNode(true)
+    c.querySelectorAll('input, select, textarea, button').forEach((x) => x.remove())
+    return c.textContent
+  }
+  const labelOf = (el) => {
+    const by = el.getAttribute('aria-labelledby')
+    return clean(el.getAttribute('aria-label') || labelText(el.labels?.[0]) || (by && document.getElementById(by)?.textContent) || '')
+  }
+  const all = (sel, n) => [...document.querySelectorAll(sel)].filter((e) => vis(e) && !e.closest('#__ev_overlay')).slice(0, n)
+  const uniq = (rows) => [...new Set(rows)]
+  const headings = uniq(all('h1, h2, h3, [role=heading]', 15).map((h) => `${h.tagName.toLowerCase()}: ${clean(h.innerText, 80)}`).filter((x) => !x.endsWith(': ')))
+  const links = []
+  for (const a of all('a[href], [role=link]', 80)) {
+    const name = labelOf(a) || clean(a.innerText)
+    if (!name) continue
+    const href = (a.getAttribute('href') || '').replace(/^https?:\/\/[^/]+/, '')
+    const t = tid(a)
+    links.push({ target: t ? `testid=${t}` : `role=link[name=${q(name)}]`, href: href || '(script)' })
+    if (links.length >= 40) break
+  }
+  const buttons = uniq(all('button, [role=button], input[type=submit], input[type=button]', 60).map((b) => {
+    const name = labelOf(b) || clean(b.innerText || b.value || b.title)
+    const t = tid(b)
+    return t ? `testid=${t}${name ? `  (${name})` : ''}` : name ? `role=button[name=${q(name)}]` : ''
+  }).filter(Boolean)).slice(0, 40)
+  const fields = all('input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, select, [contenteditable=true], [role=combobox]', 40).map((f) => {
+    const label = labelOf(f)
+    const t = tid(f)
+    const ph = f.getAttribute('placeholder')
+    const target = label ? `label=${label}` : ph ? `placeholder=${clean(ph)}` : t ? `testid=${t}` : f.name ? `[name=${q(f.name)}]` : f.id ? `#${f.id}` : f.tagName.toLowerCase()
+    const kind = f.tagName === 'SELECT' ? 'native select' : f.getAttribute('role') === 'combobox' ? 'custom dropdown: click it, then click the option' : f.type || f.tagName.toLowerCase()
+    const options = f.tagName === 'SELECT' ? [...f.options].slice(0, 8).map((o) => clean(o.text, 30)) : null
+    return { target, kind, options }
+  })
+  const tables = all('table, [role=grid], [role=table]', 6).map((t, i) => {
+    const cols = [...t.querySelectorAll('th, [role=columnheader]')].slice(0, 10).map((c) => clean(c.innerText, 24)).filter(Boolean)
+    const rows = t.querySelectorAll('tbody tr, [role=row]').length
+    const id = tid(t)
+    return { target: id ? `testid=${id}` : i ? `table >> nth=${i}` : 'table', cols, rows }
+  })
+  const testids = uniq(all('[data-testid], [data-test-id], [data-test], [data-qa], [data-cy]', 200)
+    .map((e) => `testid=${tid(e)}  <${e.tagName.toLowerCase()}> ${clean(e.innerText, 40)}`)).slice(0, 60)
+  const dialogs = all('[role=dialog], [role=alertdialog], dialog[open]', 5).map((d) => clean(labelOf(d) || d.innerText, 80))
+  return { title: clean(document.title, 80), headings, links, buttons, fields, tables, testids, dialogs }
+}
+
+// ---------------------------------------------------------------------------------------------
 
 const suiteRuns = new Map()
 
@@ -814,16 +1143,20 @@ async function recordCase(browser, sc) {
   const environment = { base_url: base, browser: `Chromium ${browser.version()}`, viewport: `${W}×${H}`, repos }
   const envLine = repos.map((r) => `${r.name}@${r.commit}${r.uncommitted ? '+changes' : ''} (${r.branch})`).join(' · ')
 
+  // The case's session: it starts signed in (a case about signing in sets "session": false).
+  const sessName = sc.session === false || sc.storage_state ? null : sc.session || board.session || null
+  let sess = null
+  let sessionError = ''
+  if (sessName) {
+    try { sess = await ensureSession(browser, sessName) } catch (err) { sessionError = String(err?.message || err) }
+  }
+
   const tmpVideo = join(outDir, '.rec-' + name)
   rmSync(tmpVideo, { recursive: true, force: true })
-  const context = await browser.newContext({
-    viewport: { width: W, height: H },
-    recordVideo: { dir: tmpVideo, size: { width: W, height: H } },
-    storageState: sc.storage_state || board.storage_state || undefined,
-    ignoreHTTPSErrors: true,
-    locale: board.locale || undefined,
-    timezoneId: board.timezone || undefined,
-  })
+  const recordVideo = { dir: tmpVideo, size: { width: W, height: H } }
+  const context = sess
+    ? await sessionContext(browser, sess.cfg, sess.saved, { recordVideo })
+    : await browser.newContext(contextOptions({ recordVideo, storageState: sc.storage_state || (sessName ? undefined : board.storage_state) || undefined }))
   const page = await context.newPage()
   const t0 = Date.now()
   page.setDefaultTimeout(STEP_TIMEOUT)
@@ -859,7 +1192,8 @@ async function recordCase(browser, sc) {
     ${gw.length ? `<div class="gw">${gw.map(([k, v]) => `<b>${k}</b><span>${esc(redact(v))}</span>`).join('')}</div>` : ''}
     <div class="chips">${(sc.covers || []).map((c) => `<span class="chip">covers ${esc(c)}</span>`).join('')}
       ${sc.blocked ? `<span class="chip bad">⚠ partly blocked: ${esc(redact(sc.blocked))}</span>` : ''}
-      <span class="chip">${total} step${total === 1 ? '' : 's'}</span>${usesApp ? `<span class="chip">app ${esc(base)}</span>` : ''}</div>
+      <span class="chip">${total} step${total === 1 ? '' : 's'}</span>${usesApp ? `<span class="chip">app ${esc(base)}</span>` : ''}
+      ${sess ? `<span class="chip ok">signed in as ${esc(sess.cfg.label || sess.name)}</span>` : ''}${sessionError ? `<span class="chip bad">✗ sign-in as ${esc(sessName)} failed</span>` : ''}</div>
     <div class="kind" style="margin-top:6px">Steps</div><div class="agenda">${agenda}</div>`, 0, total, envLine))
   await page.waitForTimeout(Math.min(HOLD.title + steps.length * 300, 8000))
 
@@ -886,6 +1220,15 @@ async function recordCase(browser, sc) {
     return h
   }
   let browserBroken = ''
+  if (sessionError) {
+    // Without its session the case's screens are out of reach: its browser steps are not run.
+    parts.push({ action: 'session', caption: `Sign in as ${sessName}`, status: 'failed', error: redact(sessionError).slice(0, 400) })
+    fail('failed')
+    browserBroken = `signing in as ${sessName} failed`
+    await page.setContent(cardPage(sc, 'failed', 'Sign-in failed', `<div class="mid">Could not sign in as ${esc(sessName)}</div>
+      <div class="sub bad">${esc(redact(sessionError))}</div>`, 0, total, envLine))
+    await page.waitForTimeout(HOLD.card)
+  }
   for (const [i, st] of steps.entries()) {
     const caption = st.caption || `${st.action} ${st.target || st.value || ''}`.trim()
     ctx.n = i + 1
@@ -899,7 +1242,7 @@ async function recordCase(browser, sc) {
     // After a failed browser step the screen is not where the later browser steps expect it: they
     // are listed as not run, while test commands and API calls still play.
     if (browserBroken && !CARD_ACTIONS.includes(st.action)) {
-      Object.assign(part, { status: 'skipped', error: `not run: step ${browserBroken} failed` })
+      Object.assign(part, { status: 'skipped', error: `not run: ${browserBroken}` })
       delete part.at
       parts.push(part)
       continue
@@ -1050,7 +1393,7 @@ async function recordCase(browser, sc) {
         await page.waitForTimeout(st.hold_ms || HOLD.log)
       } else if (st.action === 'api') {
         const log = `logs/${name}-${String(i + 1).padStart(2, '0')}-api.log`
-        const r = await apiCall(st, apiBase, join(outDir, log))
+        const r = await apiCall(st, apiBase, join(outDir, log), sess)
         const ok = r.checks.every(([, v]) => v)
         Object.assign(part, { method: r.method, url: r.path, http_status: r.status, summary: `HTTP ${r.status} · ${r.ms} ms`, log, status: ok ? 'passed' : 'failed' })
         if (!ok) { part.error = r.checks.filter(([, v]) => !v).map(([c]) => c).join('; '); fail('failed') }
@@ -1103,7 +1446,7 @@ async function recordCase(browser, sc) {
       }
       part.shot = await shot(i)
       await page.waitForTimeout(HOLD.step + 1000)
-      if (!CARD_ACTIONS.includes(st.action) && !sc.continue_on_failure) browserBroken = String(i + 1)
+      if (!CARD_ACTIONS.includes(st.action) && !sc.continue_on_failure) browserBroken = `step ${i + 1} failed`
     }
     parts.push(part)
   }
@@ -1384,7 +1727,36 @@ async function recordSummary(browser) {
   return m.summary
 }
 
+if (args.includes('--clear-sessions')) {
+  rmSync(SESSION_DIR, { recursive: true, force: true })
+  console.log(`saved sessions removed (${SESSION_DIR})`)
+  if (!only.length && !args.includes('--summary') && !flagValues('--explore').length && !flagValues('--session').length) process.exit(0)
+}
+
 const chromium = await loadChromium()
+
+// --explore / --session: sign in and look around, before (or between) recording.
+const explore = flagValues('--explore')
+const sessArg = flagValues('--session')[0]
+if (explore.length || (sessArg && !only.length && !args.includes('--summary'))) {
+  const browser = await chromium.launch({ headless: true }).catch(() => chromium.launch({ headless: true, channel: 'chrome' }))
+  let code = 0
+  try {
+    if (explore.length) await explorePages(browser, explore, sessArg)
+    else {
+      const s = await ensureSession(browser, sessArg, { fresh: args.includes('--fresh') })
+      console.log(`✓ session "${s.name}" ${s.reused ? 'still signed in (saved session reused)' : 'signed in'} — cases with "session": "${s.name}" start signed in` +
+        `${Object.keys(s.apiHeaders).length || s.storage.cookies?.length ? '; its api steps are signed too' : ''}`)
+    }
+  } catch (err) {
+    console.error(`✗ ${redact(String(err?.message || err))}`)
+    code = 1
+  } finally {
+    await browser.close()
+  }
+  process.exit(code)
+}
+
 const cases = (board.cases || []).filter((c) => !only.length || only.includes(c.id))
 const summaryOnly = args.includes('--summary') && !only.length
 if (!cases.length && !summaryOnly) {

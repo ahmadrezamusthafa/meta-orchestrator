@@ -94,12 +94,27 @@ spec coverage, a chapter per case with its key annotated steps, and the results.
    keep it and say so.
 3. **Start the system** from the task worktrees, the way the repositories document it (dev server,
    `docker compose`), every application the journeys pass through, against a local or test
-   database seeded with fake data that matches the cases' preconditions. Sign in with a test user
-   (credentials from the environment, `${NAME}`).
-4. **Write the storyboard** to `<evidence dir>/storyboard.json` (format below): the flows first,
+   database seeded with fake data that matches the cases' preconditions.
+4. **Sign in once and explore.** For every role the cases act as (Finance, Admin, a customer), add
+   a session to the storyboard's `sessions` (see **Sessions** below) with a test user — credentials
+   from the environment, `${NAME}`. Check it signs in:
+   ```bash
+   node <skill dir>/scripts/record-evidence.mjs <evidence dir>/storyboard.json --session <name>
+   ```
+   Then look at every screen the cases pass through, signed in, before writing their steps:
+   ```bash
+   node <skill dir>/scripts/record-evidence.mjs <evidence dir>/storyboard.json --session <name> --explore /dashboard --explore /billing/invoices
+   ```
+   It prints each page's headings, links, buttons, fields (with a select's options), tables and
+   test ids, each with the storyboard target to use, plus a screenshot path to open with the Read
+   tool. Write targets from this, not from guesses; explore again after a screen changes. When
+   sign-in fails, it says at which step and prints where the screenshot of that screen is.
+5. **Write the storyboard** to `<evidence dir>/storyboard.json` (format below): the flows first,
    then the acceptance cases in the spec's order, then the suites; `criteria` when there are no
-   ATDD cases.
-5. **Record one case per command**, so each call stays well inside the command time limit:
+   ATDD cases. Give each case the `session` it acts as, so its video starts signed in on the
+   screen under test; only a case about signing in itself (or a flow that must show the journey
+   from the login page) sets `"session": false` and signs in on camera.
+6. **Record one case per command**, so each call stays well inside the command time limit:
    ```bash
    node <skill dir>/scripts/record-evidence.mjs <evidence dir>/storyboard.json --case <id>
    ```
@@ -107,23 +122,24 @@ spec coverage, a chapter per case with its key annotated steps, and the results.
    the browser's console errors, and writes `<id>.mp4` (`.webm` without ffmpeg), `<id>.png` (the
    result card), `shots/<id>-NN.png` (step NN, annotated), `logs/` and merges the case into
    `<evidence dir>/evidence.json`. Exit code 1 means a case did not pass.
-6. **Review every take.** Open `<id>.png` and the `shots/` of the case with the Read tool. Each step
+7. **Review every take.** Open `<id>.png` and the `shots/` of the case with the Read tool. Each step
    must show what its caption says, the outlined target must be the right element, the case must
    prove its expected result, and nothing personal may be readable. A step that failed because of
    the storyboard (wrong selector, page still loading — add a `wait`) → fix the storyboard and
    re-record. A step that failed because of the code → fix the code, re-run the tests, re-record.
    Browser console errors listed for a case are worth a look. Expect 1–3 takes.
-7. **Check coverage**: every acceptance case has a case of its own; every journey of the spec has a
+8. **Check coverage**: every acceptance case has a case of its own; every journey of the spec has a
    flow.
-8. **Record the presentation**, once every case is recorded (and again after any re-take):
+9. **Record the presentation**, once every case is recorded (and again after any re-take):
    ```bash
    node <skill dir>/scripts/record-evidence.mjs <evidence dir>/storyboard.json --summary
    ```
    It writes `SUMMARY.mp4` and `SUMMARY.png` and the chapters into evidence.json, from what was
    recorded (it re-runs nothing). Watch a few frames of it with the Read tool on `SUMMARY.png`.
-9. **Clean up**: stop every server you started. Evidence files stay in the evidence dir only —
-   never add them to the repository.
-10. **Report** a `## Test evidence` section: per case its id, kind, title, status and video file; the
+10. **Clean up**: stop every server you started, and remove the saved sessions
+   (`record-evidence.mjs <storyboard> --clear-sessions`). Evidence files stay in the evidence dir
+   only — never add them to the repository.
+11. **Report** a `## Test evidence` section: per case its id, kind, title, status and video file; the
    acceptance cases that are blocked or without evidence, and why; the full-suite results per
    repository (counts); any pre-existing failure, or console error the change causes.
 
@@ -136,8 +152,20 @@ spec coverage, a chapter per case with its key annotated steps, and the results.
   "base_url": "http://localhost:5173",
   "api_base": "http://localhost:8080",
   "repos": ["/abs/worktree/billing", "/abs/worktree/billing-frontend"],
+  "sessions": {
+    "finance": {"label": "Finance", "home": "/billing/proforma-invoices", "signed_in": "testid=user-menu",
+      "login": [
+        {"action": "goto", "target": "/login"},
+        {"action": "fill", "target": "label=Email", "value": "${TEST_USER}"},
+        {"action": "fill", "target": "label=Password", "value": "${TEST_PASSWORD}"},
+        {"action": "click", "target": "role=button[name=\"Sign in\"]"},
+        {"action": "expect_url", "value": "/billing"}
+      ],
+      "token_from": "local_storage:auth", "token_path": "access_token"}
+  },
+  "session": "finance",
   "cases": [
-    {"id": "FLOW-1", "kind": "flow", "title": "Finance finds the paid proforma invoices of a customer",
+    {"id": "FLOW-1", "kind": "flow", "session": false, "title": "Finance finds the paid proforma invoices of a customer",
      "covers": ["ABC-TC-001", "ABC-TC-003"], "given": "Signed in as Finance; customer PT Contoh has 2 paid and 1 unpaid invoice",
      "expected": "The list shows only the customer's paid invoices, and the detail page agrees",
      "steps": [
@@ -175,7 +203,7 @@ spec coverage, a chapter per case with its key annotated steps, and the results.
      "given": "Three proforma invoices exist: two Paid, one Unpaid",
      "expected": "Only the two paid invoices are listed",
      "steps": [
-       {"action": "api", "method": "GET", "url": "/api/v1/proforma-invoices?status=paid", "headers": {"Authorization": "Bearer ${TEST_API_TOKEN}"},
+       {"action": "api", "method": "GET", "url": "/api/v1/proforma-invoices?status=paid",
         "caption": "The API returns only paid invoices", "expect_status": 200, "expect_body": ["\"paid\""], "expect_no_body": ["\"unpaid\""],
         "note": "The filter is applied server side"},
        {"action": "goto", "target": "/billing/proforma-invoices", "caption": "Open Proforma Invoices"},
@@ -218,7 +246,7 @@ Steps, played in order (each gets its own screenshot and its time in the video):
 
 A case takes `id`, `kind` (`flow`, `acceptance`, `suite`; inferred from a `FLOW-`/`SUITE-` id), `title`,
 `covers`, `given`, `expected`, `notes`, `blocked` (why part of it cannot run — the case is then
-Blocked) and `steps`. `criteria` (top level, `[{"id": "AC-1", "text": "…"}]`) lists the acceptance
+Blocked), `session` (the session it starts signed in as; `false`: signed out) and `steps`. `criteria` (top level, `[{"id": "AC-1", "text": "…"}]`) lists the acceptance
 criteria when the task has no ATDD cases.
 
 Every step takes `caption`, `note`, `hold_ms` (how long it stays on screen) and `monitor` (a
@@ -229,11 +257,41 @@ Invoices screen") and `zoom` (`true` to zoom in on the target, `false` to never;
 small fields zoom while they are filled, chosen, checked or uploaded). The storyboard's `"zoom":
 false` turns zooming off.
 Targets: `label=…`, `placeholder=…`, `testid=…`, `text=…`, `role=button[name="Save"]`, or CSS.
-`${NAME}` in a target, value, URL, header or body is read from the environment — use it for any
-login or token, never write a credential into the storyboard; on screen the placeholder is shown,
-not the value. A case's `base_url`, `api_base` or `storage_state` overrides the storyboard's.
+`${NAME}` in a target, value, URL, header or body is read from the environment (or is a token a
+session captured) — use it for any login or token, never write a credential into the storyboard;
+on screen the placeholder is shown, not the value. A case's `base_url`, `api_base`, `session` or
+`storage_state` overrides the storyboard's.
 `repos` (absolute paths) adds repositories to the "commits under test" line; the `cwd` of `run`
 steps is included automatically.
+
+## Sessions
+
+A dashboard or frontend behind a login: sign in **once, off camera**, and let every case start
+signed in. `sessions` (top level) names each test user or role; `session` (top level, or per case)
+picks the one a case acts as. The recorder signs in in a browser that is not recorded, saves the
+session (cookies, local and session storage, a captured token) **outside** the evidence dir, and
+before each use opens `home` to check it still works — signing in again when it expired or was
+signed out. The ways to establish it combine, in this order:
+
+| field | what it does |
+|---|---|
+| `api_login` | `{method (POST), url, headers, body, token_path}`: calls a login API; the cookies it sets join the browser session, and the token at `token_path` (e.g. `data.access_token`) is captured |
+| `cookies` | `[{name, value, domain?, path?}]` set directly (e.g. a dev session cookie from `${SESSION_COOKIE}`) |
+| `local_storage` / `session_storage` | `{key: value}` set on `base_url` before the login steps (e.g. a token an SPA reads) |
+| `login` | browser steps played to sign in, like a case's (`goto`, `fill`, `click`, `select`, `press`, `wait`, `expect_*`) — an SSO or OTP page included, when its test values come from `${NAME}` |
+| `token_from` | after the login, capture a token from `local_storage:<key>`, `session_storage:<key>` or `cookie:<name>`; `token_path` digs into a JSON value |
+| `headers` | extra HTTP headers on every browser request (e.g. a dev auth proxy's) |
+| `home` | the page that proves the session (default `/`); `signed_in`: a target that must be on it (e.g. the user menu); `signed_out_url`: regex of the sign-in page's URL (default: login / sign-in / auth / sso / oauth) |
+| `base_url`, `api_base`, `label`, `max_age_min` | the app the session is for, its API, the name shown in the video, how long a saved session is reused before signing in again (default 120) |
+
+A captured token is `${<NAME>_TOKEN}` (`finance` → `${FINANCE_TOKEN}`; `token_var` renames it). A
+case's `api` steps are sent as its session: its cookies for the API's host, and `api_headers`
+(default `{"Authorization": "Bearer ${<NAME>_TOKEN}"}` when a token was captured), unless the step
+sets those headers itself or has `"session": false` (e.g. to prove a call is refused without one).
+
+If sign-in fails, the case is reported Failed with the reason and its browser steps are not run;
+the screen where sign-in stopped is saved and its path printed. `--session <name> --fresh` signs in
+again; `--clear-sessions` removes every saved session.
 
 After a browser step fails, the case's later browser steps are listed as not run (the screen is no
 longer where they expect it); `run` and `api` steps still play. Set `"continue_on_failure": true`
