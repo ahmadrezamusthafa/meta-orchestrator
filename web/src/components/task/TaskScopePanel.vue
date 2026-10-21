@@ -4,8 +4,10 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../../services/api'
 import { useTaskStore } from '../../stores/tasks'
 import { useToastStore } from '../../stores/toast'
+import { useWorkflowStore } from '../../stores/workflows'
 import MarkdownView from '../common/MarkdownView.vue'
-import { STAGES, stageName, stagePosition, taskLifecycle, TONE_BADGE } from '../../composables/taskLifecycle'
+import { stageName, taskLifecycle, TONE_BADGE } from '../../composables/taskLifecycle'
+import { useTaskStages } from '../../composables/taskStages'
 import type { Task, TaskArtifactDTO, TaskDependencyInfoDTO } from '../../types'
 import {
   ExternalLink, FileText, CheckCircle2, Circle, CircleDot, Link2, MessageSquarePlus, X, Copy, Check, Layers, Loader2,
@@ -19,6 +21,7 @@ const emit = defineEmits<{ (e: 'updated'): void }>()
 
 const taskStore = useTaskStore()
 const toast = useToastStore()
+const workflowStore = useWorkflowStore()
 
 // What each stage produces (mirrors the daemon's stage instructions).
 const STAGE_GOAL: Record<string, string> = {
@@ -30,6 +33,12 @@ const STAGE_GOAL: Record<string, string> = {
   e2e_validation: 'End-to-end scenarios, commands to run and expected results.',
   uat_verification: 'UAT checklist and the evidence the reviewer should see.',
   signoff_merge: 'Change summary, risks, rollout notes and pull request description.',
+  release_audit: 'How a change reaches production today, a scorecard, and the gaps to close.',
+  release_automation: 'CI/CD as code: build once, blocking tests, gated promotion, one-command rollback.',
+  observability_alerting: 'Logs, metrics, traces, SLOs, alerts with runbooks, dashboards as code.',
+  security_automation: 'Secret, dependency, code, image and IaC scans in the pipeline; triage policy.',
+  customer_api_setup: 'OpenAPI contract, versioning, auth, rate limits, contract tests, customer docs.',
+  load_resilience: 'Load tests with SLO thresholds, resilience review, runbooks, rollback drill.',
 }
 
 const artifacts = ref<TaskArtifactDTO[]>([])
@@ -40,7 +49,11 @@ const copied = ref(false)
 
 const meta = computed(() => props.task.metadata || {})
 const life = computed(() => taskLifecycle(props.task)!)
-const current = computed(() => stagePosition(props.task.current_stage_id).index)
+// The task's own workflow decides its stages; the default pipeline is the fallback.
+const workflowStages = computed(() => workflowStore.workflows.find((w) => w.id === props.task.workflow_id)?.stages ?? [])
+// The stages this task runs: its workflow's, cut to its slice.
+const { stages, index: current } = useTaskStages(() => props.task)
+const gateOf = (id: string) => workflowStages.value.find((s) => s.id === id)?.gate_criteria?.split(';').map((g) => g.trim()).filter(Boolean) ?? []
 const stageDocs = computed(() => Object.fromEntries(artifacts.value.filter((a) => a.kind === 'stage_output').map((a) => [a.stage_id!, a])))
 const documents = computed(() => artifacts.value.filter((a) => a.kind !== 'stage_output'))
 const budget = computed(() => {
@@ -118,7 +131,7 @@ onMounted(loadArtifacts)
         <section class="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
           <div class="flex flex-wrap items-center gap-2 text-[11px]">
             <span class="px-1.5 py-0.5 rounded border font-semibold" :class="TONE_BADGE[life.tone]">{{ life.status }}</span>
-            <span class="text-slate-400">{{ stageName(task.current_stage_id) }} · stage {{ current + 1 }} of {{ STAGES.length }}</span>
+            <span class="text-slate-400">{{ stageName(task.current_stage_id) }} · stage {{ current + 1 }} of {{ stages.length }}</span>
             <a v-if="meta.jira_key" :href="safeHref(meta.jira_url)" target="_blank" rel="noopener"
               class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-950/70 border border-blue-800/70 text-blue-300 hover:text-blue-100 font-mono">
               {{ meta.jira_key }} <ExternalLink class="w-2.5 h-2.5" />
@@ -153,7 +166,7 @@ onMounted(loadArtifacts)
         <section class="p-5 rounded-xl bg-slate-900 border border-slate-800">
           <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Stage plan</h3>
           <ol class="space-y-1">
-            <li v-for="(s, i) in STAGES" :key="s" class="flex items-start gap-3 p-2 rounded-lg"
+            <li v-for="(s, i) in stages" :key="s" class="flex items-start gap-3 p-2 rounded-lg"
               :class="stageStatus(i) === 'current' ? 'bg-slate-800/60' : ''">
               <CheckCircle2 v-if="stageStatus(i) === 'done'" class="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
               <CircleDot v-else-if="stageStatus(i) === 'current'" class="w-4 h-4 text-sky-400 flex-shrink-0 mt-0.5" />
@@ -164,6 +177,11 @@ onMounted(loadArtifacts)
                   <span v-if="stageStatus(i) === 'current'" class="ml-1 text-[10px] font-normal text-sky-300">{{ life.status }}</span>
                 </div>
                 <div class="text-[11px] text-slate-500">{{ STAGE_GOAL[s] }}</div>
+                <ul v-if="gateOf(s).length && stageStatus(i) !== 'upcoming'" class="mt-1 space-y-0.5" :aria-label="`Gate checklist for ${stageName(s)}`">
+                  <li v-for="g in gateOf(s)" :key="g" class="text-[11px] text-slate-400 flex gap-1.5">
+                    <span aria-hidden="true" class="text-slate-600">☐</span>{{ g }}
+                  </li>
+                </ul>
               </div>
               <button v-if="stageDocs[s]" type="button" @click="openDoc(stageDocs[s].path)"
                 class="flex-shrink-0 h-6 px-2 rounded bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-200 flex items-center gap-1">

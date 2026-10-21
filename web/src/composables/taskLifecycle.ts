@@ -21,6 +21,13 @@ const STAGE_NAMES: Record<string, string> = {
   e2e_validation: 'E2E Validation',
   uat_verification: 'UAT Verification',
   signoff_merge: 'Sign-off & Merge',
+  // Launch readiness (internal/readiness)
+  release_audit: 'Check How We Release Today',
+  release_automation: 'Make Releases Automatic',
+  observability_alerting: 'Watch the System & Send Alerts',
+  security_automation: 'Check Security Automatically',
+  customer_api_setup: 'Set Up the API for Customers',
+  load_resilience: 'Test Heavy Traffic & Prepare for Problems',
 }
 
 export function stageName(id?: string): string {
@@ -35,7 +42,10 @@ export function stagePosition(id?: string): { index: number; total: number } {
 export type ActionKind = 'run' | 'resume' | 'pause' | 'reset' | 'review' | 'assign' | 'approve'
 
 /** Stages that change repository files; they cannot run without assigned repositories. */
-export const CODE_STAGES = new Set(['atdd_creation', 'task_implementation', 'e2e_validation'])
+export const CODE_STAGES = new Set([
+  'atdd_creation', 'task_implementation', 'e2e_validation',
+  'release_automation', 'observability_alerting', 'security_automation', 'customer_api_setup', 'load_resilience',
+])
 export type Tone = 'active' | 'idle' | 'warn' | 'error' | 'done' | 'review' | 'waiting'
 
 export interface TaskAction {

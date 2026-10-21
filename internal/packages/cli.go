@@ -19,7 +19,8 @@ const CLIUsage = `usage: daemon packages <command> [id] [version]
   update <id>               install the latest release
   rollback <id> [version]   return to version, or to the previous kept version / snapshot
   uninstall <id>            remove the package (managed copies only for CLIs)
-  setup                     install every required package that is missing, dependencies first`
+  setup [category]          install every required package that is missing, dependencies first;
+                            with a category (e.g. launch-readiness), every missing package of it`
 
 // RunCLI runs a packages subcommand with m, printing progress to out, and returns the exit code.
 // Cancelling ctx (Ctrl-C) stops running jobs.
@@ -83,7 +84,7 @@ func RunCLI(ctx context.Context, m *Manager, args []string, out io.Writer) int {
 		}
 		return waitJobs(ctx, m, out, []string{job.ID})
 	case "setup":
-		res, err := m.Setup()
+		res, err := m.SetupCategory(arg(0)) // optional category, e.g. launch-readiness
 		if err != nil {
 			printErr(out, err)
 			return 1

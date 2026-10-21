@@ -6,6 +6,8 @@ const props = defineProps<{
   startStage: string
   haltStage: string
   produceVideo: boolean
+  // The selected workflow's stages; the default pipeline when not given
+  stages?: { id: string; name: string }[]
 }>()
 
 const emit = defineEmits<{
@@ -14,7 +16,7 @@ const emit = defineEmits<{
   (e: 'update:produceVideo', val: boolean): void
 }>()
 
-const availableStages = [
+const defaultStages = [
   { id: 'prd_discovery', name: 'Stage 1: PRD & Discovery' },
   { id: 'atdd_creation', name: 'Stage 2: ATDD Creation (Red Phase)' },
   { id: 'techdoc_rfc', name: 'Stage 3: Tech Doc / RFC Review' },
@@ -24,6 +26,7 @@ const availableStages = [
   { id: 'uat_verification', name: 'Stage 7: Manual & UAT Verification' },
   { id: 'signoff_merge', name: 'Stage 8: Sign-Off & Merge' },
 ]
+const availableStages = computed(() => (props.stages?.length ? props.stages : defaultStages))
 
 const startModel = computed({
   get: () => props.startStage,

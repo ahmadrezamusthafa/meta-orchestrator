@@ -37,7 +37,7 @@ const (
 )
 
 // Categories a manifest entry may use.
-var Categories = []string{"Agents", "Methodologies", "Plugins", "Runtimes", "Media", "Connectors"}
+var Categories = []string{"Agents", "Methodologies", "Plugins", "Runtimes", "Media", "Connectors", "Launch Readiness"}
 
 // VersionFile locates the installed version of an npx-installer package.
 type VersionFile struct {

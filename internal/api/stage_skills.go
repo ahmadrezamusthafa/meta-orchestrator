@@ -181,19 +181,23 @@ func (r *Router) normalizeStageSkills(stage string, names []string, available ma
 	return out, nil
 }
 
-// stageSkills resolves the skills attached to the task's current stage. Missing lists the
-// attached names that can no longer be used (disabled or removed since the plan was saved).
+// stageSkills resolves the skills of the task's current stage: its built-in playbook (launch
+// readiness stages) and the skills the operator attached. Missing lists the attached names that can
+// no longer be used (disabled or removed since the plan was saved).
 func (r *Router) stageSkills(task *types.Task) (loaded []*types.UniversalSkillContract, missing []string) {
-	rt := task.RouteFor(task.CurrentStageID)
-	if rt == nil || len(rt.Skills) == 0 {
-		return nil, nil
-	}
 	available := r.attachableSkills()
+	if pb := playbookSkill(task.CurrentStageID, available); pb != nil {
+		loaded = append(loaded, pb)
+	}
+	rt := task.RouteFor(task.CurrentStageID)
+	if rt == nil {
+		return loaded, nil
+	}
 	for _, n := range rt.Skills {
-		if s, ok := available[n]; ok {
-			loaded = append(loaded, s)
-		} else {
+		if s, ok := available[n]; !ok {
 			missing = append(missing, n)
+		} else if !containsSkill(loaded, n) {
+			loaded = append(loaded, s)
 		}
 	}
 	return loaded, missing

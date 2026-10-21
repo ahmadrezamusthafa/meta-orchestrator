@@ -424,11 +424,11 @@ func classOf(canonical string) stageClass {
 	switch canonical {
 	case "INTAKE_PRD", "TECH_DOC_RFC", "ATDD_RED_PHASE":
 		return classPlanning
-	case "REPO_DISCOVERY", "TASK_BREAKDOWN":
+	case "REPO_DISCOVERY", "TASK_BREAKDOWN", "RELEASE_AUDIT":
 		return classDecompose
-	case "IMPLEMENTATION_GREEN":
+	case "IMPLEMENTATION_GREEN", "RELEASE_AUTOMATION", "OBSERVABILITY_ALERTING", "SECURITY_AUTOMATION", "CUSTOMER_API_SETUP":
 		return classImplement
-	case "E2E_AUTOMATION", "CONTRACT_VERIFY":
+	case "E2E_AUTOMATION", "CONTRACT_VERIFY", "LOAD_RESILIENCE":
 		return classVerify
 	}
 	return classOther

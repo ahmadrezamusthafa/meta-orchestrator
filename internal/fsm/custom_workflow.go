@@ -6,6 +6,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/readiness"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 	"gopkg.in/yaml.v3"
 )
@@ -35,7 +36,8 @@ func NewWorkflowRegistry() *WorkflowRegistry {
 	reg := &WorkflowRegistry{
 		workflows: make(map[string]*types.WorkflowDefinition),
 	}
-	for _, def := range []*types.WorkflowDefinition{GetGeneralAISDLCWorkflow(), GetHotfixFastTrackWorkflow(), GetMicroserviceAPIWorkflow()} {
+	for _, def := range []*types.WorkflowDefinition{GetGeneralAISDLCWorkflow(), GetHotfixFastTrackWorkflow(), GetMicroserviceAPIWorkflow(),
+		GetLaunchReadinessWorkflow(), GetNewServiceWorkflow()} {
 		def.Builtin = true
 		reg.Register(def)
 	}
@@ -245,5 +247,66 @@ func GetMicroserviceAPIWorkflow() *types.WorkflowDefinition {
 			{ID: "task_implementation", Name: "Service Implementation", Type: types.StageTypeAutomated, AssignedRole: "developer", AllowedMethods: []string{"ReAct", "BMAD"}, WriteLockWorkspace: false},
 			{ID: "e2e_validation", Name: "Cross-Repo Consumer Verification", Type: types.StageTypeReview, AssignedRole: "release_manager", AllowedMethods: []string{"Supervisor"}, WriteLockWorkspace: false, RequiresGate: true},
 		},
+	}
+}
+
+// LaunchReadinessWorkflowID and NewServiceWorkflowID are the built-in launch-readiness workflows.
+const (
+	LaunchReadinessWorkflowID = "launch_readiness"
+	NewServiceWorkflowID      = "new_service_sdlc"
+)
+
+// readinessStages are the launch-readiness steps, each a gated stage the operator confirms.
+func readinessStages() []types.WorkflowStage {
+	out := make([]types.WorkflowStage, 0, len(readiness.Steps))
+	for _, s := range readiness.Steps {
+		typ := types.StageTypeAutomated
+		if !s.Code {
+			typ = types.StageTypeReview
+		}
+		out = append(out, types.WorkflowStage{ID: s.ID, Name: s.Name, Type: typ, AssignedRole: s.Role,
+			AllowedMethods: []string{"Supervisor", "Superpower", "ReAct"}, WriteLockWorkspace: !s.Code, RequiresGate: true,
+			GateCriteria: s.GateCriteria(), Metadata: map[string]string{"skill": s.Skill}})
+	}
+	return out
+}
+
+// launchSignoff is the go/no-go gate that closes the readiness steps.
+func launchSignoff() types.WorkflowStage {
+	return types.WorkflowStage{ID: "signoff_merge", Name: "Launch Go / No-Go Sign-Off", Type: types.StageTypeReview,
+		AssignedRole: "release_manager", AllowedMethods: []string{"BMAD"}, RequiresGate: true,
+		GateCriteria: "Every readiness checklist is approved or its open items have an owner and date; rollout and rollback plan agreed"}
+}
+
+// GetLaunchReadinessWorkflow returns the launch-readiness track for a service that already exists:
+// the six readiness steps, each confirmed by the operator, then a go/no-go sign-off.
+func GetLaunchReadinessWorkflow() *types.WorkflowDefinition {
+	return &types.WorkflowDefinition{
+		ID:   LaunchReadinessWorkflowID,
+		Name: "Production Launch Readiness (7-Stage)",
+		Description: "Take an existing service to production: check how it is released today, make releases automatic, " +
+			"add monitoring and alerts, automate security checks, set up the customer API, and load-test and prepare for " +
+			"incidents — each step confirmed at a gate — then a go/no-go sign-off.",
+		Version:     "1.0.0",
+		DefaultRole: "devops_superpower",
+		Stages:      append(readinessStages(), launchSignoff()),
+	}
+}
+
+// GetNewServiceWorkflow returns the full lifecycle of a new service, project or initiative: the
+// General AI SDLC build stages followed by the launch-readiness steps and a go/no-go sign-off.
+func GetNewServiceWorkflow() *types.WorkflowDefinition {
+	build := GetGeneralAISDLCWorkflow().Stages
+	stages := append([]types.WorkflowStage(nil), build[:len(build)-1]...) // all but signoff_merge
+	stages = append(stages, readinessStages()...)
+	return &types.WorkflowDefinition{
+		ID:   NewServiceWorkflowID,
+		Name: "New Service / Initiative to Production (14-Stage)",
+		Description: "From requirement to a production-ready service: PRD, ATDD, tech doc, plan, build and test, then every " +
+			"launch-readiness step (release, automation, monitoring, security, customer API, load and incident readiness), " +
+			"each confirmed at a gate, and a go/no-go sign-off.",
+		Version:     "1.0.0",
+		DefaultRole: "orchestrator_agent",
+		Stages:      append(stages, launchSignoff()),
 	}
 }

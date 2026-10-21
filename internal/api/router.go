@@ -205,6 +205,7 @@ func NewRouter(cfg RouterConfig) *Router {
 	r.initTelemetry()
 	r.initGuardrails()
 	r.initHooks()
+	r.installReadinessSkills()
 	r.loadWorkflows()
 	r.loadBoard()
 	r.loadConsoles()

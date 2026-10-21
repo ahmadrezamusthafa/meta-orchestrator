@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Package as PackageIcon, AlertTriangle, Loader2 } from 'lucide-vue-next'
+import { Package as PackageIcon, AlertTriangle, Loader2, Download } from 'lucide-vue-next'
 import { usePackagesStore } from '../../stores/packages'
 import type { PackageDTO } from '../../types'
 import PackageCard from './PackageCard.vue'
@@ -26,8 +26,15 @@ const groups = computed(() => {
     map.get(c)!.push(p)
   }
   const rank = (p: PackageDTO) => (p.required ? 0 : 2) + (p.status === 'installed' ? 1 : 0)
-  return [...map.entries()].map(([category, items]) => ({ category, items: [...items].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)) }))
+  return [...map.entries()].map(([category, items]) => ({
+    category,
+    items: [...items].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)),
+    missing: items.filter((p) => p.status === 'not_installed' || p.status === 'error').length,
+  }))
 })
+
+// Categories of optional tools that are installed together (e.g. the launch-readiness scanners).
+const INSTALL_ALL = new Set(['Launch Readiness'])
 </script>
 
 <template>
@@ -54,7 +61,19 @@ const groups = computed(() => {
     <p v-else-if="store.packages.length && !filtered.length" class="text-xs text-slate-500">No package matches the filter.</p>
 
     <div v-for="g in groups" :key="g.category" class="space-y-2">
-      <h4 class="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">{{ g.category }}</h4>
+      <div class="flex items-center gap-2">
+        <h4 class="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">{{ g.category }}</h4>
+        <button
+          v-if="INSTALL_ALL.has(g.category) && g.missing"
+          type="button"
+          class="ml-auto inline-flex items-center gap-1 h-6 px-2 rounded bg-emerald-700 hover:bg-emerald-600 text-[11px] text-white disabled:opacity-50"
+          :disabled="store.settingUp || store.setupRunning"
+          :title="`Install the ${g.missing} missing ${g.category} package(s), one after another`"
+          @click="store.setup(g.category)"
+        >
+          <Download class="w-3 h-3" /> Install all {{ g.missing }} missing
+        </button>
+      </div>
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         <PackageCard v-for="p in g.items" :key="p.id" :pkg="p" />
       </div>

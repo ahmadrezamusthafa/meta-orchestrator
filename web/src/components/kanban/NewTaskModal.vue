@@ -277,6 +277,8 @@ async function handleSubmit() {
     }
 
     const created = await taskStore.createTask(payload)
+    // Show the board of the task's workflow, so its card has a column to sit in.
+    if (selectedWorkflowId.value) workflowStore.activeWorkflowId = selectedWorkflowId.value
     toastStore.success(`Task Launched`, `${created.id} initialized into factory pipeline`)
     emit('created', created)
     emit('close')
@@ -315,7 +317,7 @@ async function handleSubmit() {
         </div>
         <ComplexityAssessmentCard :assessment="analysis.assessment" :busy="analyzing" @regrade="analyze" />
         <RoutingPlanTable v-model:rows="planRows" :proposed="proposed" :methods="analysis.methods" :models="analysis.models"
-          :skills="analysis.skills" :skill-suggestions="analysis.skill_suggestions"
+          :skills="analysis.skills" :skill-suggestions="analysis.skill_suggestions" :playbooks="analysis.playbooks" :stage-tools="analysis.stage_tools"
           :evidence-skill="analysis.evidence_skill" :evidence-suggestions="analysis.evidence_suggestions" :disabled="analyzing" />
         <p v-if="analyzeError" class="flex items-center gap-1.5 text-xs text-rose-400"><AlertOctagon class="w-3.5 h-3.5" />{{ analyzeError }}</p>
         <p class="text-[11px] text-slate-500">You can change the plan later from the task's Method &amp; Model tab; changes apply from the next stage run.</p>

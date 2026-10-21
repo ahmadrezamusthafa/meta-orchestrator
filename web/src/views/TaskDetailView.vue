@@ -13,7 +13,8 @@ import TaskPullRequestPanel from '../components/task/TaskPullRequestPanel.vue'
 import TaskUATGuidePanel from '../components/task/TaskUATGuidePanel.vue'
 import TaskRoutingPanel from '../components/task/TaskRoutingPanel.vue'
 import TaskEvidencePanel from '../components/task/TaskEvidencePanel.vue'
-import { taskLifecycle, stagePosition, stageName, STAGES, TONE_BADGE, ACTION_BUTTON } from '../composables/taskLifecycle'
+import { taskLifecycle, stageName, TONE_BADGE, ACTION_BUTTON } from '../composables/taskLifecycle'
+import { useTaskStages } from '../composables/taskStages'
 import type { TaskWorktreeDTO, TaskDependencyInfoDTO } from '../types'
 import { api } from '../services/api'
 import {
@@ -67,7 +68,8 @@ const hasEvidence = computed(() => Number(task.value?.metadata?.evidence_videos 
 const TABS = computed(() => ALL_TABS.filter((t) => t.id !== 'evidence' || onEvidenceStage.value || hasEvidence.value))
 const life = computed(() => taskLifecycle(task.value))
 const pending = computed(() => !!taskStore.pendingActions[taskId.value])
-const pos = computed(() => stagePosition(task.value?.current_stage_id))
+const { stages: STAGES, index: stageIdx } = useTaskStages(() => task.value)
+const pos = computed(() => ({ index: stageIdx.value }))
 const meta = computed(() => task.value?.metadata || {})
 const ACTION_ICON = { run: Play, resume: RotateCw, pause: Pause, reset: RefreshCcw, review: Eye, assign: FolderGit2, approve: ShieldAlert }
 

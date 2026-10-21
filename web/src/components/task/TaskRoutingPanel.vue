@@ -14,7 +14,7 @@ const toast = useToastStore()
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
-const options = ref<Pick<TaskAnalysisDTO, 'methods' | 'models' | 'skills' | 'skill_suggestions' | 'evidence_skill' | 'evidence_suggestions'>>({
+const options = ref<Pick<TaskAnalysisDTO, 'methods' | 'models' | 'skills' | 'skill_suggestions' | 'playbooks' | 'stage_tools' | 'evidence_skill' | 'evidence_suggestions'>>({
   methods: [], models: [], skills: [], skill_suggestions: {},
 })
 const assessment = ref<ComplexityAssessment | null>(null)
@@ -43,9 +43,9 @@ async function load(regrade?: Complexity) {
     const cx = (regrade || r.complexity || 'MEDIUM') as Complexity
     const a = await api.analyzeTask({ title: props.task.title, description: props.task.description,
       assigned_repos: props.task.assigned_repos, complexity: cx, task_type: props.task.metadata?.task_type,
-      start_stage: start, halt_stage: halt })
+      start_stage: start, halt_stage: halt, workflow_id: props.task.workflow_id || undefined })
     options.value = { methods: a.methods, models: a.models, skills: a.skills ?? [], skill_suggestions: a.skill_suggestions ?? {},
-      evidence_skill: a.evidence_skill, evidence_suggestions: a.evidence_suggestions ?? [] }
+      playbooks: a.playbooks ?? {}, stage_tools: a.stage_tools ?? {}, evidence_skill: a.evidence_skill, evidence_suggestions: a.evidence_suggestions ?? [] }
     current.value = Object.fromEntries(a.plan.map((p) => [p.stage_id, { method: p.method, model: p.model }]))
     assessment.value = {
       ...a.assessment,
@@ -118,7 +118,7 @@ watch(() => props.task.id, () => load(), { immediate: true })
     <template v-if="assessment">
       <ComplexityAssessmentCard :assessment="assessment" :busy="loading" @regrade="load" />
       <RoutingPlanTable :rows="rows" :proposed="proposed" :current="current" :methods="options.methods" :models="options.models"
-        :skills="options.skills" :skill-suggestions="options.skill_suggestions"
+        :skills="options.skills" :skill-suggestions="options.skill_suggestions" :playbooks="options.playbooks" :stage-tools="options.stage_tools"
         :evidence-skill="options.evidence_skill" :evidence-suggestions="options.evidence_suggestions"
         :disabled="loading || saving" :current-stage="task.current_stage_id" @update:rows="onRows" />
       <div class="sticky bottom-0 -mx-5 px-5 py-3 bg-slate-950/95 border-t border-slate-800 backdrop-blur flex items-center justify-end gap-3">

@@ -450,8 +450,9 @@ export const api = {
   },
 
   /** Installs every required package that is missing, in dependency order. */
-  async setupPackages(): Promise<PackageSetupResult> {
-    return readJSON(await postJSON(`${BASE_URL}/packages/setup`), 'Starting the setup')
+  async setupPackages(category?: string): Promise<PackageSetupResult> {
+    const q = category ? `?category=${encodeURIComponent(category)}` : ''
+    return readJSON(await postJSON(`${BASE_URL}/packages/setup${q}`), 'Starting the setup')
   },
 
   async getPackageJob(jobId: string): Promise<PackageJob> {

@@ -139,7 +139,7 @@ Click on any task card on the Kanban board to enter the **Active Task Detail Vie
 
 ### 3.4 Custom SDLC Workflow Builder (`/settings/workflows`)
 
-1. Browse active pipelines (`General AI SDLC`, `Hotfix Fast-Track`, `Microservice API`).
+1. Browse active pipelines (`General AI SDLC`, `Hotfix Fast-Track`, `Microservice API`, `Production Launch Readiness`, `New Service / Initiative to Production`).
 2. Use the **Sequential Stage Pipeline Designer** to add, reorder, or remove stages.
 3. Configure stage properties:
    * Persona Role (Architect, Developer, QA Engineer, Product Manager).
@@ -148,6 +148,16 @@ Click on any task card on the Kanban board to enter the **Active Task Detail Vie
    * **Human Approval Gate:** Toggle whether execution pauses for manual approval.
 4. Inspect the **Live Kanban Projection Preview** to verify the projected board columns.
 5. Click **`Export to .sdlc/workflow.yaml`** to save to disk.
+
+---
+
+### 3.4a Launch Readiness for a New Service or Initiative
+
+1. Install the readiness tools: Tool Hub → **Launch Readiness** → **Install all missing** (or `go run ./cmd/daemon packages setup launch-readiness`). Required: gitleaks, trivy, semgrep (security), spectral (customer API), k6 (load).
+2. **New Task** → workflow **Production Launch Readiness** (existing service) or **New Service / Initiative to Production** (from the PRD). Assign the service's repositories.
+3. In the routing step, check each readiness row's **Tools** (✓ installed / ✗ missing) and its built-in playbook skill.
+4. Run each stage. When it finishes, confirm the **Confirm before approving** checklist in the console, then approve or reject with feedback.
+5. Full guide: [`docs/LAUNCH_READINESS.md`](LAUNCH_READINESS.md).
 
 ---
 

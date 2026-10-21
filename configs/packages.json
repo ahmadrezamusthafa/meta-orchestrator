@@ -268,5 +268,213 @@
     "requires": [
       "go"
     ]
+  },
+  {
+    "id": "gitleaks",
+    "name": "Gitleaks",
+    "category": "Launch Readiness",
+    "description": "Secret scanning for the Check Security Automatically stage.",
+    "docs": "https://github.com/gitleaks/gitleaks#installing",
+    "kind": "system",
+    "binaries": [
+      "gitleaks"
+    ],
+    "required": false,
+    "toolchain_id": "gitleaks",
+    "system": {
+      "brew": "gitleaks"
+    },
+    "notes": "Required by the security stage. Installed by Homebrew. Rollback is not supported for system packages."
+  },
+  {
+    "id": "trivy",
+    "name": "Trivy",
+    "category": "Launch Readiness",
+    "description": "Dependency, container image and IaC scanning, and SBOMs, for the security stage.",
+    "docs": "https://trivy.dev/latest/getting-started/installation/",
+    "kind": "system",
+    "binaries": [
+      "trivy"
+    ],
+    "required": false,
+    "toolchain_id": "trivy",
+    "system": {
+      "brew": "trivy"
+    },
+    "notes": "Required by the security stage. Installed by Homebrew. Rollback is not supported for system packages."
+  },
+  {
+    "id": "semgrep",
+    "name": "Semgrep",
+    "category": "Launch Readiness",
+    "description": "Static analysis (SAST) for the security stage.",
+    "docs": "https://semgrep.dev/docs/getting-started/quickstart",
+    "kind": "system",
+    "binaries": [
+      "semgrep"
+    ],
+    "required": false,
+    "toolchain_id": "semgrep",
+    "system": {
+      "brew": "semgrep"
+    },
+    "notes": "Required by the security stage. Installed by Homebrew. Rollback is not supported for system packages."
+  },
+  {
+    "id": "osv-scanner",
+    "name": "OSV-Scanner",
+    "category": "Launch Readiness",
+    "description": "Lockfile vulnerability check for the security stage.",
+    "docs": "https://google.github.io/osv-scanner/installation/",
+    "kind": "system",
+    "binaries": [
+      "osv-scanner"
+    ],
+    "required": false,
+    "toolchain_id": "osv-scanner",
+    "system": {
+      "brew": "osv-scanner"
+    },
+    "notes": "Recommended. Installed by Homebrew. Rollback is not supported for system packages."
+  },
+  {
+    "id": "syft",
+    "name": "Syft",
+    "category": "Launch Readiness",
+    "description": "SBOM generation for the security stage.",
+    "docs": "https://github.com/anchore/syft#installation",
+    "kind": "system",
+    "binaries": [
+      "syft"
+    ],
+    "required": false,
+    "toolchain_id": "syft",
+    "system": {
+      "brew": "syft"
+    },
+    "notes": "Recommended. Installed by Homebrew. Rollback is not supported for system packages."
+  },
+  {
+    "id": "checkov",
+    "name": "Checkov",
+    "category": "Launch Readiness",
+    "description": "Terraform, Kubernetes and Helm misconfiguration scanning for the security stage.",
+    "docs": "https://www.checkov.io/2.Basics/Installing%20Checkov.html",
+    "kind": "system",
+    "binaries": [
+      "checkov"
+    ],
+    "required": false,
+    "toolchain_id": "checkov",
+    "system": {
+      "brew": "checkov"
+    },
+    "notes": "Recommended when the repositories hold infrastructure code. Installed by Homebrew. Rollback is not supported for system packages."
+  },
+  {
+    "id": "actionlint",
+    "name": "actionlint",
+    "category": "Launch Readiness",
+    "description": "Validates GitHub Actions workflows written by the Make Releases Automatic stage.",
+    "docs": "https://github.com/rhysd/actionlint/blob/main/docs/install.md",
+    "kind": "system",
+    "binaries": [
+      "actionlint"
+    ],
+    "required": false,
+    "toolchain_id": "actionlint",
+    "system": {
+      "brew": "actionlint"
+    },
+    "notes": "Recommended for repositories on GitHub Actions. Installed by Homebrew. Rollback is not supported for system packages."
+  },
+  {
+    "id": "hadolint",
+    "name": "Hadolint",
+    "category": "Launch Readiness",
+    "description": "Dockerfile linting for the Make Releases Automatic stage.",
+    "docs": "https://github.com/hadolint/hadolint#install",
+    "kind": "system",
+    "binaries": [
+      "hadolint"
+    ],
+    "required": false,
+    "toolchain_id": "hadolint",
+    "system": {
+      "brew": "hadolint"
+    },
+    "notes": "Recommended. Installed by Homebrew. Rollback is not supported for system packages."
+  },
+  {
+    "id": "promtool",
+    "name": "promtool (Prometheus)",
+    "category": "Launch Readiness",
+    "description": "Validates the alert rules written by the Watch the System & Send Alerts stage.",
+    "docs": "https://prometheus.io/docs/prometheus/latest/installation/",
+    "kind": "system",
+    "binaries": [
+      "promtool"
+    ],
+    "required": false,
+    "toolchain_id": "promtool",
+    "system": {
+      "brew": "prometheus"
+    },
+    "notes": "Recommended. Installs Prometheus, which ships promtool. Installed by Homebrew. Rollback is not supported for system packages."
+  },
+  {
+    "id": "k6",
+    "name": "k6",
+    "category": "Launch Readiness",
+    "description": "Load tests for the Test Heavy Traffic & Prepare for Problems stage.",
+    "docs": "https://grafana.com/docs/k6/latest/set-up/install-k6/",
+    "kind": "system",
+    "binaries": [
+      "k6"
+    ],
+    "required": false,
+    "toolchain_id": "k6",
+    "system": {
+      "brew": "k6"
+    },
+    "notes": "Required by the load stage. Installed by Homebrew. Rollback is not supported for system packages."
+  },
+  {
+    "id": "spectral",
+    "name": "Spectral",
+    "category": "Launch Readiness",
+    "description": "Lints the OpenAPI contract in the Set Up the API for Customers stage.",
+    "docs": "https://docs.stoplight.io/docs/spectral/b8391e051b7d8-installation",
+    "kind": "npm-cli",
+    "package": "@stoplight/spectral-cli",
+    "binaries": [
+      "spectral"
+    ],
+    "required": false,
+    "requires": [
+      "node"
+    ],
+    "notes": "Required by the customer API stage. Versioned install: pick, update or roll back a version here."
+  },
+  {
+    "id": "govulncheck",
+    "name": "govulncheck",
+    "category": "Launch Readiness",
+    "description": "Reachable Go vulnerabilities for the security stage.",
+    "docs": "https://go.dev/doc/tutorial/govulncheck",
+    "kind": "go-cli",
+    "package": "golang.org/x/vuln/cmd/govulncheck",
+    "module": "golang.org/x/vuln",
+    "binaries": [
+      "govulncheck"
+    ],
+    "version_args": [
+      "-h"
+    ],
+    "required": false,
+    "requires": [
+      "go"
+    ],
+    "notes": "Recommended for Go repositories. Built with Go (the go package is installed first); versioned install with rollback. Its -version contacts the vulnerability database, so the check runs -h and the version shown is the one the orchestrator installed."
   }
 ]

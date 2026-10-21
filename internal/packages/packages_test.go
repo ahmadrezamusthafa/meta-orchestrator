@@ -40,7 +40,11 @@ func TestManifestValidation(t *testing.T) {
 	}
 	want := map[string]string{"claude-code": KindNPMCLI, "node": KindSystem, "git": KindSystem, "playwright": KindNPMCLI,
 		"ffmpeg": KindSystem, "docker": KindSystem, "bmad": KindNPXInstaller, "gsd": KindNPXInstaller,
-		"superpowers": KindClaudePlugin, "github-mcp-server": KindGoCLI, "mcp-grafana": KindGoCLI, "go": KindSystem}
+		"superpowers": KindClaudePlugin, "github-mcp-server": KindGoCLI, "mcp-grafana": KindGoCLI, "go": KindSystem,
+		// Launch readiness tools
+		"gitleaks": KindSystem, "trivy": KindSystem, "semgrep": KindSystem, "osv-scanner": KindSystem, "syft": KindSystem,
+		"checkov": KindSystem, "actionlint": KindSystem, "hadolint": KindSystem, "promtool": KindSystem, "k6": KindSystem, "spectral": KindNPMCLI,
+		"govulncheck": KindGoCLI}
 	if len(m.Packages) != len(want) {
 		t.Fatalf("manifest has %d packages, want %d", len(m.Packages), len(want))
 	}
