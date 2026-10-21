@@ -20,7 +20,7 @@ import (
 const MaxBodyBytes = 32 << 20
 
 // DefaultListenAddr binds the daemon to loopback only.
-const DefaultListenAddr = "127.0.0.1:8080"
+const DefaultListenAddr = "127.0.0.1:5181"
 
 // ListenAddr returns MO_LISTEN_ADDR, or DefaultListenAddr when it is unset.
 func ListenAddr() string {
