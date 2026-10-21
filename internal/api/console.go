@@ -345,7 +345,9 @@ func (r *Router) runAgentTurn(ctx context.Context, t agentTurn) (*llm.LLMRespons
 			return d
 		}
 	}
-	req := &llm.LLMRequest{Messages: t.Messages, MaxTokens: t.MaxTokens, SessionID: t.SessionID, WorkDir: t.WorkDir, AddDirs: t.AddDirs,
+	// Folders the operator granted from a blocked-path prompt stay open to every later turn.
+	addDirs := append(append([]string(nil), t.AddDirs...), r.taskGrantedDirs(taskID)...)
+	req := &llm.LLMRequest{Messages: t.Messages, MaxTokens: t.MaxTokens, SessionID: t.SessionID, WorkDir: t.WorkDir, AddDirs: addDirs,
 		PermissionMode: t.PermissionMode, Approver: approver, AllowedTools: readOnlyCommands}
 	// Connected connectors (GitHub, Grafana, Jira, …) reach the agent through a private per-turn
 	// MCP config: the agent runs in the task worktree, where the orchestrator's .mcp.json is not.

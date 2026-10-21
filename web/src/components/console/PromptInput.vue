@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { Paperclip } from 'lucide-vue-next'
+import FilePickerModal from './FilePickerModal.vue'
 
 const props = withDefaults(defineProps<{
   busy?: boolean
@@ -50,6 +52,25 @@ function setValue(v: string) {
       el.focus()
       el.setSelectionRange(v.length, v.length)
     }
+  })
+}
+
+// Attached paths go in at the cursor, quoted when they contain whitespace.
+const picking = ref(false)
+
+function attachPaths(paths: string[]) {
+  const el = textarea.value
+  const quoted = paths.map(p => (/\s/.test(p) ? `"${p}"` : p)).join(' ')
+  const start = el ? el.selectionStart : text.value.length
+  const end = el ? el.selectionEnd : text.value.length
+  const before = text.value.slice(0, start)
+  const after = text.value.slice(end)
+  const insert = (before && !/\s$/.test(before) ? ' ' : '') + quoted + (after && !/^\s/.test(after) ? ' ' : '')
+  text.value = before + insert + after
+  const caret = before.length + insert.length
+  nextTick(() => {
+    el?.focus()
+    el?.setSelectionRange(caret, caret)
   })
 }
 
@@ -166,7 +187,17 @@ function onKeydown(e: KeyboardEvent) {
         class="block max-h-60 min-h-[24px] w-full resize-none overflow-y-auto bg-transparent font-mono text-sm leading-6 text-slate-100 placeholder:text-slate-600 focus:outline-none"
         @keydown="onKeydown"
       ></textarea>
+      <button
+        type="button"
+        title="Attach files — adds their full paths to your message"
+        aria-label="Attach files"
+        class="mt-0.5 flex-shrink-0 rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+        @click.stop="picking = true"
+      >
+        <Paperclip class="h-4 w-4" />
+      </button>
     </div>
+    <FilePickerModal :is-open="picking" @select="attachPaths" @close="picking = false; focus()" />
     <div class="flex h-5 items-center justify-between px-1 font-mono text-[11px] text-slate-500">
       <span v-if="sendBlocked" class="text-amber-400/80">turn in progress — esc to interrupt</span>
       <span v-else-if="hint">{{ hint }}</span>

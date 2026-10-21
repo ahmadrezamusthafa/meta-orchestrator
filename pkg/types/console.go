@@ -105,8 +105,9 @@ const (
 	ApprovalDenied    = "denied"
 	ApprovalExpired   = "expired"
 	ApprovalCancelled = "cancelled"
-	ApprovalAutomatic = "auto" // matched a rule the operator saved earlier
-	ApprovalAll       = "all"  // allowed, and every later request in the task is allowed too
+	ApprovalAutomatic = "auto"    // matched a rule the operator saved earlier
+	ApprovalAll       = "all"     // allowed, and every later request in the task is allowed too
+	ApprovalGranted   = "granted" // allowed, and the blocked path's folder is granted to the task
 )
 
 // Approval kinds: what the operator is asked to decide.
@@ -132,16 +133,18 @@ type ConsoleQuestion struct {
 
 // ConsoleApproval is a permission request from the agent and its outcome.
 type ConsoleApproval struct {
-	ID          string    `json:"id"`
-	Kind        string    `json:"kind,omitempty"` // ApprovalKind*; empty means tool
-	ToolName    string    `json:"tool_name"`
-	Summary     string    `json:"summary"`              // the command, file or URL in one line
-	RuleLabel   string    `json:"rule_label,omitempty"` // what "always allow" would cover
-	BlockedPath string    `json:"blocked_path,omitempty"`
-	Decision    string    `json:"decision"`
-	Message     string    `json:"message,omitempty"` // operator note sent to the agent on deny
-	ExpiresAt   time.Time `json:"expires_at"`
-	DecidedAt   time.Time `json:"decided_at,omitempty"`
+	ID          string `json:"id"`
+	Kind        string `json:"kind,omitempty"` // ApprovalKind*; empty means tool
+	ToolName    string `json:"tool_name"`
+	Summary     string `json:"summary"`              // the command, file or URL in one line
+	RuleLabel   string `json:"rule_label,omitempty"` // what "always allow" would cover
+	BlockedPath string `json:"blocked_path,omitempty"`
+	// GrantDir is the folder "grant" would give the agent access to (set for a blocked path).
+	GrantDir  string    `json:"grant_dir,omitempty"`
+	Decision  string    `json:"decision"`
+	Message   string    `json:"message,omitempty"` // operator note sent to the agent on deny
+	ExpiresAt time.Time `json:"expires_at"`
+	DecidedAt time.Time `json:"decided_at,omitempty"`
 	// Warning explains why this request always asks, even under "allow all" (e.g. a blind conflict resolution).
 	Warning string `json:"warning,omitempty"`
 	// Mode is the permission mode the agent gets once a plan is approved (plan kind).

@@ -957,13 +957,20 @@ func (h *cliHost) answer(ctx context.Context, raw []byte, approve Approver) {
 			input = map[string]interface{}{}
 		}
 		decision = map[string]interface{}{"behavior": "allow", "updatedInput": input}
+		var updates []map[string]interface{}
 		if msg.Request.ToolName == ToolExitPlanMode {
 			// Approving the plan alone keeps the CLI in plan mode, where it still refuses every edit.
 			mode := d.Mode
 			if mode == "" {
 				mode = "default"
 			}
-			decision["updatedPermissions"] = []map[string]interface{}{{"type": "setMode", "mode": mode, "destination": "session"}}
+			updates = append(updates, map[string]interface{}{"type": "setMode", "mode": mode, "destination": "session"})
+		}
+		if len(d.AddDirs) > 0 {
+			updates = append(updates, map[string]interface{}{"type": "addDirectories", "directories": d.AddDirs, "destination": "session"})
+		}
+		if len(updates) > 0 {
+			decision["updatedPermissions"] = updates
 		}
 	} else if d.Message == "" {
 		decision["message"] = "The operator denied this action."

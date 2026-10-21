@@ -30,6 +30,17 @@ type DirectoryItem struct {
 	IsHidden      bool              `json:"is_hidden"`
 }
 
+// FileItem is a file of the browsed directory (listed only when files are requested).
+type FileItem struct {
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	Size     int64  `json:"size"`
+	IsHidden bool   `json:"is_hidden"`
+}
+
+// maxBrowseFiles caps the files listed for one directory.
+const maxBrowseFiles = 2000
+
 // QuickBookmark represents a shortcut bookmark to common project folders.
 type QuickBookmark struct {
 	Name string `json:"name"`
@@ -43,6 +54,7 @@ type BrowseFSResponse struct {
 	ParentPath     string           `json:"parent_path"`
 	Breadcrumbs    []BreadcrumbItem `json:"breadcrumbs"`
 	Directories    []DirectoryItem  `json:"directories"`
+	Files          []FileItem       `json:"files,omitempty"`
 	QuickBookmarks []QuickBookmark  `json:"quick_bookmarks"`
 }
 
@@ -85,12 +97,24 @@ func (r *Router) handleFSBrowse(w http.ResponseWriter, req *http.Request) {
 	}
 	showHidden := showHiddenParam != "false" && showHiddenParam != "0"
 
+	// Files are listed only for file pickers (files=true), e.g. attaching a file to a console prompt.
+	withFiles := req.URL.Query().Get("files") == "true"
+
 	// Read child directories
 	entries, err := os.ReadDir(targetPath)
 	var dirs []DirectoryItem
+	var files []FileItem
 	if err == nil {
 		for _, entry := range entries {
 			if !entry.IsDir() {
+				if withFiles && len(files) < maxBrowseFiles && (showHidden || !strings.HasPrefix(entry.Name(), ".")) {
+					var size int64
+					if info, infoErr := entry.Info(); infoErr == nil {
+						size = info.Size()
+					}
+					files = append(files, FileItem{Name: entry.Name(), Path: filepath.Join(targetPath, entry.Name()), Size: size,
+						IsHidden: strings.HasPrefix(entry.Name(), ".")})
+				}
 				continue
 			}
 			name := entry.Name()
@@ -147,6 +171,10 @@ func (r *Router) handleFSBrowse(w http.ResponseWriter, req *http.Request) {
 		return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name)
 	})
 
+	sort.Slice(files, func(i, j int) bool {
+		return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name)
+	})
+
 	// Quick Bookmarks
 	homeDir, _ := os.UserHomeDir()
 	bookmarks := []QuickBookmark{
@@ -182,6 +210,7 @@ func (r *Router) handleFSBrowse(w http.ResponseWriter, req *http.Request) {
 		ParentPath:     parentPath,
 		Breadcrumbs:    breadcrumbs,
 		Directories:    dirs,
+		Files:          files,
 		QuickBookmarks: bookmarks,
 	}
 
