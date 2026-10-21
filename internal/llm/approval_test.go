@@ -181,3 +181,12 @@ func TestBackgroundAgentsKeepThePermissionChannelOpen(t *testing.T) {
 		t.Fatalf("tokens should cover both turns and cost be the CLI's running total: %+v", resp.TokenUsage)
 	}
 }
+
+func TestGrantedFolderReachesTheSession(t *testing.T) {
+	cli, answerFile := fakeCLIRecordingAnswer(t, "Read", `{"file_path":"/data/spec.md"}`)
+	runFakeCLI(t, cli, ApprovalDecision{Allow: true, AddDirs: []string{"/data"}})
+	answer, _ := os.ReadFile(answerFile)
+	if !strings.Contains(string(answer), `"updatedPermissions":[{"destination":"session","directories":["/data"],"type":"addDirectories"}]`) {
+		t.Fatalf("a granted folder must be added to the session's directories:\n%s", answer)
+	}
+}

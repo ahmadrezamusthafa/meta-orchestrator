@@ -909,11 +909,20 @@ export interface QuickBookmark {
   icon: string
 }
 
+export interface FileItem {
+  name: string
+  path: string
+  size: number
+  is_hidden?: boolean
+}
+
 export interface BrowseFSResponse {
   current_path: string
   parent_path: string
   breadcrumbs: BreadcrumbItem[]
   directories: DirectoryItem[]
+  /** listed only when browsing with files */
+  files?: FileItem[]
   quick_bookmarks: QuickBookmark[]
 }
 
@@ -1052,6 +1061,7 @@ export interface JiraSyncConfig {
 
 export interface JiraSyncStatus {
   connected: boolean
+  enabled: boolean // the JIRA connector is switched on in Connectors
   running: boolean
   last_run_at?: string
   last_error?: string
@@ -1344,7 +1354,9 @@ export interface ConsoleApprovalInfo {
   summary: string
   rule_label?: string
   blocked_path?: string
-  decision: 'pending' | 'allowed' | 'always' | 'all' | 'denied' | 'expired' | 'cancelled' | 'auto'
+  /** the folder a "grant" decision gives the agent access to (outside the workspace) */
+  grant_dir?: string
+  decision: 'pending' | 'allowed' | 'always' | 'all' | 'granted' | 'denied' | 'expired' | 'cancelled' | 'auto'
   message?: string
   expires_at: string
   decided_at?: string

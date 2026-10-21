@@ -145,7 +145,8 @@ type pendingApproval struct {
 	kind      string
 	rule      approvalRule
 	questions []types.ConsoleQuestion
-	blind     bool // takes one side of a conflict wholesale
+	blind     bool   // takes one side of a conflict wholesale
+	grantDir  string // the folder a "grant" answer gives access to; "" when it cannot be granted
 	ch        chan approvalAnswer
 }
 
@@ -283,11 +284,14 @@ func (r *Router) approverFor(taskID, turnID, planExit string) llm.Approver {
 			return types.ConsoleEntry{Kind: types.ConsoleKindApproval, TurnID: turnID, Status: status, Content: req.Description,
 				Tool: &types.ConsoleTool{ID: req.ToolUseID, Name: req.ToolName, Input: req.Input}, Approval: &a}
 		}
-		auto := func(label string) llm.ApprovalDecision {
+		auto := func(label string, addDirs ...string) llm.ApprovalDecision {
 			a := info
 			a.ID, a.RuleLabel, a.Decision, a.DecidedAt = r.console.nextID("apr"), label, types.ApprovalAutomatic, time.Now()
 			r.addEntry(taskID, entry(types.ConsoleDone, a))
-			return llm.ApprovalDecision{Allow: true, Mode: planExit}
+			return llm.ApprovalDecision{Allow: true, Mode: planExit, AddDirs: addDirs}
+		}
+		if kind == types.ApprovalKindTool {
+			info.GrantDir = grantDirFor(req.BlockedPath)
 		}
 
 		// A question needs an answer only the operator can give, and taking one side of a conflict
@@ -302,6 +306,11 @@ func (r *Router) approverFor(taskID, turnID, planExit string) llm.Approver {
 				return auto(allowAllLabel)
 			}
 			if kind == types.ApprovalKindTool {
+				// A folder the operator granted earlier: the session may predate the grant, so it is
+				// handed over again with the answer.
+				if dir := grantedDirFor(req.BlockedPath, r.taskGrantedDirs(taskID)); dir != "" {
+					return auto("access to "+dir+" (granted folder)", dir)
+				}
 				for _, rule := range r.taskApprovalRules(taskID) {
 					if rule.matches(req.ToolName, req.Input) {
 						return auto(rule.label())
@@ -311,7 +320,7 @@ func (r *Router) approverFor(taskID, turnID, planExit string) llm.Approver {
 		}
 
 		p := &pendingApproval{id: r.console.nextID("apr"), taskID: taskID, kind: kind, questions: info.Questions, blind: blind,
-			ch: make(chan approvalAnswer, 1)}
+			grantDir: info.GrantDir, ch: make(chan approvalAnswer, 1)}
 		if kind == types.ApprovalKindTool && !blind {
 			p.rule = ruleFor(req.ToolName, req.Input)
 			info.RuleLabel = p.rule.label()
@@ -352,7 +361,14 @@ func (r *Router) approverFor(taskID, turnID, planExit string) llm.Approver {
 			r.addApprovalRule(taskID, p.rule)
 			r.saveBoardNow()
 		}
-		allow := ans.decision == types.ApprovalAllowed || ans.decision == types.ApprovalAlways || ans.decision == types.ApprovalAll
+		var addDirs []string
+		if ans.decision == types.ApprovalGranted {
+			r.addGrantedDir(taskID, p.grantDir)
+			r.saveBoardNow()
+			addDirs = []string{p.grantDir}
+		}
+		allow := ans.decision == types.ApprovalAllowed || ans.decision == types.ApprovalAlways || ans.decision == types.ApprovalAll ||
+			ans.decision == types.ApprovalGranted
 		status := types.ConsoleDone
 		if !allow {
 			status = types.ConsoleFailed
@@ -364,7 +380,7 @@ func (r *Router) approverFor(taskID, turnID, planExit string) llm.Approver {
 			e.Approval.Answers = ans.answers
 			e.Approval.DecidedAt = time.Now()
 		})
-		d := llm.ApprovalDecision{Allow: allow, Message: ans.message, Mode: planExit}
+		d := llm.ApprovalDecision{Allow: allow, Message: ans.message, Mode: planExit, AddDirs: addDirs}
 		if allow && kind == types.ApprovalKindQuestion {
 			d.UpdatedInput = map[string]interface{}{}
 			for k, v := range req.Input {
@@ -439,9 +455,9 @@ func (r *Router) handleTaskApprovals(w http.ResponseWriter, req *http.Request, t
 		return
 	}
 	decision := map[string]string{"allow": types.ApprovalAllowed, "always": types.ApprovalAlways, "all": types.ApprovalAll,
-		"deny": types.ApprovalDenied}[body.Decision]
+		"grant": types.ApprovalGranted, "deny": types.ApprovalDenied}[body.Decision]
 	if decision == "" {
-		r.writeError(w, http.StatusBadRequest, `decision must be "allow", "always", "all" or "deny"`)
+		r.writeError(w, http.StatusBadRequest, `decision must be "allow", "always", "all", "grant" or "deny"`)
 		return
 	}
 	r.approvals.mu.Lock()
@@ -449,6 +465,11 @@ func (r *Router) handleTaskApprovals(w http.ResponseWriter, req *http.Request, t
 	if p == nil || p.taskID != taskID {
 		r.approvals.mu.Unlock()
 		r.writeError(w, http.StatusConflict, "This request was already answered, expired, or its turn ended.")
+		return
+	}
+	if decision == types.ApprovalGranted && p.grantDir == "" {
+		r.approvals.mu.Unlock()
+		r.writeError(w, http.StatusBadRequest, "This request has no folder outside the workspace to grant; allow it instead.")
 		return
 	}
 	var answers map[string]string
@@ -478,6 +499,9 @@ func (r *Router) handleTaskApprovals(w http.ResponseWriter, req *http.Request, t
 	out := map[string]interface{}{"status": decision, "approval_id": p.id}
 	if p.rule.Tool != "" {
 		out["rule"] = p.rule.label()
+	}
+	if decision == types.ApprovalGranted {
+		out["granted_dir"] = p.grantDir
 	}
 	r.writeJSON(w, http.StatusOK, out)
 }

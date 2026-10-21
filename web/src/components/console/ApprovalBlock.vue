@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import type { ConsoleEntry } from '../../types'
 import { api } from '../../services/api'
-import { ShieldAlert, ShieldCheck, ShieldX, Clock, ClipboardList, MessageCircleQuestion } from 'lucide-vue-next'
+import { ShieldAlert, ShieldCheck, ShieldX, Clock, ClipboardList, MessageCircleQuestion, FolderOpen } from 'lucide-vue-next'
 import MarkdownView from '../common/MarkdownView.vue'
 
 const props = defineProps<{ entry: ConsoleEntry }>()
@@ -10,7 +10,7 @@ const props = defineProps<{ entry: ConsoleEntry }>()
 const a = computed(() => props.entry.approval!)
 const kind = computed(() => a.value.kind || 'tool')
 const pending = computed(() => a.value.decision === 'pending')
-const allowed = computed(() => ['allowed', 'always', 'all', 'auto'].includes(a.value.decision))
+const allowed = computed(() => ['allowed', 'always', 'all', 'granted', 'auto'].includes(a.value.decision))
 const sending = ref(false)
 const error = ref('')
 const denying = ref(false)
@@ -33,6 +33,7 @@ const OUTCOME: Record<string, { text: string; cls: string }> = {
   allowed: { text: 'Allowed once', cls: 'text-emerald-400' },
   always: { text: 'Allowed — saved as a rule for this task', cls: 'text-emerald-400' },
   all: { text: 'Allowed — every later request in this task is allowed too', cls: 'text-amber-300' },
+  granted: { text: 'Allowed — folder access granted to this task', cls: 'text-emerald-400' },
   auto: { text: 'Auto-approved by your rule', cls: 'text-emerald-400/80' },
   denied: { text: 'Denied', cls: 'text-rose-400' },
   expired: { text: 'Expired — no answer in time, so it was denied', cls: 'text-amber-400' },
@@ -89,7 +90,7 @@ function answerFor(q: string): string {
 const answers = computed(() => Object.fromEntries(questions.value.map(q => [q.question, answerFor(q.question)])))
 const allAnswered = computed(() => questions.value.length > 0 && questions.value.every(q => answerFor(q.question) !== ''))
 
-async function decide(decision: 'allow' | 'always' | 'all' | 'deny') {
+async function decide(decision: 'allow' | 'always' | 'all' | 'grant' | 'deny') {
   if (sending.value) return
   if (kind.value === 'question' && decision === 'allow' && !allAnswered.value) {
     error.value = 'Answer every question first.'
@@ -196,7 +197,12 @@ onUnmounted(() => clearInterval(clock))
       <template v-else>
         <p v-if="entry.content" class="font-sans text-xs text-slate-400">{{ entry.content }}</p>
         <pre class="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-[12px] text-slate-100">{{ a.summary }}</pre>
-        <p v-if="a.blocked_path" class="text-[11px] text-slate-500">Outside the workspace: {{ a.blocked_path }}</p>
+        <p v-if="a.blocked_path" class="flex items-start gap-1.5 text-[11px]" :class="pending ? 'text-amber-200/90' : 'text-slate-500'">
+          <FolderOpen class="mt-px h-3.5 w-3.5 flex-shrink-0" />
+          <span>Blocked: outside the agent's workspace — <span class="break-all">{{ a.blocked_path }}</span>
+            <template v-if="pending && a.grant_dir"><br />Grant access to <span class="break-all text-amber-100">{{ a.grant_dir }}</span> to let the agent read and write there for the rest of this task.</template>
+          </span>
+        </p>
         <p v-if="a.warning" class="flex items-start gap-1.5 rounded border border-rose-800/60 bg-rose-950/30 px-2 py-1.5 font-sans text-[11px] text-rose-200" role="note">
           <ShieldAlert class="mt-px h-3.5 w-3.5 flex-shrink-0 text-rose-400" /> {{ a.warning }}
         </p>
@@ -220,6 +226,11 @@ onUnmounted(() => clearInterval(clock))
           <button ref="allowBtn" type="button" :disabled="sending" @click="decide('allow')"
             class="h-7 rounded border border-emerald-500 bg-emerald-600 px-3 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50">
             {{ kind === 'plan' ? 'Approve plan' : 'Allow once' }}
+          </button>
+          <button v-if="kind === 'tool' && a.grant_dir" type="button" :disabled="sending" @click="decide('grant')"
+            :title="`Allow this and give the agent access to ${a.grant_dir} for the rest of this task`"
+            class="h-7 rounded border border-emerald-700 bg-emerald-900/60 px-3 text-xs font-semibold text-emerald-100 hover:bg-emerald-800/60 disabled:opacity-50">
+            Grant folder access
           </button>
           <button v-if="kind === 'tool' && a.rule_label" type="button" :disabled="sending" @click="decide('always')" :title="`Don't ask again in this task for ${a.rule_label}`"
             class="h-7 rounded border border-emerald-800 bg-emerald-950/60 px-3 text-xs text-emerald-200 hover:bg-emerald-900/60 disabled:opacity-50">
@@ -253,7 +264,7 @@ onUnmounted(() => clearInterval(clock))
       <p v-if="error" class="font-sans text-[11px] text-rose-300" role="alert">{{ error }}</p>
     </div>
     <div v-else class="border-t border-slate-800 px-3 py-1.5 text-xs" :class="outcome.cls">
-      {{ outcome.text }}<template v-if="a.decision === 'always' && a.rule_label"> ({{ a.rule_label }})</template>
+      {{ outcome.text }}<template v-if="a.decision === 'always' && a.rule_label"> ({{ a.rule_label }})</template><template v-if="a.decision === 'granted' && a.grant_dir"> ({{ a.grant_dir }})</template>
       <span v-if="a.message && a.decision === 'denied'" class="text-slate-400"> — “{{ a.message }}”</span>
     </div>
   </section>

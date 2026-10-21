@@ -35,8 +35,10 @@ onMounted(() => { clock = setInterval(() => (now.value = Date.now()), 30000) })
 onUnmounted(() => clearInterval(clock))
 
 const sync = computed(() => taskStore.jiraSync?.status || null)
+const jiraOff = computed(() => sync.value?.enabled === false)
 const syncLabel = computed(() => {
   const st = sync.value
+  if (jiraOff.value) return 'JIRA connector off'
   if (!st || !st.connected) return 'JIRA not connected'
   if (taskStore.isSyncingJira || st.running) return 'Syncing JIRA…'
   if (!taskStore.jiraSync?.config.enabled) return 'JIRA sync off'
@@ -47,7 +49,7 @@ const syncLabel = computed(() => {
 })
 const syncTone = computed(() => {
   const st = sync.value
-  if (!st || !st.connected || !taskStore.jiraSync?.config.enabled) return 'bg-slate-500'
+  if (!st || jiraOff.value || !st.connected || !taskStore.jiraSync?.config.enabled) return 'bg-slate-500'
   if (st.last_error) return 'bg-rose-400'
   return 'bg-emerald-400'
 })
@@ -304,7 +306,7 @@ async function handleRefresh() {
         <button
           @click="$emit('open-jira-sync')"
           type="button"
-          :title="sync?.last_error || 'JIRA board sync rules'"
+          :title="jiraOff ? 'The JIRA connector is disabled. Enable it in Connectors to sync or import.' : (sync?.last_error || 'JIRA board sync rules')"
           class="h-full px-2.5 flex items-center gap-1.5 text-xs text-slate-300 hover:text-slate-100 hover:bg-slate-900 transition-colors"
         >
           <span class="w-1.5 h-1.5 rounded-full" :class="syncTone"></span>
@@ -312,7 +314,7 @@ async function handleRefresh() {
           <Settings2 class="w-3.5 h-3.5 text-slate-500" />
         </button>
         <button
-          v-if="sync?.connected"
+          v-if="sync?.connected && !jiraOff"
           @click="taskStore.runJiraSync()"
           :disabled="taskStore.isSyncingJira"
           type="button"
@@ -323,6 +325,7 @@ async function handleRefresh() {
           <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin text-blue-400': taskStore.isSyncingJira }" />
         </button>
         <button
+          v-if="!jiraOff"
           @click="$emit('open-jira-import')"
           type="button"
           title="Pick individual JIRA issues to add"

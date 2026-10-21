@@ -10,7 +10,11 @@ export default defineConfig({
     }
   },
   server: {
-    port: 5173,
+    // IPv4 loopback on a fixed port: another dev server (e.g. a Laravel Sail container) on the
+    // same port would otherwise answer some requests, and strictPort fails loudly instead.
+    host: '127.0.0.1',
+    port: 5180,
+    strictPort: true,
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:8080',

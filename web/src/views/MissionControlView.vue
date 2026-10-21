@@ -40,7 +40,7 @@ const offBoard = computed(() => {
     known: workflowStore.workflows.some((w) => w.id === id),
   }))
 })
-const jiraConnected = computed(() => !!taskStore.jiraSync?.status.connected)
+const jiraConnected = computed(() => !!taskStore.jiraSync?.status.connected && taskStore.jiraSync?.status.enabled !== false)
 
 async function confirmDelete() {
   if (!pendingDeleteId.value) return

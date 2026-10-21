@@ -410,3 +410,77 @@ func TestProbeStopsServersStartedByALauncher(t *testing.T) {
 		t.Fatal("the probe must not wait for the server's child to exit")
 	}
 }
+
+func TestRetiredGitHubLaunchersMoveToTheCurrentToolsets(t *testing.T) {
+	isolate(t, "github-mcp-server")
+	m := newTestManager(t, &types.ConnectorsConfig{Items: []*types.ConnectorItem{
+		{ID: "github", Name: "GitHub Issues & PRs", Enabled: true, ConfigMode: "hybrid", Status: "configured",
+			MCP: &types.MCPConfig{Enabled: true, Command: "github-mcp-server", Args: []string{"stdio", "--read-only", "--toolsets", githubToolsetsV1},
+				Transport: "stdio", Env: map[string]string{"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_v1token1234"}}},
+	}})
+	gh, _ := m.GetConnector("github")
+	args := strings.Join(gh.MCP.Args, " ")
+	if !strings.Contains(args, "--read-only") || !strings.Contains(args, githubToolsets) {
+		t.Fatalf("the first launcher should move to the current toolsets: %+v", gh.MCP)
+	}
+	for _, ts := range []string{"actions", "pull_requests", "context", "code_security"} {
+		if !strings.Contains(githubToolsets, ts) {
+			t.Errorf("toolset %s missing", ts)
+		}
+	}
+	if gh.MCP.Env["GITHUB_PERSONAL_ACCESS_TOKEN"] != "ghp_v1token1234" {
+		t.Fatal("the token survives the migration")
+	}
+}
+
+func TestGitHubEnterpriseHost(t *testing.T) {
+	for _, c := range []struct{ base, host, api string }{
+		{"", "", "https://api.github.com"},
+		{"https://api.github.com", "", "https://api.github.com"},
+		{"https://github.acme.co.id/api/v3", "https://github.acme.co.id", "https://github.acme.co.id/api/v3"},
+		{"https://api.acme.ghe.com", "https://acme.ghe.com", "https://api.acme.ghe.com"},
+		{"http://127.0.0.1:8080", "http://127.0.0.1:8080", "http://127.0.0.1:8080/api/v3"},
+	} {
+		if got := githubHost(c.base); got != c.host {
+			t.Errorf("githubHost(%q) = %q, want %q", c.base, got, c.host)
+		}
+		if got := githubAPIBase(c.base); got != c.api {
+			t.Errorf("githubAPIBase(%q) = %q, want %q", c.base, got, c.api)
+		}
+	}
+
+	isolate(t, "github-mcp-server")
+	m := newTestManager(t, nil)
+	it, _ := m.GetConnector("github")
+	cp := *it
+	cp.APIToken, cp.BaseURL = "ghp_enterprise_1234", "https://github.acme.co.id/api/v3"
+	m.mu.RLock()
+	mcp, ok := m.runtimeMCPLocked(&cp)
+	m.mu.RUnlock()
+	if !ok || mcp.Env["GITHUB_HOST"] != "https://github.acme.co.id" {
+		t.Fatalf("an Enterprise server gets GITHUB_HOST: ok=%v env=%v", ok, mcp.Env["GITHUB_HOST"])
+	}
+}
+
+func TestGitHubActionsAccessIsChecked(t *testing.T) {
+	isolate(t)
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/repos/acme/app/actions/runs" || r.Header.Get("Authorization") != "Bearer ghp_actions_1234" {
+			w.WriteHeader(http.StatusTeapot)
+			return
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"total_count":0,"workflow_runs":[]}`))
+	}))
+	defer srv.Close()
+	m := newTestManager(t, nil)
+	it := &types.ConnectorItem{ID: "github", BaseURL: srv.URL, TargetEntity: "acme/app", APIToken: "ghp_actions_1234"}
+	if p := m.githubActionsProblem(context.Background(), it); p != "" {
+		t.Fatalf("readable runs are no problem: %s", p)
+	}
+	status = http.StatusForbidden
+	if p := m.githubActionsProblem(context.Background(), it); !strings.Contains(p, "Actions: read") {
+		t.Fatalf("a token without Actions access is explained: %q", p)
+	}
+}

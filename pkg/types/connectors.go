@@ -195,6 +195,7 @@ func DefaultJiraSyncConfig() JiraSyncConfig {
 // JiraSyncStatus reports the outcome of the most recent board sync.
 type JiraSyncStatus struct {
 	Connected   bool      `json:"connected"` // live JIRA credentials are configured
+	Enabled     bool      `json:"enabled"`   // the JIRA connector is switched on in Connectors
 	Running     bool      `json:"running"`
 	LastRunAt   time.Time `json:"last_run_at,omitempty"`
 	LastError   string    `json:"last_error,omitempty"`

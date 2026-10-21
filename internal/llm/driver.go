@@ -100,6 +100,9 @@ type ApprovalDecision struct {
 	Mode string
 	// UpdatedInput replaces the tool input when allowed (AskUserQuestion answers); nil keeps it.
 	UpdatedInput map[string]interface{}
+	// AddDirs are folders the agent may use for the rest of the session once allowed (a granted
+	// blocked path).
+	AddDirs []string
 }
 
 // PermissionDenial is a tool call the agent could not make because permission was refused.

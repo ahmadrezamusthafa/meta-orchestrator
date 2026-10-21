@@ -234,7 +234,7 @@ export const api = {
   },
 
   async decideApproval(
-    taskId: string, approvalId: string, decision: 'allow' | 'always' | 'all' | 'deny', message?: string,
+    taskId: string, approvalId: string, decision: 'allow' | 'always' | 'all' | 'grant' | 'deny', message?: string,
     answers?: Record<string, string>,
   ): Promise<{ status: string }> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/approvals/${encodeURIComponent(approvalId)}`, {
@@ -760,10 +760,11 @@ export const api = {
     return res.json()
   },
 
-  async browseDirectory(path?: string, showHidden: boolean = true): Promise<BrowseFSResponse> {
+  async browseDirectory(path?: string, showHidden: boolean = true, files: boolean = false): Promise<BrowseFSResponse> {
     const query = new URLSearchParams()
     if (path) query.set('path', path)
     query.set('show_hidden', showHidden ? 'true' : 'false')
+    if (files) query.set('files', 'true')
     const res = await fetch(`${BASE_URL}/fs/browse?${query.toString()}`)
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Failed to browse directory' }))

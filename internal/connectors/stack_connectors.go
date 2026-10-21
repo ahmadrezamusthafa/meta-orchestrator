@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,9 @@ type stackConnector struct {
 	tokenEnv []string
 	// legacyArgs marks older built-in launchers that are migrated to the current ones.
 	legacyArgs []string
+	// retired are earlier versions of our own launchers, matched exactly, so a saved one moves to
+	// the current launcher instead of being kept as a custom command.
+	retired []types.MCPConfig
 	// restCheck means the catalog's REST test checks the credential (testGenericConnector); the
 	// stack test only adds the MCP probe.
 	restCheck bool
@@ -44,17 +48,29 @@ func dockerLauncher(image string, env []string, args ...string) types.MCPConfig 
 	return types.MCPConfig{Enabled: true, Command: "docker", Args: a, Transport: "stdio"}
 }
 
-const githubToolsets = "repos,issues,pull_requests,actions"
+// githubToolsets covers code, issues, pull requests with their check runs and commit statuses,
+// GitHub Actions workflows, runs, jobs and logs, and the repository's security alerts. The server
+// runs with --read-only, so the write tools of these toolsets (e.g. re-running a workflow) are
+// never offered.
+const githubToolsets = "context,repos,git,issues,pull_requests,actions,labels,code_security,dependabot,secret_protection,security_advisories"
+
+// githubToolsetsV1 is the toolset list of the first launchers; it is kept to recognise them.
+const githubToolsetsV1 = "repos,issues,pull_requests,actions"
 
 // stackConnectors are the connectors added for the supported stacks, in catalog order. GitHub
 // already has a catalog entry; it is listed here for its official MCP server.
 var stackConnectors = []stackConnector{
 	{
-		item: types.ConnectorItem{ID: "github", AgentAccess: "Read-only: repositories, issues, pull requests and GitHub Actions runs and logs"},
+		item: types.ConnectorItem{ID: "github", AgentAccess: "Read-only: repositories, commits and branches, issues, pull requests with their check runs and statuses, " +
+			"GitHub Actions workflows, runs, jobs and logs, and code scanning, Dependabot and secret scanning alerts"},
 		launchers: []types.MCPConfig{
 			{Enabled: true, Command: "github-mcp-server", Args: []string{"stdio", "--read-only", "--toolsets", githubToolsets}, Transport: "stdio"},
-			withEnv(dockerLauncher("ghcr.io/github/github-mcp-server", []string{"GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOOLSETS", "GITHUB_READ_ONLY"}),
+			withEnv(dockerLauncher("ghcr.io/github/github-mcp-server", []string{"GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOOLSETS", "GITHUB_READ_ONLY", "GITHUB_HOST"}),
 				map[string]string{"GITHUB_TOOLSETS": githubToolsets, "GITHUB_READ_ONLY": "1"}),
+		},
+		retired: []types.MCPConfig{
+			{Command: "github-mcp-server", Args: []string{"stdio", "--read-only", "--toolsets", githubToolsetsV1}},
+			dockerLauncher("ghcr.io/github/github-mcp-server", []string{"GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOOLSETS", "GITHUB_READ_ONLY"}),
 		},
 		tokenKey:   "GITHUB_PERSONAL_ACCESS_TOKEN",
 		tokenEnv:   []string{"GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"},
@@ -201,6 +217,61 @@ var stackConnectors = []stackConnector{
 	},
 }
 
+// githubHost is the GITHUB_HOST the MCP server needs for GitHub Enterprise Server or ghe.com,
+// derived from the connector's API base URL; empty for github.com.
+func githubHost(baseURL string) string {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "github.com" || host == "api.github.com" {
+		return ""
+	}
+	if strings.HasSuffix(host, ".ghe.com") {
+		host = strings.TrimPrefix(host, "api.") // api.acme.ghe.com → acme.ghe.com
+	}
+	if p := u.Port(); p != "" {
+		host += ":" + p
+	}
+	scheme := "https"
+	if u.Scheme == "http" {
+		scheme = "http"
+	}
+	return scheme + "://" + host
+}
+
+// githubAPIBase is the REST API root for the connector's base URL: api.github.com, a ghe.com
+// tenant's api. host, or a GitHub Enterprise Server's /api/v3.
+func githubAPIBase(baseURL string) string {
+	host := githubHost(baseURL)
+	switch {
+	case host == "":
+		return "https://api.github.com"
+	case strings.HasSuffix(host, ".ghe.com"):
+		return strings.Replace(host, "://", "://api.", 1)
+	default:
+		return host + "/api/v3"
+	}
+}
+
+// githubActionsProblem checks the token can read the target repository's GitHub Actions runs,
+// which agents need to check pipelines; a token scoped to code and pull requests alone reaches the
+// repository but not its runs. It returns the reason when it cannot.
+func (m *Manager) githubActionsProblem(ctx context.Context, it *types.ConnectorItem) string {
+	code, body, err := m.getJSON(ctx, fmt.Sprintf("%s/repos/%s/actions/runs?per_page=1", githubAPIBase(it.BaseURL), it.TargetEntity), it.APIToken)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("GitHub reached %s, but its Actions runs could not be read: %v", it.TargetEntity, err)
+	case code == http.StatusForbidden || code == http.StatusNotFound:
+		return fmt.Sprintf("GitHub reached %s, but the token cannot read its Actions runs (HTTP %d) — give a fine-grained token "+
+			"the Actions: read permission, or a classic token the repo scope", it.TargetEntity, code)
+	case code < 200 || code > 299:
+		return fmt.Sprintf("GitHub reached %s, but listing its Actions runs answered HTTP %d: %s", it.TargetEntity, code, firstLine(body))
+	}
+	return ""
+}
+
 func withEnv(m types.MCPConfig, env map[string]string) types.MCPConfig {
 	m.Env = env
 	return m
@@ -248,7 +319,7 @@ func (s stackConnector) isBuiltinLauncher(mcp *types.MCPConfig) bool {
 			return true
 		}
 	}
-	for _, l := range s.launchers {
+	for _, l := range append(append([]types.MCPConfig(nil), s.launchers...), s.retired...) {
 		if l.Command == mcp.Command && strings.Join(l.Args, " ") == strings.Join(mcp.Args, " ") {
 			return true
 		}
@@ -367,6 +438,11 @@ func (m *Manager) runtimeMCPLocked(it *types.ConnectorItem) (types.MCPConfig, bo
 				return types.MCPConfig{}, false
 			}
 			mcp.Env["GRAFANA_URL"] = strings.TrimRight(it.BaseURL, "/")
+		}
+		if it.ID == "github" {
+			if host := githubHost(it.BaseURL); host != "" {
+				mcp.Env["GITHUB_HOST"] = host
+			}
 		}
 		if it.ID == "azure" && it.TargetEntity != "" {
 			mcp.Env["AZURE_SUBSCRIPTION_ID"] = it.TargetEntity

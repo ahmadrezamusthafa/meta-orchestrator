@@ -163,7 +163,14 @@ onMounted(async () => {
 
       <div v-else class="flex-1 overflow-y-auto p-6 space-y-5">
         <!-- Connection / last run -->
-        <div v-if="status && !status.connected"
+        <div v-if="status && status.enabled === false"
+          class="p-3 rounded-lg border border-amber-800/60 bg-amber-950/30 text-xs text-amber-200 flex items-start gap-2">
+          <AlertCircle class="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+          <span>The JIRA connector is disabled, so the board doesn't sync. Turn it back on in
+            <router-link to="/connectors" class="underline hover:text-white" @click="emit('close')">Connectors</router-link>
+            — the rules below apply as soon as it is.</span>
+        </div>
+        <div v-else-if="status && !status.connected"
           class="p-3 rounded-lg border border-amber-800/60 bg-amber-950/30 text-xs text-amber-200 flex items-start gap-2">
           <AlertCircle class="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
           <span>JIRA isn't connected yet. Add your base URL, email and API token in
