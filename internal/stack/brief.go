@@ -16,7 +16,7 @@ type guide struct {
 var guides = map[string]guide{
 	"go": {practice: "Go: gofmt'd code; pass context.Context through calls; wrap errors with %w; table-driven tests next to the code you change."},
 	"postgresql": {
-		practice: "PostgreSQL: change the schema only through a new migration in the repository's existing migration tool and folder (never edit an applied one); keep it backward compatible with the running code and reversible; parameterised queries only.",
+		practice: "PostgreSQL: change the schema only through a new migration in the repository's existing migration tool and folder (never edit an applied one); keep it backward compatible with the running code and reversible; parameterised queries only; the connection string comes from each environment's configuration — never hard-code a database host.",
 		never:    "migrations, seeds or `psql` writes against a shared (dev/staging/production) database",
 	},
 	"java": {
@@ -192,6 +192,9 @@ func (p Profile) checks() []check {
 			}
 		}
 	}
+	for _, f := range p.composes {
+		add(dirOf(f), "docker compose -f "+path.Base(f)+" up -d --wait — only before e2e tests or evidence, then call each service's health endpoint (e.g. /healthz); `docker compose down` afterwards, without -v")
+	}
 	if p.Has("github-actions") {
 		add(".", "actionlint (if installed)")
 	}
@@ -335,6 +338,7 @@ func Brief(repos []Repo) string {
 		b.WriteString(strings.Join(neverList, "\n- "))
 	}
 	b.WriteString("\n")
+	b.WriteString(environmentBrief(repos))
 	return b.String()
 }
 
