@@ -877,6 +877,29 @@ async function checkSignedIn(page, cfg, base) {
   return re.test(where) ? `sent to the sign-in page (${where})` : ''
 }
 
+// An API session signs in with api_login alone and has no app to open: no browser is used, and it
+// is checked by calling "home" on the API with its token (a client-credentials token, for example).
+const isApiSession = (cfg) => cfg.browser === false || (!!cfg.api_login && !cfg.login?.length && !cfg.cookies?.length &&
+  !cfg.local_storage && !cfg.session_storage && !cfg.token_from && !(cfg.base_url || board.base_url))
+// A captured token is reused only until shortly before the expires_in its login response gave.
+const EXPIRY_MARGIN_MS = 30000
+const expired = (saved) => !!saved.expires_at && Date.now() > Date.parse(saved.expires_at) - EXPIRY_MARGIN_MS
+
+async function checkApiSession(name, cfg, token) {
+  if (!cfg.home) return ''
+  const apiBase = cfg.api_base || board.api_base || ''
+  const target = /^https?:\/\//.test(cfg.home) ? cfg.home : String(apiBase).replace(/\/$/, '') + (cfg.home.startsWith('/') ? cfg.home : '/' + cfg.home)
+  const tv = tokenVar(name, cfg)
+  const tok = token ?? vars[tv]
+  const headers = cfg.api_headers
+    ? Object.fromEntries(Object.entries(cfg.api_headers).map(([k, v]) => [k, env(String(v).replaceAll(`\${${tv}}`, tok ?? ''))]))
+    : tok ? { Authorization: `Bearer ${tok}` } : {}
+  const res = await fetch(target, { headers, redirect: 'manual', signal: AbortSignal.timeout(30000) })
+    .catch((e) => { throw new Error(`could not call ${pathOf(target)}: ${String(e.message).split('\n')[0]}`) })
+  return res.status === 401 || res.status === 403 ? `HTTP ${res.status} at ${pathOf(target)}` : ''
+}
+
+// apiLogin calls the login API and returns when its token expires (from expires_in), if it said.
 async function apiLogin(name, cfg, context, base) {
   const a = cfg.api_login
   const apiBase = a.base_url || cfg.api_base || board.api_base || base
@@ -891,13 +914,16 @@ async function apiLogin(name, cfg, context, base) {
   const res = await fetch(target, { method: String(a.method || 'POST').toUpperCase(), headers, body, redirect: 'manual', signal: AbortSignal.timeout(30000) })
   const text = await res.text()
   if (res.status >= 400) throw new Error(`api_login ${pathOf(target)}: HTTP ${res.status} ${redact(text).slice(0, 160)}`)
+  let json = null
+  try { json = JSON.parse(text) } catch {}
   if (a.token_path) {
-    let json = null
-    try { json = JSON.parse(text) } catch {}
     const tok = dig(json, a.token_path)
     if (tok == null || tok === '') throw new Error(`api_login ${pathOf(target)}: no token at ${a.token_path} in the response`)
     vars[tokenVar(name, cfg)] = String(tok)
   }
+  const ttl = Number(json?.expires_in)
+  const expiresAt = ttl > 0 ? new Date(Date.now() + ttl * 1000).toISOString() : undefined
+  if (!context) return expiresAt
   const host = new URL(target)
   const cookies = (res.headers.getSetCookie?.() || []).map((c) => {
     const [nv, ...attrs] = c.split(';')
@@ -906,6 +932,7 @@ async function apiLogin(name, cfg, context, base) {
     return at > 0 ? { name: nv.slice(0, at).trim(), value: nv.slice(at + 1).trim(), domain: host.hostname, path: path ? path.slice(5) : '/' } : null
   }).filter(Boolean)
   if (cookies.length) await context.addCookies(cookies)
+  return expiresAt
 }
 
 // signIn establishes the session in a browser that is not recorded, by any mix of: an API login
@@ -913,14 +940,28 @@ async function apiLogin(name, cfg, context, base) {
 // browser like a case's steps. It fails with a screenshot of where it stopped.
 async function signIn(browser, name, cfg) {
   const base = cfg.base_url || board.base_url || ''
+  const tv = tokenVar(name, cfg)
+  if (isApiSession(cfg)) {
+    let at = 'api_login'
+    try {
+      const expires_at = await apiLogin(name, cfg, null, base)
+      at = 'the check that the token is accepted'
+      const why = await checkApiSession(name, cfg)
+      if (why) throw new Error(why)
+      return { name, saved_at: new Date().toISOString(), api: true, expires_at, session_storage: {}, vars: vars[tv] ? { [tv]: vars[tv] } : {} }
+    } catch (err) {
+      throw new Error(`signing in as "${name}" failed at ${at}: ${redact(String(err?.message || err).split('\n')[0])}`)
+    }
+  }
   const headers = expandAll(cfg.headers)
   const context = await browser.newContext(contextOptions(Object.keys(headers).length ? { extraHTTPHeaders: headers } : {}))
   const page = await context.newPage()
   page.setDefaultTimeout(STEP_TIMEOUT)
   const failShot = join(SESSION_DIR, `${safeName(name)}-sign-in-failed.png`)
   let at = 'start'
+  let expires_at
   try {
-    if (cfg.api_login) { at = 'api_login'; await apiLogin(name, cfg, context, base) }
+    if (cfg.api_login) { at = 'api_login'; expires_at = await apiLogin(name, cfg, context, base) }
     if (cfg.cookies?.length) {
       at = 'cookies'
       await context.addCookies(cfg.cookies.map((c) => ({ name: c.name, value: env(c.value),
@@ -958,8 +999,7 @@ async function signIn(browser, name, cfg) {
     const origin = new URL(page.url()).origin
     const ss = await page.evaluate(() => Object.fromEntries(Object.entries(sessionStorage))).catch(() => ({}))
     if (Object.keys(ss).length) session_storage[origin] = ss
-    const tv = tokenVar(name, cfg)
-    const saved = { name, saved_at: new Date().toISOString(), storage: await context.storageState(), session_storage, vars: vars[tv] ? { [tv]: vars[tv] } : {} }
+    const saved = { name, saved_at: new Date().toISOString(), expires_at, storage: await context.storageState(), session_storage, vars: vars[tv] ? { [tv]: vars[tv] } : {} }
     rmSync(failShot, { force: true })
     return saved
   } catch (err) {
@@ -999,9 +1039,16 @@ async function ensureSession(browser, name, { fresh = false } = {}) {
     try { saved = JSON.parse(readFileSync(file, 'utf8')) } catch {}
     const age = saved ? (Date.now() - Date.parse(saved.saved_at)) / 60000 : Infinity
     if (saved && age < (cfg.max_age_min || SESSION_MAX_AGE_MIN)) {
-      const context = await sessionContext(browser, cfg, saved)
-      const why = await checkSignedIn(await context.newPage(), cfg, base).catch((e) => String(e.message || e))
-      await context.close()
+      let why
+      if (expired(saved)) {
+        why = 'its token expired'
+      } else if (isApiSession(cfg)) {
+        why = await checkApiSession(name, cfg, saved.vars?.[tokenVar(name, cfg)]).catch((e) => String(e.message || e))
+      } else {
+        const context = await sessionContext(browser, cfg, saved)
+        why = await checkSignedIn(await context.newPage(), cfg, base).catch((e) => String(e.message || e))
+        await context.close()
+      }
       reused = !why
       if (!reused) console.log(`  session "${name}": the saved one no longer works (${why}) — signing in again`)
     }
@@ -1746,7 +1793,7 @@ if (explore.length || (sessArg && !only.length && !args.includes('--summary'))) 
     else {
       const s = await ensureSession(browser, sessArg, { fresh: args.includes('--fresh') })
       console.log(`✓ session "${s.name}" ${s.reused ? 'still signed in (saved session reused)' : 'signed in'} — cases with "session": "${s.name}" start signed in` +
-        `${Object.keys(s.apiHeaders).length || s.storage.cookies?.length ? '; its api steps are signed too' : ''}`)
+        `${Object.keys(s.apiHeaders).length || s.storage?.cookies?.length ? '; its api steps are signed too' : ''}`)
     }
   } catch (err) {
     console.error(`✗ ${redact(String(err?.message || err))}`)
