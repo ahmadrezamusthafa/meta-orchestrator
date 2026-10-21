@@ -26,6 +26,8 @@ func TestNeeds(t *testing.T) {
 		"go service":   {goService, "go,golangci-lint?,node?,zed?,actionlint?,docker?"},
 		"react + pnpm": {reactApp, "node,pnpm"},
 		"infra":        {infraLive, "tofu,terragrunt"},
+		"gateway":      {gateway, "openresty?,luacheck?,docker?"},
+		"nginx only":   {map[string]string{"nginx.conf": "events {}"}, "nginx?"},
 		// Wrappers are checked in, so only a JDK is needed.
 		"kotlin gradle":         {kotlinService, "java"},
 		"java maven":            {javaService, "java"},

@@ -16,7 +16,7 @@ type guide struct {
 var guides = map[string]guide{
 	"go": {practice: "Go: gofmt'd code; pass context.Context through calls; wrap errors with %w; table-driven tests next to the code you change."},
 	"postgresql": {
-		practice: "PostgreSQL: change the schema only through a new migration in the repository's existing migration tool and folder (never edit an applied one); keep it backward compatible with the running code and reversible; parameterised queries only.",
+		practice: "PostgreSQL: change the schema only through a new migration in the repository's existing migration tool and folder (never edit an applied one); keep it backward compatible with the running code and reversible; parameterised queries only; the connection string comes from each environment's configuration — never hard-code a database host.",
 		never:    "migrations, seeds or `psql` writes against a shared (dev/staging/production) database",
 	},
 	"java": {
@@ -42,8 +42,10 @@ var guides = map[string]guide{
 	"react":      {practice: "React: function components and hooks, using the state, data-fetching and styling libraries the app already has; accessible markup (labels, roles) so tests can select by role."},
 	"typescript": {practice: "TypeScript: no `any`, `@ts-ignore` or non-null assertions to silence the compiler; type API payloads from the OpenAPI spec when the repository generates them."},
 	"keycloak": {
-		practice: "Keycloak (OIDC): validate tokens server-side (signature via JWKS, issuer, audience, expiry); browser apps use Authorization Code + PKCE; client secrets never go in code, logs or committed realm exports.",
-		never:    "Keycloak admin API or `kcadm.sh` changes against a shared realm",
+		practice: "Keycloak (OIDC): validate tokens server-side (signature via JWKS, issuer, audience, expiry); browser apps use Authorization Code + PKCE; " +
+			"machine-to-machine clients use the client-credentials grant — require the expected audience and a scope per operation, map the token's client (`azp`) to its tenant on the server and scope every query to that tenant, never to a tenant id from the request; " +
+			"test a missing, expired and wrong-audience token (401), a missing scope (403) and a cross-tenant read; client secrets never go in code, logs or committed realm exports.",
+		never: "Keycloak admin API or `kcadm.sh` changes against a shared realm",
 	},
 	"spicedb": {
 		practice: "SpiceDB: decide access with CheckPermission at the API boundary, not with roles copied into the app; a schema change is a migration — keep existing relations working and update the schema's validation tests with it.",
@@ -76,7 +78,13 @@ var guides = map[string]guide{
 	"playwright":    {practice: "Playwright: role and label locators (getByRole, getByLabel), web-first assertions, no fixed waits; each test creates the data it needs."},
 	"opentelemetry": {practice: "OpenTelemetry: use the existing tracer and meter providers, semantic-convention names and context propagation; never put personal data, tokens or unbounded values (ids, emails) in span attributes, metric labels or logs."},
 	"grafana":       {practice: "Grafana: dashboards and alerts as code; keep each dashboard's uid stable and use datasource variables instead of hard-coded datasource uids."},
-	"openapi":       {practice: "OpenAPI: the spec is the contract — change it together with the handlers and regenerate clients/servers with the repository's generator; additive changes only unless the API is versioned; document error responses."},
+	"nginx": {
+		practice: "Nginx gateway: keep every route's rate limit (`limit_req`, or the Lua limiter) and the key it limits by (e.g. the OAuth client_id), and keep the access log's fields and format — dashboards, alerts and audits read them; " +
+			"never log Authorization headers, tokens, client secrets or request bodies; a new route gets an explicit `location` with timeouts and a body-size limit, and internal endpoints (metrics, admin) stay unrouted.",
+		never: "`nginx -s reload|stop` or config pushes against a shared gateway",
+	},
+	"openresty": {practice: "OpenResty (Lua): `local` everything; only cosocket-based I/O in request phases (no blocking libraries); keep `lua_shared_dict` names and limiter keys stable; treat a token-check error as a rejection, never as a pass."},
+	"openapi":   {practice: "OpenAPI: the spec is the contract — change it together with the handlers and regenerate clients/servers with the repository's generator; additive changes only unless the API is versioned; document error responses."},
 }
 
 const jvmPublish = "`mvn deploy`, `gradle publish` or any task that uploads artifacts to a shared repository"
@@ -159,6 +167,33 @@ func (p Profile) checks() []check {
 		for _, f := range t.Files {
 			add(".", "npx @redocly/cli lint "+f)
 		}
+	}
+	if p.Has("nginx") || p.Has("openresty") {
+		bin := "nginx"
+		if p.Has("openresty") {
+			bin = "openresty" // plain nginx rejects the *_by_lua directives
+		}
+		tested := false
+		for _, id := range []string{"nginx", "openresty"} {
+			t, _ := p.Get(id)
+			for _, f := range t.Files {
+				if ok, _ := path.Match("nginx*.conf", path.Base(f)); ok {
+					tested = true
+					add(dirOf(f), bin+` -t -p "$PWD" -c "$PWD/`+path.Base(f)+`" — upstream names must resolve; when they are compose services, run it in the gateway container`)
+				}
+			}
+		}
+		if !tested {
+			add(".", bin+" -t — inside the gateway container, after changing its config")
+		}
+		if p.Has("openresty") {
+			for _, d := range topDirs(p.luaDirs) {
+				add(d, "luacheck . (if installed)")
+			}
+		}
+	}
+	for _, f := range p.composes {
+		add(dirOf(f), "docker compose -f "+path.Base(f)+" up -d --wait — only before e2e tests or evidence, then call each service's health endpoint (e.g. /healthz); `docker compose down` afterwards, without -v")
 	}
 	if p.Has("github-actions") {
 		add(".", "actionlint (if installed)")
@@ -303,6 +338,7 @@ func Brief(repos []Repo) string {
 		b.WriteString(strings.Join(neverList, "\n- "))
 	}
 	b.WriteString("\n")
+	b.WriteString(environmentBrief(repos))
 	return b.String()
 }
 

@@ -63,7 +63,12 @@ type Profile struct {
 	lints     map[string]bool    // folders holding a golangci-lint config
 	jvmBuilds []jvmBuild         // Gradle/Maven build roots, shallowest first
 	dartPkgs  []dartPkg          // pubspec.yaml packages, shallowest first
-	others    []Package          // Ruby and Python manifests (packages.go), shallowest first
+	luaDirs   []string           // folders holding Lua files, shallowest first
+	composes  []string           // docker compose files, in scan order
+	archDocs  []string           // architecture documents (environment.go)
+	// constraints is the operator's .sdlc/constraints.md (environment.go).
+	constraints string
+	others      []Package // Ruby and Python manifests (packages.go), shallowest first
 }
 
 // Get returns the technology with id, if it was detected.
@@ -230,6 +235,16 @@ var rules = []rule{
 	}},
 
 	// API
+	{id: "nginx", name: "Nginx", cat: API, signals: []signal{
+		file("nginx*.conf"), in("nginx", "*.conf"), in("conf.d", "*.conf"),
+		file("*.conf", "proxy_pass", "server_name", "\nupstream "),
+		file("*.conf.template", "proxy_pass", "server_name"),
+	}},
+	{id: "openresty", name: "OpenResty (Lua)", cat: API, signals: join([]signal{
+		file("*.conf", "_by_lua", "lua_shared_dict", "lua_package_path"),
+		file("*.lua", "ngx.", "\"resty.", "'resty."),
+		file("Dockerfile", "openresty"), file("Dockerfile.*", "openresty"),
+	}, composeContains("openresty"))},
 	{id: "openapi", name: "OpenAPI", cat: API, signals: []signal{
 		file("openapi*.yaml"), file("openapi*.yml"), file("openapi*.json"),
 		file("swagger*.yaml"), file("swagger*.yml"), file("swagger*.json"),
@@ -296,6 +311,12 @@ func Detect(root string, opt Options) Profile {
 			p.nodePkgs[dirOf(rel)] = readNodePkg(root, rel, files)
 		case strings.HasPrefix(base, ".golangci."):
 			p.lints[dirOf(rel)] = true
+		case strings.HasSuffix(base, ".lua"):
+			addUnique(&p.luaDirs, dirOf(rel), maxDirs)
+		case isCompose(base):
+			addUnique(&p.composes, rel, maxDirs)
+		case isArchDoc(rel):
+			addUnique(&p.archDocs, rel, maxArchDocs)
 		case base == "pubspec.yaml" && len(p.dartPkgs) < maxDirs:
 			p.dartPkgs = append(p.dartPkgs, readDartPkg(root, rel, reader))
 		default:
@@ -303,6 +324,7 @@ func Detect(root string, opt Options) Profile {
 		}
 	}
 	p.jvmBuilds = jvmBuildRoots(files)
+	p.constraints = readConstraints(root)
 	p.Hosts = gitHosts(root)
 	p.Trackers = trackerRefs(root, files, reader)
 	return p

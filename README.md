@@ -128,12 +128,15 @@ Every repository is scanned from its files only (nothing is executed; dependency
 | Backend (JVM) | Java, Kotlin (Spring, Maven, Gradle) | `./gradlew check` or `./mvnw -q verify` once per build root (wrapper preferred) | no `mvn deploy` / `gradle publish` |
 | Frontend | React, TypeScript | the package's own `typecheck`/`lint`/`test`/`build` scripts (npm, pnpm, yarn or bun), else `tsc --noEmit` | — |
 | Mobile | Flutter, Dart, Android | `dart format --set-exit-if-changed`, `flutter`/`dart analyze` and `test`, `build_runner` when used; Android through Gradle `check` | no `pub publish`, store uploads or release signing |
-| Identity | Keycloak (OIDC), SpiceDB | `zed validate <schema>.zed` | no admin/schema writes to live realms or SpiceDB |
+| Identity | Keycloak (OIDC, incl. client-credentials M2M), SpiceDB | `zed validate <schema>.zed` | no admin/schema writes to live realms or SpiceDB |
 | Cloud | Azure Container Apps, Cloudflare | `wrangler deploy --dry-run` | no mutating `az containerapp` / `wrangler deploy` |
 | IaC | OpenTofu, Terragrunt | `tofu fmt -check`, `tofu validate`, `terragrunt hclfmt --check` | no `apply`/`destroy`/`state`; `plan` only when the operator approves |
 | Delivery | GitHub Actions, containers, Playwright | `actionlint`, the e2e script or `playwright test` | no `gh workflow run`, deploy tags or `docker push` |
 | Observability | OpenTelemetry, Grafana | — | no personal data or unbounded values in telemetry |
 | API | OpenAPI | `npx @redocly/cli lint <spec>` | contract changes ship with handlers and regenerated clients |
+| Gateway | Nginx, OpenResty (Lua) | `nginx -t` / `openresty -t` on the main config (in the gateway container when upstreams are compose services), `luacheck` | keep per-client rate limits and access-log fields; no `nginx -s reload` against a shared gateway |
+
+**Environments that differ from local.** When a repository has `ARCHITECTURE.md` or `architecture*.md` (at the root or in a top-level folder), the brief tells the agent to read it before changing configuration, networking or data access. Facts the agent must respect go in the repository's `.sdlc/constraints.md` (first 4 KB, e.g. "production `DB_DSN` points at the DB firewall, never at PostgreSQL directly"). They are passed on as constraints set by the operator, which override anything the local setup suggests. A repository with a compose file also gets a `docker compose up -d --wait` step and a health-endpoint call before e2e tests or evidence.
 
 Repositories that hold only IaC get the new **Infrastructure** role and have no manual-UAT surface. A Go, Java, Kotlin or Dart service with no screens becomes an **API** app in the UAT guide, with Keycloak token steps when it uses OIDC. A Flutter or Android app becomes a **mobile** app: testers install the UAT build on a device and follow manual steps, and nothing is replayed in a browser (ATDD platform `MOBILE`, `ANDROID` or `IOS`). The generated `android/`/`ios/` folders of a Flutter app count as part of that app, not as separate Java or Kotlin projects. **Adding a technology** means adding a rule to `rules` (`internal/stack/detect.go`) and, if agents need guidance, an entry in `guides` (`internal/stack/brief.go`).
 

@@ -87,6 +87,15 @@ func (p Profile) Needs() []Need {
 			}
 		}
 	}
+	switch {
+	case p.Has("openresty"):
+		add("openresty", false, "test the gateway config, including its Lua directives")
+	case p.Has("nginx"):
+		add("nginx", false, "test the gateway config")
+	}
+	if p.Has("openresty") && len(p.luaDirs) > 0 {
+		add("luacheck", false, "lint the gateway's Lua code")
+	}
 	if p.Has("github-actions") {
 		add("actionlint", false, "lint the GitHub Actions workflows")
 	}

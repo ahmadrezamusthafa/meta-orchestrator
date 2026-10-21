@@ -289,6 +289,21 @@ case's `api` steps are sent as its session: its cookies for the API's host, and 
 (default `{"Authorization": "Bearer ${<NAME>_TOKEN}"}` when a token was captured), unless the step
 sets those headers itself or has `"session": false` (e.g. to prove a call is refused without one).
 
+A service with no screens (a machine-to-machine API) uses an **API session**: `api_login` alone, no
+`base_url` (or `"browser": false`). No browser is opened; `home` is called on `api_base` with the
+token instead (401/403 means it no longer works), and a token whose login response gave
+`expires_in` is renewed 30 s before it expires. An OAuth client-credentials token from Keycloak:
+
+```json
+"sessions": {"client": {"api_login": {"url": "/oauth/token",
+  "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+  "body": "grant_type=client_credentials&client_id=${UAT_CLIENT_ID}&client_secret=${UAT_CLIENT_SECRET}",
+  "token_path": "access_token"}, "home": "/v1/doors"}}
+```
+
+Prove the refusals too: a step with `"session": false` (no token, expect 401), and one that sets
+its own `Authorization` header with another tenant's or a scope-less client's token (expect 403/404).
+
 If sign-in fails, the case is reported Failed with the reason and its browser steps are not run;
 the screen where sign-in stopped is saved and its path printed. `--session <name> --fresh` signs in
 again; `--clear-sessions` removes every saved session.
