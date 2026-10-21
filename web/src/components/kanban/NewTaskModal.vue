@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useTaskStore } from '../../stores/tasks'
 import { useWorkflowStore } from '../../stores/workflows'
 import { useProjectStore } from '../../stores/projects'
@@ -124,6 +124,22 @@ watch(selectedProjectId, () => {
     selectedRepos.value = availableRepos.value.map(r => r.name)
   }
 })
+
+// Projects are loaded lazily elsewhere, so the modal may open before (or without) them; load them
+// here and settle on a project that exists once they arrive.
+onMounted(() => {
+  if (!projectStore.projects.length) projectStore.fetchProjects()
+})
+
+watch(() => projectStore.projects, (list, prev) => {
+  if (!list.length) return
+  if (!list.some(p => p.id === selectedProjectId.value)) {
+    selectedProjectId.value = list.find(p => p.id === projectStore.activeProjectId)?.id || list[0].id
+  } else if (!prev?.length) {
+    // The selection was already valid, but the repos picked so far were the placeholder list.
+    selectedRepos.value = availableRepos.value.map(r => r.name)
+  }
+}, { immediate: true })
 
 // Repositories the title/description point at (name, stack, role words), offered — never applied
 // without the operator.

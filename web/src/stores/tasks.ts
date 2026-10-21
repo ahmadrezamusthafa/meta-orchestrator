@@ -206,7 +206,8 @@ export const useTaskStore = defineStore('tasks', () => {
 
   async function createTask(payload: any) {
     const newTask = await api.createTask(payload)
-    tasks.value.unshift(newTask)
+    // The daemon broadcasts task.status before responding, so the WS listener may have added it already.
+    if (!tasks.value.some((t) => t.id === newTask.id)) tasks.value.unshift(newTask)
     return newTask
   }
 
