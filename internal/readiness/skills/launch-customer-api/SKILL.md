@@ -78,5 +78,7 @@ Install from the orchestrator's Tool Hub (**Launch Readiness** → *Install all 
 ## Customer docs
 ## Operator actions
 (gateway/portal setup, client onboarding, limits to confirm)
+## Follow-up tasks
+(the `followups` JSON block from the stage brief: remaining gaps grouped into a few tasks)
 ## Summary
 ```

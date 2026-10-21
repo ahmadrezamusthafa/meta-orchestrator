@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -130,179 +131,190 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		if body.Title == "" {
-			r.writeError(w, http.StatusBadRequest, "Task title is required")
-			return
-		}
-
-		// Settle complexity and the routing plan. The operator's reviewed analysis (from
-		// POST /tasks/analyze) is used as is; otherwise creation grades the task with the instant
-		// keyword heuristic so API and import callers are never held up by a model call.
-		confirmed := len(body.RoutingPlan) > 0
-		plan := body.RoutingPlan
-		if confirmed {
-			var err error
-			if plan, err = r.validatePlan(plan); err != nil {
-				r.writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-		}
-		assessment := router.HeuristicComplexity(body.Title, body.Description, body.AssignedRepos)
-		if body.Complexity != "" {
-			assessment = r.assess(req.Context(), body.Title, body.Description, body.Complexity, body.TaskType, body.AssignedRepos)
-			if body.ComplexitySource != "" {
-				assessment.Source, assessment.Rationale = body.ComplexitySource, body.ComplexityRationale
-			}
-		}
-		workflow, err := r.workflowForNewTask(body.WorkflowID)
+		created, status, err := r.createTask(req.Context(), body, nil)
 		if err != nil {
-			r.writeError(w, http.StatusBadRequest, err.Error())
+			r.writeError(w, status, err.Error())
 			return
 		}
-		sliceStages, err := workflowSlice(workflow, body.ActiveSlice)
-		if err != nil {
-			r.writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if !confirmed {
-			plan = proposedPlan(r.strategyRouter.Plan(sliceStages, assessment.Complexity, assessment.TaskType, body.AssignedRepos))
-		}
-
-		r.mu.Lock()
-		taskID := r.nextTaskIDLocked()
-
-		now := time.Now()
-		startStage := sliceStages[0]
-		startIndex := indexIn(fsm.StageIDs(workflow), startStage)
-
-		selectedMethod := body.SelectedMethod
-		if selectedMethod == "" || selectedMethod == "Auto" {
-			selectedMethod = "BMAD"
-			for _, s := range plan {
-				if s.StageID == startStage && s.Method != "" {
-					selectedMethod = s.Method
-				}
-			}
-		}
-
-		workflowID := workflow.ID
-
-		maxBudget := body.MaxTokenBudget
-		if maxBudget == 0 {
-			maxBudget = 50000
-		}
-
-		initialState := types.TaskStatePending
-		var unmetDeps []string
-		if len(body.Dependencies) > 0 {
-			for _, depID := range body.Dependencies {
-				dep, exists := r.tasks[depID]
-				if !exists || dep.State != types.TaskStateCompleted {
-					unmetDeps = append(unmetDeps, depID)
-				}
-			}
-			if len(unmetDeps) > 0 {
-				initialState = types.TaskStateWaitingDependency
-			}
-		}
-
-		newTask := &types.Task{
-			ID:                taskID,
-			WorkflowID:        workflowID,
-			Title:             body.Title,
-			Description:       body.Description,
-			CurrentStageID:    startStage,
-			CurrentStageIndex: startIndex,
-			State:             initialState,
-			ActiveSlice:       body.ActiveSlice,
-			AssignedRepos:     append([]string{}, body.AssignedRepos...),
-			Dependencies:      body.Dependencies,
-			ProfileName:       "orchestrator_agent",
-			SelectedMethod:    selectedMethod,
-			MaxTokenBudget:    maxBudget,
-			ArtifactDir:       fmt.Sprintf(".sdlc/artifacts/%s", taskID),
-			RoutingPlan:       plan,
-			Metadata: map[string]string{
-				"complexity":           assessment.Complexity,
-				"complexity_source":    assessment.Source,
-				"complexity_rationale": assessment.Rationale,
-				"task_type":            assessment.TaskType,
-				"routing_confirmed":    fmt.Sprint(confirmed),
-				"router_strategy":      body.RouterStrategy,
-				"source_branch":        body.SourceBranch,
-				"router_source":        "BP",
-				"router_rationale":     fmt.Sprintf("Routed via %s to %s method", body.RouterStrategy, selectedMethod),
-				"worktree_enabled":     fmt.Sprint(body.UseWorktree || !body.DisableWorktree),
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
-
-		if len(unmetDeps) > 0 {
-			newTask.Metadata["unmet_dependencies"] = strings.Join(unmetDeps, ",")
-		}
-
-		// Automatically detect JIRA key in title or description if connector is active
-		if r.cfg.ConnectorsManager != nil && r.cfg.ConnectorsManager.JiraEnabled() && r.cfg.ConnectorsManager.GetConfig().Jira.AutoDetectKeys {
-			if detectedKey := r.cfg.ConnectorsManager.DetectJiraKey(body.Title + " " + body.Description); detectedKey != "" {
-				newTask.Metadata["jira_key"] = detectedKey
-				newTask.Metadata["jira_url"] = r.cfg.ConnectorsManager.GetJiraURL(detectedKey)
-			}
-		}
-
-		newTask.Metadata["worktree_branch"] = plannedBranch(newTask)
-
-		if body.ActiveSlice != nil && body.ActiveSlice.ProduceVideo {
-			newTask.Metadata["video_url"] = fmt.Sprintf("/api/v1/artifacts/%s/videos/run_final.mp4", taskID)
-		}
-
-		taskArtifactDir := filepath.Join(r.cfg.RootDir, ".sdlc", "artifacts", taskID)
-		_ = os.MkdirAll(taskArtifactDir, 0755)
-
-		if body.ExternalTaskPlan != "" {
-			_ = os.WriteFile(filepath.Join(taskArtifactDir, "TASK_PLAN.md"), []byte(body.ExternalTaskPlan), 0644)
-		}
-		if body.ExternalPRD != "" {
-			_ = os.WriteFile(filepath.Join(taskArtifactDir, "PRD.md"), []byte(body.ExternalPRD), 0644)
-		}
-
-		r.tasks[taskID] = newTask
-		createdCopy := cloneTask(newTask)
-		r.mu.Unlock()
-		r.saveBoardNow()
-		r.ingestSliceDocuments(createdCopy, body.ExternalDocs, body.ExternalPRD, body.ExternalTaskPlan)
-
-		if len(unmetDeps) > 0 {
-			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
-				"Task created at %s. Waiting for %s to complete — it starts automatically once they are done.", startStage, strings.Join(unmetDeps, ", "))})
-		} else {
-			r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
-				"Task created at %s. Run the stage to start the agent, or ask it a question below.", startStage)})
-		}
-		confirmNote := "confirmed by you"
-		if !confirmed {
-			confirmNote = "proposed, not yet reviewed — change it under Routing plan before running a stage"
-		}
-		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
-			"Complexity %s (%s: %s). Routing plan %s: %s.", assessment.Complexity, assessment.Source, assessment.Rationale,
-			confirmNote, planSummary(plan))})
-
-		// Broadcast new task event over WebSocket
-		if r.cfg.WSHub != nil {
-			r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
-				Type:      types.EventTaskStatus,
-				TaskID:    taskID,
-				StageID:   startStage,
-				Timestamp: now,
-				Payload:   createdCopy,
-			})
-		}
-
-		r.writeJSON(w, http.StatusCreated, createdCopy)
+		r.writeJSON(w, status, created)
 
 	default:
 		r.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
+}
+
+// createTask adds a task to the board and returns its snapshot with the HTTP status to answer,
+// or the status and error of a request it refuses. extraMeta is merged into the new task's
+// metadata before it is saved and broadcast.
+func (r *Router) createTask(ctx context.Context, body CreateTaskRequest, extraMeta map[string]string) (*types.Task, int, error) {
+	if body.Title == "" {
+		return nil, http.StatusBadRequest, errors.New("Task title is required")
+	}
+
+	// Settle complexity and the routing plan. The operator's reviewed analysis (from
+	// POST /tasks/analyze) is used as is; otherwise creation grades the task with the instant
+	// keyword heuristic so API and import callers are never held up by a model call.
+	confirmed := len(body.RoutingPlan) > 0
+	plan := body.RoutingPlan
+	if confirmed {
+		var err error
+		if plan, err = r.validatePlan(plan); err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+	}
+	assessment := router.HeuristicComplexity(body.Title, body.Description, body.AssignedRepos)
+	if body.Complexity != "" {
+		assessment = r.assess(ctx, body.Title, body.Description, body.Complexity, body.TaskType, body.AssignedRepos)
+		if body.ComplexitySource != "" {
+			assessment.Source, assessment.Rationale = body.ComplexitySource, body.ComplexityRationale
+		}
+	}
+	workflow, err := r.workflowForNewTask(body.WorkflowID)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+	sliceStages, err := workflowSlice(workflow, body.ActiveSlice)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+	if !confirmed {
+		plan = proposedPlan(r.strategyRouter.Plan(sliceStages, assessment.Complexity, assessment.TaskType, body.AssignedRepos))
+	}
+
+	r.mu.Lock()
+	taskID := r.nextTaskIDLocked()
+
+	now := time.Now()
+	startStage := sliceStages[0]
+	startIndex := indexIn(fsm.StageIDs(workflow), startStage)
+
+	selectedMethod := body.SelectedMethod
+	if selectedMethod == "" || selectedMethod == "Auto" {
+		selectedMethod = "BMAD"
+		for _, s := range plan {
+			if s.StageID == startStage && s.Method != "" {
+				selectedMethod = s.Method
+			}
+		}
+	}
+
+	workflowID := workflow.ID
+
+	maxBudget := body.MaxTokenBudget
+	if maxBudget == 0 {
+		maxBudget = 50000
+	}
+
+	initialState := types.TaskStatePending
+	var unmetDeps []string
+	if len(body.Dependencies) > 0 {
+		for _, depID := range body.Dependencies {
+			dep, exists := r.tasks[depID]
+			if !exists || dep.State != types.TaskStateCompleted {
+				unmetDeps = append(unmetDeps, depID)
+			}
+		}
+		if len(unmetDeps) > 0 {
+			initialState = types.TaskStateWaitingDependency
+		}
+	}
+
+	newTask := &types.Task{
+		ID:                taskID,
+		WorkflowID:        workflowID,
+		Title:             body.Title,
+		Description:       body.Description,
+		CurrentStageID:    startStage,
+		CurrentStageIndex: startIndex,
+		State:             initialState,
+		ActiveSlice:       body.ActiveSlice,
+		AssignedRepos:     append([]string{}, body.AssignedRepos...),
+		Dependencies:      body.Dependencies,
+		ProfileName:       "orchestrator_agent",
+		SelectedMethod:    selectedMethod,
+		MaxTokenBudget:    maxBudget,
+		ArtifactDir:       fmt.Sprintf(".sdlc/artifacts/%s", taskID),
+		RoutingPlan:       plan,
+		Metadata: map[string]string{
+			"complexity":           assessment.Complexity,
+			"complexity_source":    assessment.Source,
+			"complexity_rationale": assessment.Rationale,
+			"task_type":            assessment.TaskType,
+			"routing_confirmed":    fmt.Sprint(confirmed),
+			"router_strategy":      body.RouterStrategy,
+			"source_branch":        body.SourceBranch,
+			"router_source":        "BP",
+			"router_rationale":     fmt.Sprintf("Routed via %s to %s method", body.RouterStrategy, selectedMethod),
+			"worktree_enabled":     fmt.Sprint(body.UseWorktree || !body.DisableWorktree),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	for k, v := range extraMeta {
+		newTask.Metadata[k] = v
+	}
+	if len(unmetDeps) > 0 {
+		newTask.Metadata["unmet_dependencies"] = strings.Join(unmetDeps, ",")
+	}
+
+	// Automatically detect JIRA key in title or description if connector is active
+	if r.cfg.ConnectorsManager != nil && r.cfg.ConnectorsManager.JiraEnabled() && r.cfg.ConnectorsManager.GetConfig().Jira.AutoDetectKeys {
+		if detectedKey := r.cfg.ConnectorsManager.DetectJiraKey(body.Title + " " + body.Description); detectedKey != "" {
+			newTask.Metadata["jira_key"] = detectedKey
+			newTask.Metadata["jira_url"] = r.cfg.ConnectorsManager.GetJiraURL(detectedKey)
+		}
+	}
+
+	newTask.Metadata["worktree_branch"] = plannedBranch(newTask)
+
+	if body.ActiveSlice != nil && body.ActiveSlice.ProduceVideo {
+		newTask.Metadata["video_url"] = fmt.Sprintf("/api/v1/artifacts/%s/videos/run_final.mp4", taskID)
+	}
+
+	taskArtifactDir := filepath.Join(r.cfg.RootDir, ".sdlc", "artifacts", taskID)
+	_ = os.MkdirAll(taskArtifactDir, 0755)
+
+	if body.ExternalTaskPlan != "" {
+		_ = os.WriteFile(filepath.Join(taskArtifactDir, "TASK_PLAN.md"), []byte(body.ExternalTaskPlan), 0644)
+	}
+	if body.ExternalPRD != "" {
+		_ = os.WriteFile(filepath.Join(taskArtifactDir, "PRD.md"), []byte(body.ExternalPRD), 0644)
+	}
+
+	r.tasks[taskID] = newTask
+	createdCopy := cloneTask(newTask)
+	r.mu.Unlock()
+	r.saveBoardNow()
+	r.ingestSliceDocuments(createdCopy, body.ExternalDocs, body.ExternalPRD, body.ExternalTaskPlan)
+
+	if len(unmetDeps) > 0 {
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
+			"Task created at %s. Waiting for %s to complete — it starts automatically once they are done.", startStage, strings.Join(unmetDeps, ", "))})
+	} else {
+		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
+			"Task created at %s. Run the stage to start the agent, or ask it a question below.", startStage)})
+	}
+	confirmNote := "confirmed by you"
+	if !confirmed {
+		confirmNote = "proposed, not yet reviewed — change it under Routing plan before running a stage"
+	}
+	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
+		"Complexity %s (%s: %s). Routing plan %s: %s.", assessment.Complexity, assessment.Source, assessment.Rationale,
+		confirmNote, planSummary(plan))})
+
+	// Broadcast new task event over WebSocket
+	if r.cfg.WSHub != nil {
+		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{
+			Type:      types.EventTaskStatus,
+			TaskID:    taskID,
+			StageID:   startStage,
+			Timestamp: now,
+			Payload:   createdCopy,
+		})
+	}
+
+	return createdCopy, http.StatusCreated, nil
 }
 
 func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
@@ -494,6 +506,10 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 
 		case "routing":
 			r.handleTaskRouting(w, req, taskID)
+			return
+
+		case "followups":
+			r.handleTaskFollowUps(w, req, taskSnapshot)
 			return
 
 		case "dependencies":

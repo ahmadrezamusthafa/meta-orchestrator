@@ -48,6 +48,9 @@ type Step struct {
 	Gate []string
 	// Tools are the tools the step runs on this machine.
 	Tools []ToolNeed
+	// FollowUps names the kind of work this step proposes as follow-up tasks: gaps it found but
+	// did not close, or implementation it needs from the product code.
+	FollowUps string
 }
 
 // Steps are the launch-readiness stages in order.
@@ -63,6 +66,8 @@ var Steps = []Step{
 			"Gaps are ranked and each names the readiness stage that closes it",
 			"Unknowns are written as questions the operator can answer",
 		},
+		FollowUps: "gaps in the release path that no later readiness stage of this task closes (build, tests, environments, " +
+			"approvals, migrations, rollback), and code or configuration changes the service needs to be releasable",
 	},
 	{
 		ID: "release_automation", Name: "Make Releases Automatic", Skill: "launch-release-automation", Role: "devops_superpower", Code: true,
@@ -80,6 +85,9 @@ var Steps = []Step{
 			{ID: "hadolint", Why: "lints the Dockerfile the pipeline builds"},
 			{ID: "docker", Why: "builds the image locally to check the Dockerfile"},
 		},
+		FollowUps: "pipeline work left open (missing environments, approvals, migration safety, rollback), and changes the service " +
+			"itself needs to be built and deployed this way (configuration from the environment, health checks, a versioned " +
+			"build)",
 	},
 	{
 		ID: "observability_alerting", Name: "Watch the System & Send Alerts", Skill: "launch-observability", Role: "devops_superpower", Code: true,
@@ -95,6 +103,9 @@ var Steps = []Step{
 		Tools: []ToolNeed{
 			{ID: "promtool", Why: "validates and unit-tests the Prometheus alert rules"},
 		},
+		FollowUps: "observability still missing after this stage — distributed tracing, RED/USE metrics, structured logging with " +
+			"redaction, SLOs, alerts with runbooks, dashboards — and instrumentation the product code needs on its critical " +
+			"journeys",
 	},
 	{
 		ID: "security_automation", Name: "Check Security Automatically", Skill: "launch-security-scanning", Role: "devops_superpower", Code: true,
@@ -117,6 +128,9 @@ var Steps = []Step{
 			{ID: "checkov", Why: "Terraform, Kubernetes and Helm misconfigurations"},
 			{ID: "docker", Why: "runs the OWASP ZAP baseline scan against staging"},
 		},
+		FollowUps: "security findings to fix in the code (each with its risk area: access control, input validation, secrets " +
+			"management, personal-data handling, dependencies), checks not yet wired into the pipeline, and suppressions " +
+			"that need a real fix",
 	},
 	{
 		ID: "customer_api_setup", Name: "Set Up the API for Customers", Skill: "launch-customer-api", Role: "lead_developer", Code: true,
@@ -133,6 +147,8 @@ var Steps = []Step{
 			{ID: "spectral", Required: true, Why: "lints the OpenAPI contract"},
 			{ID: "node", Why: "runs npx-based contract and docs tooling"},
 		},
+		FollowUps: "API work left open — missing contract coverage, versioning, per-client auth and scopes, tenant isolation, rate " +
+			"limits, idempotency, error format, contract tests, customer docs",
 	},
 	{
 		ID: "load_resilience", Name: "Test Heavy Traffic & Prepare for Problems", Skill: "launch-load-resilience", Role: "devops_superpower", Code: true,
@@ -149,6 +165,9 @@ var Steps = []Step{
 			{ID: "k6", Required: true, Why: "runs the load tests and checks their SLO thresholds"},
 			{ID: "docker", Why: "starts dependencies for a local or staging-like test run"},
 		},
+		FollowUps: "performance improvements (slow endpoints and queries, N+1 access, missing caching or indexes, connection and " +
+			"worker pool sizing) and resilience fixes (timeouts, retries with backoff, circuit breakers, backpressure, " +
+			"graceful shutdown) found by the load tests or the review",
 	},
 }
 
@@ -180,11 +199,33 @@ func (s Step) Instruction() string {
 	b.WriteString(" Build on the earlier stages of this task (this conversation, or their documents in the task's stages/ " +
 		"folder) and follow the stage's built-in playbook skill for the method and the report headings. " +
 		"Never print a secret or personal data you come across — give its file and line, masked.")
+	if s.FollowUps != "" {
+		b.WriteString("\n\n" + FollowUpBrief(s.FollowUps))
+	}
 	b.WriteString("\n\nThe operator confirms this checklist before approving the stage; end your Summary with it, each item marked ✓, ✗ or n/a with a one-line reason:\n")
 	for _, g := range s.Gate {
 		b.WriteString("- " + g + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// FollowUpFence is the info string of the fenced block in a stage report that lists the proposed
+// follow-up tasks.
+const FollowUpFence = "followups"
+
+// FollowUpBrief asks the agent to propose follow-up tasks of the given kind in the stage report,
+// as a JSON block the orchestrator turns into tasks the operator can create.
+func FollowUpBrief(kind string) string {
+	return "Follow-up tasks: after the stage's own work, list what is still missing or needs implementation — " + kind +
+		". Propose each as a follow-up task the operator can add to the board as a General AI SDLC task. Group related items " +
+		"(same area, repository or component) into one task so the board gets a few focused tasks, not one per item; never " +
+		"propose work you already did in this stage. Put them under a \"## Follow-up tasks\" heading, before the Summary, as " +
+		"one fenced block with the info string `" + FollowUpFence + "` holding a JSON array (use `[]` when nothing is left):\n" +
+		"```" + FollowUpFence + "\n" +
+		`[{"title": "Add distributed tracing to the order flow", "summary": "why this matters and the outcome", ` +
+		`"repos": ["repository names, when known"], "items": [{"title": "Propagate traceparent through the queue consumer", ` +
+		`"detail": "what to implement and how to verify it", "priority": "high|medium|low", "evidence": "file:line or report section"}]}]` +
+		"\n```\nNever put secrets or personal data in the block."
 }
 
 // GateCriteria is the gate checklist as one line, for the workflow definition.

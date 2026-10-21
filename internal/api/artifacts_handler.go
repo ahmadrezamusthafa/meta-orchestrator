@@ -176,4 +176,5 @@ func (r *Router) saveStageDocument(taskID, stage, model, content string) {
 		return
 	}
 	r.checkStageDocument(taskID, stage, content)
+	r.noteFollowUps(taskID, stage, content)
 }

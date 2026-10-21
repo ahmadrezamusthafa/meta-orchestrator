@@ -83,5 +83,7 @@ For other vendors (Datadog, New Relic, CloudWatch), validate monitors or dashboa
 ## Dashboards & runbooks
 ## Operator actions
 (on-call routing, notification channels, vendor keys to configure)
+## Follow-up tasks
+(the `followups` JSON block from the stage brief: remaining gaps grouped into a few tasks)
 ## Summary
 ```

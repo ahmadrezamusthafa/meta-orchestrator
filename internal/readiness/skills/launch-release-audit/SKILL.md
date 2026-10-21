@@ -80,5 +80,7 @@ release_automation | observability_alerting | security_automation | customer_api
 
 ## Unknowns — questions for the operator
 
+## Follow-up tasks
+(the `followups` JSON block from the stage brief: remaining gaps grouped into a few tasks)
 ## Summary
 ```

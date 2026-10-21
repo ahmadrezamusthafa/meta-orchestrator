@@ -13,16 +13,17 @@ import TaskPullRequestPanel from '../components/task/TaskPullRequestPanel.vue'
 import TaskUATGuidePanel from '../components/task/TaskUATGuidePanel.vue'
 import TaskRoutingPanel from '../components/task/TaskRoutingPanel.vue'
 import TaskEvidencePanel from '../components/task/TaskEvidencePanel.vue'
-import { taskLifecycle, stageName, TONE_BADGE, ACTION_BUTTON } from '../composables/taskLifecycle'
+import TaskFollowUpsPanel from '../components/task/TaskFollowUpsPanel.vue'
+import { taskLifecycle, stageName, TONE_BADGE, ACTION_BUTTON, READINESS_STAGES } from '../composables/taskLifecycle'
 import { useTaskStages } from '../composables/taskStages'
 import type { TaskWorktreeDTO, TaskDependencyInfoDTO } from '../types'
 import { api } from '../services/api'
 import {
   ChevronLeft, Terminal, BrainCircuit, ClipboardList, FileDiff, FolderGit2, Copy, Check, GitBranch,
-  ExternalLink, MoreHorizontal, Play, Pause, RotateCw, RefreshCcw, Eye, Loader2, Link2, ShieldAlert, GitPullRequest, ClipboardCheck, Route, Film,
+  ExternalLink, MoreHorizontal, Play, Pause, RotateCw, RefreshCcw, Eye, Loader2, Link2, ShieldAlert, GitPullRequest, ClipboardCheck, Route, Film, ListPlus,
 } from 'lucide-vue-next'
 
-type Tab = 'console' | 'reasoning' | 'scope' | 'routing' | 'changes' | 'evidence' | 'pr' | 'uat' | 'workspace'
+type Tab = 'console' | 'reasoning' | 'scope' | 'routing' | 'changes' | 'evidence' | 'pr' | 'uat' | 'followups' | 'workspace'
 const ALL_TABS: { id: Tab; label: string; icon: any }[] = [
   { id: 'console', label: 'Console', icon: Terminal },
   { id: 'reasoning', label: 'AI Reasoning', icon: BrainCircuit },
@@ -32,6 +33,7 @@ const ALL_TABS: { id: Tab; label: string; icon: any }[] = [
   { id: 'evidence', label: 'Evidence', icon: Film },
   { id: 'pr', label: 'Pull Request', icon: GitPullRequest },
   { id: 'uat', label: 'UAT Guide', icon: ClipboardCheck },
+  { id: 'followups', label: 'Follow-ups', icon: ListPlus },
   { id: 'workspace', label: 'Workspace & Repos', icon: FolderGit2 },
 ]
 const LEGACY_TAB: Record<string, Tab> = { terminal: 'console', thoughts: 'reasoning', specs: 'scope' }
@@ -65,10 +67,13 @@ const task = computed(() => taskStore.tasks.find((t) => t.id === taskId.value) |
 const EVIDENCE_STAGE = 'task_implementation'
 const onEvidenceStage = computed(() => task.value?.current_stage_id === EVIDENCE_STAGE)
 const hasEvidence = computed(() => Number(task.value?.metadata?.evidence_videos || 0) > 0)
-const TABS = computed(() => ALL_TABS.filter((t) => t.id !== 'evidence' || onEvidenceStage.value || hasEvidence.value))
 const life = computed(() => taskLifecycle(task.value))
 const pending = computed(() => !!taskStore.pendingActions[taskId.value])
 const { stages: STAGES, index: stageIdx } = useTaskStages(() => task.value)
+// Follow-ups are proposed by launch-readiness stages: the tab shows only for workflows that have them.
+const hasReadiness = computed(() => STAGES.value.some((s) => READINESS_STAGES.has(s)))
+const TABS = computed(() => ALL_TABS.filter((t) =>
+  (t.id !== 'evidence' || onEvidenceStage.value || hasEvidence.value) && (t.id !== 'followups' || hasReadiness.value)))
 const pos = computed(() => ({ index: stageIdx.value }))
 const meta = computed(() => task.value?.metadata || {})
 const ACTION_ICON = { run: Play, resume: RotateCw, pause: Pause, reset: RefreshCcw, review: Eye, assign: FolderGit2, approve: ShieldAlert }
@@ -282,6 +287,7 @@ onMounted(() => {
           @open-console="activeTab = 'console'" />
         <TaskPullRequestPanel v-else-if="activeTab === 'pr'" :task="task" :revision="gitRevision" @refresh="loadContext" />
         <TaskUATGuidePanel v-else-if="activeTab === 'uat'" :task="task" />
+        <TaskFollowUpsPanel v-else-if="activeTab === 'followups'" :task="task" />
         <TaskWorkspacePanel v-else-if="activeTab === 'workspace'" :task="task" :worktree="worktree" :start-editing="route.query.edit === 'repos'"
           @open-changes="activeTab = 'changes'" @refresh="loadContext" />
       </main>

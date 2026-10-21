@@ -88,5 +88,7 @@ Use the validator of the CI system the repository actually uses (for GitLab, its
 ## Gap status
 (each gap from the release audit: closed | partly | deferred — why)
 
+## Follow-up tasks
+(the `followups` JSON block from the stage brief: remaining gaps grouped into a few tasks)
 ## Summary
 ```

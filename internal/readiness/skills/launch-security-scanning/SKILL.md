@@ -85,5 +85,7 @@ Required tools gate the stage: it waits until they are installed or the operator
 ## Personal data inventory
 (field — where stored — protection — gaps)
 ## Operator actions
+## Follow-up tasks
+(the `followups` JSON block from the stage brief: remaining gaps grouped into a few tasks)
 ## Summary
 ```

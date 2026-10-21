@@ -93,6 +93,7 @@ type Router struct {
 	jira          *jiraSyncState
 	persistMu     sync.Mutex
 	worktreeMu    sync.Mutex // serializes git worktree creation/removal
+	followUpMu    sync.Mutex // serializes creating tasks from follow-up proposals (followups.go)
 	approvals     *approvalHub
 	docker        *dockerGate          // limits concurrent Docker commands across all agents
 	toolchain     *toolchain.Toolchain // checks and installs the tools the stacks need

@@ -7,7 +7,7 @@ import type {
   ConfluencePublishRequest, ConfluencePublishResponse, TestConnectorRequest, TestConnectorResponse,
   ConnectorItem, ToggleConnectorRequest, MCPConfig, ConnectorPingConfig, PingAllSummary,
   UniversalSkillDTO, SkillSourceDTO, SkillRunResult, RepoSuggestion, CheckPathCompatibilityResponse,
-  PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO,
+  PromptItemDTO, PromptSourceDTO, TaskWorktreeDTO, TaskDependencyInfoDTO, TaskFollowUpsDTO, CreateFollowUpRequest,
   OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO, RoutePreviewDTO, TierAssignmentDTO,
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
   TaskActivityResponse, TaskChatResponse, TaskDiffDTO, DiffAgainst, TaskArtifactDTO,
@@ -217,6 +217,23 @@ export const api = {
   async getTaskDependencies(taskId: string): Promise<TaskDependencyInfoDTO> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/dependencies`)
     if (!res.ok) throw new Error(`Failed to fetch dependencies for task ${taskId}`)
+    return res.json()
+  },
+
+  async getTaskFollowUps(taskId: string): Promise<TaskFollowUpsDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/followups`)
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `Failed to fetch follow-ups for task ${taskId}`)
+    return res.json()
+  },
+
+  /** Adds one General AI SDLC task to the board covering the selected follow-up proposals and items. */
+  async createFollowUpTask(taskId: string, payload: CreateFollowUpRequest): Promise<Task> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/followups`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Failed to add the follow-up task')
     return res.json()
   },
 
