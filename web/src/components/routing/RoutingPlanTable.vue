@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
-import type { StageRoute, StageEvidence, MethodOptionDTO, ModelOptionDTO, SkillOptionDTO } from '../../types'
+import type { StageRoute, StageEvidence, MethodOptionDTO, ModelOptionDTO, SkillOptionDTO, StageToolDTO } from '../../types'
 import { stageName } from '../../composables/taskLifecycle'
 import { Film, Plus, RotateCcw, Sparkles, X } from 'lucide-vue-next'
 
@@ -18,6 +18,10 @@ const props = defineProps<{
   // Skills that can be attached to a stage, and the ones suggested per stage
   skills?: SkillOptionDTO[]
   skillSuggestions?: Record<string, string[]>
+  // Built-in playbook skills stages load on their own (launch readiness), by stage
+  playbooks?: Record<string, string>
+  // Tools each launch-readiness stage runs, and whether this machine has them
+  stageTools?: Record<string, StageToolDTO[]>
   // The built-in test evidence skill of the Implementation stage, and library skills that record evidence
   evidenceSkill?: SkillOptionDTO
   evidenceSuggestions?: string[]
@@ -77,8 +81,14 @@ const searchEl = ref<HTMLInputElement[] | HTMLInputElement | null>(null)
 function attached(r: StageRoute) {
   return r.skills ?? []
 }
+function toolsFor(r: StageRoute) {
+  return props.stageTools?.[r.stage_id] ?? []
+}
+function playbookFor(r: StageRoute) {
+  return props.playbooks?.[r.stage_id] || ''
+}
 function suggestionsFor(r: StageRoute) {
-  const have = new Set(attached(r))
+  const have = new Set([...attached(r), playbookFor(r)])
   return (props.skillSuggestions?.[r.stage_id] ?? []).filter((n) => !have.has(n) && skillByName.value.has(n))
 }
 function setSkills(i: number, skills: string[]) {
@@ -210,7 +220,14 @@ function matches(r: StageRoute) {
               <div class="flex flex-wrap items-center gap-1.5">
                 <span class="text-[10px] font-mono text-slate-500 mr-0.5">Skills</span>
                 <span
-                  v-for="name in attached(r)"
+                  v-if="playbookFor(r)"
+                  class="inline-flex items-center gap-1 h-6 px-2 rounded-full border border-sky-800 bg-sky-950/50 text-[11px] font-mono text-sky-200"
+                  :title="`Built-in playbook — always loaded for this stage. Edit or disable it on the Skills page.\n${skillByName.get(playbookFor(r))?.description || ''}`"
+                >
+                  {{ playbookFor(r) }}<span class="text-[10px] text-sky-400">· built in</span>
+                </span>
+                <span
+                  v-for="name in attached(r).filter((n) => n !== playbookFor(r))"
                   :key="name"
                   class="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-full border text-[11px] font-mono"
                   :class="skillByName.has(name) ? 'bg-emerald-950/60 border-emerald-800 text-emerald-200' : 'bg-rose-950/50 border-rose-800 text-rose-200'"
@@ -248,9 +265,22 @@ function matches(r: StageRoute) {
                 >
                   <Plus class="w-3 h-3" /> Add skill
                 </button>
-                <span v-if="!attached(r).length && !suggestionsFor(r).length && skills.length" class="text-[10px] text-slate-600">
+                <span v-if="!attached(r).length && !playbookFor(r) && !suggestionsFor(r).length && skills.length" class="text-[10px] text-slate-600">
                   none — the agent works from the stage brief only
                 </span>
+              </div>
+              <div v-if="toolsFor(r).length" class="mt-1 flex flex-wrap items-center gap-1.5">
+                <span class="text-[10px] font-mono text-slate-500 mr-0.5">Tools</span>
+                <span
+                  v-for="t in toolsFor(r)"
+                  :key="t.id"
+                  class="inline-flex items-center gap-1 h-5 px-1.5 rounded border text-[10px] font-mono"
+                  :class="t.installed ? 'border-emerald-900 text-emerald-300' : t.required ? 'border-amber-700 bg-amber-950/40 text-amber-200' : 'border-slate-700 text-slate-400'"
+                  :title="`${t.name} — ${t.why}. ${t.required ? 'Required: the stage waits for it, or for you to run without it.' : 'Recommended.'} ${t.installed ? 'Installed.' : 'Not installed — install it from the Tool Hub (Launch Readiness) or the prompt when the stage starts.'}`"
+                >
+                  <span aria-hidden="true">{{ t.installed ? '✓' : '✗' }}</span>{{ t.id }}<span v-if="t.required && !t.installed" class="text-amber-400">· required</span>
+                </span>
+                <RouterLink v-if="toolsFor(r).some((t) => !t.installed)" to="/tools" class="text-[10px] text-emerald-400 hover:underline">Install in Tool Hub</RouterLink>
               </div>
               <div
                 v-if="pickerFor === r.stage_id"

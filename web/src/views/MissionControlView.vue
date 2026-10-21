@@ -24,6 +24,22 @@ const isDeleting = ref(false)
 
 const pendingDeleteTask = computed(() => taskStore.tasks.find(t => t.id === pendingDeleteId.value) || null)
 const isBoardEmpty = computed(() => !taskStore.isLoading && taskStore.tasks.length === 0)
+
+// Tasks whose current stage has no column in the workflow shown: they belong to another workflow.
+// Grouped by that workflow so the operator can switch the board to it.
+const offBoard = computed(() => {
+  const columns = new Set(workflowStore.projectedColumns.map((s) => s.id))
+  const byWorkflow = new Map<string, number>()
+  for (const t of taskStore.filteredTasks) {
+    if (columns.has(t.current_stage_id || 'prd_discovery')) continue
+    const id = t.workflow_id || 'general_ai_sdlc'
+    byWorkflow.set(id, (byWorkflow.get(id) || 0) + 1)
+  }
+  return [...byWorkflow.entries()].map(([id, count]) => ({
+    id, count, name: workflowStore.workflows.find((w) => w.id === id)?.name || id,
+    known: workflowStore.workflows.some((w) => w.id === id),
+  }))
+})
 const jiraConnected = computed(() => !!taskStore.jiraSync?.status.connected)
 
 async function confirmDelete() {
@@ -104,6 +120,18 @@ onMounted(async () => {
 
     <!-- Required tools missing on this machine: one click installs them all -->
     <SetupEverythingBanner compact class="mx-6 mt-4" />
+
+    <!-- Tasks not on this board because their workflow has other stages -->
+    <div v-if="offBoard.length" class="mx-6 mt-4 px-3 py-2 rounded-lg border border-sky-900/70 bg-sky-950/30 text-xs text-sky-200 flex flex-wrap items-center gap-2" role="status">
+      <span>Not shown on this board:</span>
+      <template v-for="w in offBoard" :key="w.id">
+        <button v-if="w.known" type="button" @click="workflowStore.activeWorkflowId = w.id"
+          class="h-6 px-2 rounded bg-sky-900/60 hover:bg-sky-800 text-[11px] text-sky-100">
+          {{ w.count }} in {{ w.name }} — show
+        </button>
+        <span v-else class="text-[11px] text-sky-300/80">{{ w.count }} in {{ w.name }}</span>
+      </template>
+    </div>
 
     <!-- Horizontal Scrolling Kanban Board Layout -->
     <!-- The whole board scrolls as one (both axes); columns grow with their cards. -->

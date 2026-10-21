@@ -291,7 +291,8 @@ func (r *Router) executeStage(run *stageRun) {
 	if message {
 		feedback = "" // the operator's message is not rejection feedback
 	}
-	prompt := stagePrompt(task, feedback)
+	// The stage brief; a turn that continues the stage's own session replaces it below.
+	prompt := stagePrompt(task, feedback) + r.readinessToolsBrief(task.CurrentStageID)
 	if evidenceOnly {
 		prompt = evidenceRunPrompt(task, canContinue)
 		if canContinue {
@@ -598,6 +599,9 @@ func (r *Router) settleStage(taskID, stage string, resp *llm.LLMResponse, model 
 		} else {
 			note = fmt.Sprintf("✓ %s finished. This is the final stage — approve to complete the task, or reject with feedback.", stage)
 		}
+		if checklist := r.gateChecklist(task, stage); checklist != "" {
+			note += "\nConfirm before approving:" + checklist
+		}
 	}
 	halt := r.recordStageOutcome(task, stage, execErr)
 	task.UpdatedAt = time.Now()
@@ -824,12 +828,12 @@ func (r *Router) respondStageStart(w http.ResponseWriter, taskID string, err err
 	switch {
 	case errors.As(err, &missingTools):
 		t := r.taskSnapshot(taskID)
-		var repos []string
+		rep := r.toolchainFor(nil, false)
 		if t != nil {
-			repos = t.AssignedRepos
+			rep = r.taskToolchain(t)
 		}
 		r.writeJSON(w, http.StatusConflict, map[string]interface{}{"status": "needs_tools", "task_id": taskID, "error": err.Error(),
-			"missing": missingTools.Missing, "toolchain": r.toolchainFor(repos, false), "task": t})
+			"missing": missingTools.Missing, "toolchain": rep, "task": t})
 	case err == nil:
 		r.writeJSON(w, http.StatusOK, map[string]interface{}{"status": "execution_dispatched", "task_id": taskID, "task": r.taskSnapshot(taskID)})
 	case errors.As(err, &blocked):

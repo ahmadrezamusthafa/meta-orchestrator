@@ -63,7 +63,7 @@ func (r *Router) handlePackageAction(w http.ResponseWriter, req *http.Request) {
 		if !requirePost(r, w, req) {
 			return
 		}
-		res, err := m.Setup()
+		res, err := m.SetupCategory(req.URL.Query().Get("category"))
 		if err != nil {
 			r.writeError(w, http.StatusBadRequest, err.Error())
 			return

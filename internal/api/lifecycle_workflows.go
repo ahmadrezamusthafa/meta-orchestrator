@@ -64,10 +64,22 @@ func (r *Router) stageIndexFor(t *types.Task, stage string) int {
 	return indexIn(r.workflowStages(t.WorkflowID), stage)
 }
 
-// nextStageFor returns the stage after current in the task's workflow, or "" when current is its
-// last stage (or not part of it).
-func (r *Router) nextStageFor(t *types.Task, current string) string {
+// taskStages are the stages a task runs: its workflow's, ending at the halt stage of its slice
+// when it has one (a halt stage outside the workflow is ignored).
+func (r *Router) taskStages(t *types.Task) []string {
 	stages := r.workflowStages(t.WorkflowID)
+	if t.ActiveSlice != nil && t.ActiveSlice.HaltStageID != "" {
+		if i := indexIn(stages, t.ActiveSlice.HaltStageID); i >= 0 {
+			return stages[:i+1]
+		}
+	}
+	return stages
+}
+
+// nextStageFor returns the stage after current among the stages the task runs, or "" when current
+// is its last stage — the workflow's last, or the halt stage of its slice — or not part of it.
+func (r *Router) nextStageFor(t *types.Task, current string) string {
+	stages := r.taskStages(t)
 	i := indexIn(stages, current)
 	if i < 0 || i+1 >= len(stages) {
 		return ""

@@ -35,7 +35,7 @@ func (r *Router) toolchainGate(taskID string) error {
 	if t == nil || !codeStages[t.CurrentStageID] || len(t.AssignedRepos) == 0 {
 		return nil
 	}
-	rep := r.toolchainFor(t.AssignedRepos, false)
+	rep := r.taskToolchain(t)
 	acked := map[string]bool{}
 	for _, id := range strings.Split(t.Metadata[toolchainAckKey], ",") {
 		acked[id] = true
@@ -174,6 +174,15 @@ func (r *Router) handleToolchainAction(w http.ResponseWriter, req *http.Request)
 }
 
 func (r *Router) handleToolchainReport(w http.ResponseWriter, req *http.Request) {
+	if id := req.URL.Query().Get("task"); id != "" && req.URL.Query().Get("all") != "1" {
+		t := r.taskSnapshot(id)
+		if t == nil {
+			r.writeError(w, http.StatusNotFound, errTaskNotFound.Error())
+			return
+		}
+		r.writeJSON(w, http.StatusOK, r.taskToolchain(t)) // includes the tools of the task's stages
+		return
+	}
 	repos, err := r.scopeRepos(req)
 	if err != nil {
 		r.writeError(w, http.StatusNotFound, err.Error())
@@ -191,7 +200,7 @@ type taskToolchainResponse struct {
 // handleTaskToolchain: GET /tasks/{id}/toolchain reports the task's tools; POST
 // /tasks/{id}/toolchain/ack lets its code stages run without the tools missing right now.
 func (r *Router) handleTaskToolchain(w http.ResponseWriter, req *http.Request, t *types.Task, parts []string) {
-	rep := r.toolchainFor(t.AssignedRepos, false)
+	rep := r.taskToolchain(t)
 	switch {
 	case len(parts) == 2 && req.Method == http.MethodGet:
 	case len(parts) == 3 && parts[2] == "ack" && req.Method == http.MethodPost:

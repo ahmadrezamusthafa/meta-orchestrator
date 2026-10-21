@@ -784,14 +784,26 @@ type SetupResult struct {
 // Setup installs every required package that is missing, dependencies first, one job per package
 // run one after another; a failure stops the chain.
 func (m *Manager) Setup() (SetupResult, error) {
+	return m.SetupCategory("")
+}
+
+// SetupCategory installs every missing package of a category (its name, or its slug such as
+// "launch-readiness"), dependencies first, one after another. Empty means the required packages.
+// In the required chain a failure stops the rest; a category's packages are independent, so one
+// failing does not stop the others (a package whose dependency failed fails on its own check).
+func (m *Manager) SetupCategory(category string) (SetupResult, error) {
 	res := SetupResult{Jobs: []Job{}, Skipped: []Skipped{}}
-	var required []string
+	var wanted []string
 	for _, s := range m.manifest.Packages {
-		if s.Required {
-			required = append(required, s.ID)
+		if (category == "" && s.Required) || (category != "" && categoryMatches(s.Category, category)) {
+			wanted = append(wanted, s.ID)
 		}
 	}
-	ids, err := m.manifest.order(required)
+	if category != "" && len(wanted) == 0 {
+		return res, fmt.Errorf("unknown package category %q: use one of %s", category, strings.Join(Categories, ", "))
+	}
+	stopOnFailure := category == ""
+	ids, err := m.manifest.order(wanted)
 	if err != nil {
 		return res, err
 	}
@@ -817,6 +829,7 @@ func (m *Manager) Setup() (SetupResult, error) {
 		acts = append(acts, action{spec: s, name: ActionSetup, from: d.version, fn: fn})
 	}
 	var jobIDs []string
+	var queued []action // acts[i] runs as jobIDs[i]
 	m.mu.Lock()
 	for _, a := range acts {
 		if m.busy[a.spec.ID] != "" {
@@ -824,6 +837,7 @@ func (m *Manager) Setup() (SetupResult, error) {
 		}
 		j := m.newJobLocked(a.spec.ID, a.name, "", a.from)
 		jobIDs = append(jobIDs, j.ID)
+		queued = append(queued, a)
 		res.Jobs = append(res.Jobs, *m.copyJobLocked(j))
 	}
 	m.mu.Unlock()
@@ -838,13 +852,13 @@ func (m *Manager) Setup() (SetupResult, error) {
 		defer m.wg.Done()
 		failed := ""
 		for i, id := range jobIDs {
-			a := acts[i]
+			a := queued[i]
 			if failed != "" {
 				m.abandon(id, a, fmt.Sprintf("Not run: setup stopped because %s failed.", failed))
 				continue
 			}
 			m.execute(id, a)
-			if j := m.Job(id); j == nil || j.State != JobSucceeded {
+			if j := m.Job(id); stopOnFailure && (j == nil || j.State != JobSucceeded) {
 				failed = a.spec.Name
 			}
 		}
@@ -1026,4 +1040,10 @@ func lookPathExcept(name, except string) string {
 
 func sortVersionsDesc(list []string) {
 	sort.SliceStable(list, func(i, j int) bool { return compareVersions(list[i], list[j]) > 0 })
+}
+
+// categoryMatches reports whether a category is named by q: its name in any case, or its slug.
+func categoryMatches(category, q string) bool {
+	q = strings.TrimSpace(q)
+	return strings.EqualFold(category, q) || strings.EqualFold(strings.ReplaceAll(category, " ", "-"), q)
 }

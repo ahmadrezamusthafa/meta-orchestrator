@@ -4,7 +4,8 @@ import { computed, ref, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Task, WorkflowStage } from '../../types'
 import { useTaskStore } from '../../stores/tasks'
-import { taskLifecycle, stagePosition, TONE_BADGE, ACTION_BUTTON } from '../../composables/taskLifecycle'
+import { taskLifecycle, TONE_BADGE, ACTION_BUTTON } from '../../composables/taskLifecycle'
+import { useTaskStages } from '../../composables/taskStages'
 import {
   MoreVertical, Check, Terminal, GitBranch, Link2, Play, Pause, RotateCw, RefreshCcw, Eye, FolderGit2, ShieldAlert,
   ExternalLink, FileText, Layers, Trash2, ArrowRight, Loader2,
@@ -33,7 +34,8 @@ const showMenu = ref(false)
 
 const life = computed(() => taskLifecycle(props.task)!)
 const pending = computed(() => !!taskStore.pendingActions[props.task.id])
-const pos = computed(() => stagePosition(props.task.current_stage_id))
+const taskStages = useTaskStages(() => props.task)
+const pos = computed(() => ({ index: taskStages.index.value, total: taskStages.stages.value.length }))
 const meta = computed(() => props.task.metadata || {})
 
 const jiraKey = computed(() => meta.value.jira_key || null)

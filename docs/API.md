@@ -98,7 +98,7 @@ Launch a new autonomous task. Supports full pipeline execution or **Mid-Process 
 Grade a draft task's complexity with AI (the Tier 3 model in your chain; keyword heuristic when it is unavailable) and
 propose a method and model per stage. Passing `complexity` re-plans with the operator's grade and skips the AI.
 
-* **Request Body:** `{"title", "description", "assigned_repos", "complexity"?, "task_type"?, "start_stage"?, "halt_stage"?}`
+* **Request Body:** `{"title", "description", "assigned_repos", "complexity"?, "task_type"?, "start_stage"?, "halt_stage"?, "workflow_id"?}`
 * **Response (`200 OK`):**
 ```json
 {
@@ -110,6 +110,11 @@ propose a method and model per stage. Passing `complexity` re-plans with the ope
   "models": [{"model": "claude/claude-sonnet-5-5", "tiers": ["tier2"]}]
 }
 ```
+The response also carries `skills`, `skill_suggestions`, `evidence_skill`, `evidence_suggestions`, and for launch-readiness
+stages `playbooks` (`{stage_id: skill}` — the built-in skill each loads without being attached) and `stage_tools`
+(`{stage_id: [{"id", "name", "why", "required", "installed"}]}`). `GET /api/v1/tasks/{id}/routing` returns the same
+`playbooks` and `stage_tools` for the task's stages. See [`LAUNCH_READINESS.md`](LAUNCH_READINESS.md).
+
 Best-practice tiers by complexity: LOW runs on Tier 2 (ReAct; Superpower for verification); MEDIUM uses Tier 1 for
 planning (BMAD/Supervisor) and Tier 2 for implementation and verification; HIGH uses Tier 1 throughout; SYSTEM uses
 Tier 1 with Superpower.
@@ -203,6 +208,7 @@ The orchestrator's own tools from `configs/packages.json` (see README §10 for w
 * `POST /api/v1/packages/{id}/rollback` `{"version"?}` → `202 Job`. Without a version: the previously active kept version (npm-cli, go-cli) or the newest snapshot of another version (npx-installer, claude-plugin). A version that is not kept is installed (npm-cli, go-cli, npx-installer). `400` when there is nothing to roll back to; `501` for system packages.
 * `POST /api/v1/packages/{id}/uninstall` → `202 Job`; `400` when nothing (managed) is installed.
 * `POST /api/v1/packages/setup` → `202 {"jobs": [Job], "skipped": [{"id", "reason"}]}`: installs every required package that is missing, dependencies (`requires`) first, one job (`action: "setup"`) per package run one after another; a failure fails the remaining jobs without running them.
+* `POST /api/v1/packages/setup?category=<name or slug>` (e.g. `launch-readiness`): installs every missing package of that category the same way, except that one failing does not stop the others. `400` for an unknown category. CLI: `packages setup [category]`.
 * `POST /api/v1/packages/recheck` → same as `GET /api/v1/packages`, after clearing the cached version checks.
 * `GET /api/v1/packages/jobs/{id}` → `Job` = `{"id","package","action":"install"|"update"|"rollback"|"uninstall"|"setup","version","from_version","state":"queued"|"running"|"succeeded"|"failed","log":[string],"message","started","finished"}` (`finished` is `""` until done).
 * WebSocket event `package.job` carries a `Job` on every state change and, while it logs, at most every 500 ms.
@@ -221,7 +227,7 @@ The orchestrator's own tools from `configs/packages.json` (see README §10 for w
 
 ### 2.5 Workflows, Hooks & Registries
 
-* `GET /api/v1/workflows`: Built-in workflows (`general_ai_sdlc`, hotfix, microservice; read-only) and custom ones. A task's `workflow_id` decides its stages.
+* `GET /api/v1/workflows`: Built-in workflows (`general_ai_sdlc`, hotfix, microservice, `launch_readiness`, `new_service_sdlc`; read-only) and custom ones. A task's `workflow_id` decides its stages. A stage's `gate_criteria` (items separated by `;`) is the checklist the operator confirms; it is shown in the console when the stage finishes.
 * `POST /api/v1/workflows`, `PUT /api/v1/workflows/{id}`: Create or update a custom workflow. Every stage must be runnable (`400` otherwise); built-ins return `409`. Saved to `.sdlc/workflows.json`; `.sdlc/workflow.yaml` is loaded at startup.
 * `GET /api/v1/workflows/stages`: Stage IDs a workflow may use.
 * `GET /api/v1/hooks`: Configured lifecycle hooks (`.sdlc/hooks.json` and `.sdlc/hooks/<event>.sh`); webhook URLs show scheme and host only.

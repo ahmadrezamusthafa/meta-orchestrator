@@ -77,6 +77,24 @@ http://localhost:5173
 * Launch features starting at **any stage** in the SDLC (e.g., start at *Implementation* and halt at *E2E Validation*).
 * Ingests external git feature branches and `TASK_PLAN.md` / `PRD.md` files directly via the UI dropzone.
 
+### 2a. Launch Readiness for New Services & Initiatives (`internal/readiness`)
+* Two built-in workflows take a service to production: **Production Launch Readiness** (an existing service) and **New Service / Initiative to Production** (the full SDLC followed by readiness).
+* Six readiness stages, each confirmed by the operator at a gate before the next one starts:
+
+  | Stage | Step | Changes code |
+  |---|---|---|
+  | `release_audit` | Check how we release today | no (read-only audit) |
+  | `release_automation` | Make releases automatic (CI/CD as code, gated promotion, rollback) | yes |
+  | `observability_alerting` | Watch the system and send alerts (logs, metrics, traces, SLOs, alerts with runbooks) | yes |
+  | `security_automation` | Check security automatically (secret/SCA/SAST/image/IaC scans, triage policy) | yes |
+  | `customer_api_setup` | Set up the API for customers (OpenAPI, versioning, auth, rate limits, docs) | yes |
+  | `load_resilience` | Test with heavy traffic and prepare for problems (load tests, runbooks, rollback drill) | yes |
+
+* Each stage loads a built-in playbook skill (`launch-*`), installed into `.sdlc/skills/` at startup. Edit one there and your version is kept across upgrades; disable it on the Skills page to turn it off. Skills you attach in the Routing tab are added to it.
+* Each stage's **gate checklist** is in the agent's brief (its Summary marks every item ✓/✗/n/a), in the console when the stage finishes, and on the task's Stage plan.
+* Stages declare the tools they run (gitleaks, trivy, semgrep, spectral, k6, …). Required ones gate the stage like other toolchain needs; install them all from the Tool Hub's **Launch Readiness** group or `go run ./cmd/daemon packages setup launch-readiness`.
+* **Operator guide:** [`docs/LAUNCH_READINESS.md`](docs/LAUNCH_READINESS.md).
+
 ### 3. Active Task Split-Pane Workspace (60/40)
 * **Agent Console:** the live transcript of each turn — the agent's text and thinking, every tool call with its input and result, permission requests to approve or deny, and transcript downloads.
 * **File Outline:** `GET /api/v1/tasks/{id}/outline?repo=&path=` lists a file's declarations (Go, TypeScript/JavaScript/Vue, PHP, Python) from the task worktree. It is a regex outline, not a parser.
@@ -129,7 +147,7 @@ Every detected stack declares the command-line tools its checks need: required t
 * **Agents** are told which tools are missing and never install tools themselves.
 * **PATH:** at startup and after each install, the daemon adds existing package-manager bin folders (`/opt/homebrew/bin`, `~/go/bin`, `/snap/bin`, …) to its `PATH`, so tools installed while it runs are visible to it and to its agents.
 
-API: `GET /api/v1/toolchain[?task=|?project=][&all=1]`, `POST /api/v1/toolchain/recheck`, `POST /api/v1/toolchain/install {"tool","method"}`, `GET /api/v1/toolchain/jobs/{id}`, `GET /api/v1/tasks/{id}/toolchain`, `POST /api/v1/tasks/{id}/toolchain/ack`. A blocked stage start answers `409 {"status":"needs_tools","missing":[…],"toolchain":{…}}` and broadcasts the `toolchain.needed` WebSocket event. **Adding a tool** means adding one `Catalog` entry (`internal/toolchain/catalog.go`) and asking for it from `Profile.Needs` (`internal/stack/needs.go`).
+API: `GET /api/v1/toolchain[?task=|?project=][&all=1]`, `POST /api/v1/toolchain/recheck`, `POST /api/v1/toolchain/install {"tool","method"}`, `GET /api/v1/toolchain/jobs/{id}`, `GET /api/v1/tasks/{id}/toolchain`, `POST /api/v1/tasks/{id}/toolchain/ack`. A task-scoped report (`?task=`, `/tasks/{id}/toolchain`) also includes the tools of its launch-readiness stages (`internal/readiness`). A blocked stage start answers `409 {"status":"needs_tools","missing":[…],"toolchain":{…}}` and broadcasts the `toolchain.needed` WebSocket event. **Adding a tool** means adding one `Catalog` entry (`internal/toolchain/catalog.go`) and asking for it from `Profile.Needs` (`internal/stack/needs.go`).
 
 #### Repository dependencies (`internal/deps`)
 Each registered repository's project dependencies (React, Vue, Go modules, Flutter packages, gems, Python and JVM libraries) are listed per ecosystem with the wanted range, the installed or locked version, and the framework-level ones flagged as key. Installing means reproducing the lockfile with the repository's own package manager (`npm ci`, `pnpm install --frozen-lockfile`, `yarn install --frozen-lockfile`/`--immutable`, `bun install --frozen-lockfile`, `go mod download`, `flutter pub get`, `bundle install`, …). It runs in the registered folder or in a task's worktree, with a 20-minute limit and one install per repository at a time, and the log is streamed. Running it again is how local drift is rolled back. When the package manager is missing, you get the command to copy and the toolchain tool to install. Changing a version, for example React 18 → 19, is a code change: **Upgrade** creates a task that edits the manifest and lockfile in a worktree, fixes breaking changes and runs the repository's checks. The change is reviewed in a pull request, and reverting it is the rollback. Registry lookups for the latest versions (`npm view`) run only when you ask for them. API: `GET /api/v1/projects/{id}/dependencies`, `POST …/dependencies/install`, `POST …/dependencies/upgrade`, `GET /api/v1/dependencies/jobs/{id}` (see [docs/API.md](docs/API.md)).
@@ -224,3 +242,4 @@ The daemon runs agents with shell access and holds provider and connector creden
 
 * **[Operator Runbook (`docs/RUNBOOK.md`)](docs/RUNBOOK.md):** operating procedures, troubleshooting and edge cases.
 * **[REST & WebSocket API Reference (`docs/API.md`)](docs/API.md):** HTTP endpoints, JSON payloads and WebSocket message types.
+* **[Launch Readiness Guide (`docs/LAUNCH_READINESS.md`)](docs/LAUNCH_READINESS.md):** taking a new service or initiative to production — workflows, gates, required tools and customizing the playbook skills.

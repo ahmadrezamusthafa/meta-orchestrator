@@ -68,6 +68,10 @@ type analyzeResponse struct {
 	// Skills are the skills a stage can use; SkillSuggestions proposes some per stage.
 	Skills           []skillOption       `json:"skills"`
 	SkillSuggestions map[string][]string `json:"skill_suggestions"`
+	// Playbooks are the built-in skills stages load without being attached (launch readiness).
+	Playbooks map[string]string `json:"playbooks"`
+	// StageTools are the tools each readiness stage runs, and whether this machine has them.
+	StageTools map[string][]stageTool `json:"stage_tools"`
 	// EvidenceSkill is the built-in evidence skill; EvidenceSuggestions are library skills that record evidence.
 	EvidenceSkill       skillOption `json:"evidence_skill"`
 	EvidenceSuggestions []string    `json:"evidence_suggestions"`
@@ -171,6 +175,8 @@ func (r *Router) handleTaskAnalyze(w http.ResponseWriter, req *http.Request) {
 		Models:              r.strategyRouter.ModelOptions(),
 		Skills:              skills,
 		SkillSuggestions:    skillSuggestions(stages, skills),
+		Playbooks:           stagePlaybooks(stages, skills),
+		StageTools:          r.stageTools(stages),
 		EvidenceSkill:       evidenceSkillOption(),
 		EvidenceSuggestions: evidenceSuggestions(skills),
 	})
@@ -253,7 +259,8 @@ func (r *Router) handleTaskRouting(w http.ResponseWriter, req *http.Request, tas
 			"complexity": cp.Metadata["complexity"], "complexity_source": cp.Metadata["complexity_source"],
 			"complexity_rationale": cp.Metadata["complexity_rationale"], "routing_plan": cp.RoutingPlan,
 			"methods": planMethods, "models": r.strategyRouter.ModelOptions(),
-			"skills": skills, "skill_suggestions": skillSuggestions(stages, skills),
+			"skills": skills, "skill_suggestions": skillSuggestions(stages, skills), "playbooks": stagePlaybooks(stages, skills),
+			"stage_tools":    r.stageTools(stages),
 			"evidence_skill": evidenceSkillOption(), "evidence_suggestions": evidenceSuggestions(skills),
 		})
 	case http.MethodPut:

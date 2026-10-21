@@ -120,17 +120,18 @@ export const usePackagesStore = defineStore('packages', () => {
   const rollback = (pkg: PackageDTO, version?: string) => run(pkg, 'roll back', () => api.rollbackPackage(pkg.id, version))
   const uninstall = (pkg: PackageDTO) => run(pkg, 'uninstall', () => api.uninstallPackage(pkg.id))
 
-  /** Installs every missing required package (POST /packages/setup) and follows each job. */
-  async function setup() {
+  /** Installs every missing required package (POST /packages/setup), or every missing package of a
+   *  category, and follows each job. */
+  async function setup(category?: string) {
     settingUp.value = true
     try {
-      const res = await api.setupPackages()
+      const res = await api.setupPackages(category)
       setupSkipped.value = res.skipped || []
       setupJobIds.value = (res.jobs || []).map((j) => j.id)
       for (const j of res.jobs || []) tracker.track(j, true)
       if (!res.jobs?.length) {
         if (setupSkipped.value.length) toast.warning('Nothing could be set up automatically', 'See the skipped packages for why.')
-        else toast.info('Everything required is already installed')
+        else toast.info(category ? `Every ${category} package is already installed` : 'Everything required is already installed')
         scheduleRefresh()
       }
     } catch (e: any) {

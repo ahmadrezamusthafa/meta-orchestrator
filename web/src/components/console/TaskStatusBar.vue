@@ -2,7 +2,8 @@
 import { computed } from 'vue'
 import { Play, Pause, RotateCw, RefreshCcw } from 'lucide-vue-next'
 import type { Task } from '../../types'
-import { taskLifecycle, stageName, STAGES, type Tone } from '../../composables/taskLifecycle'
+import { taskLifecycle, stageName, type Tone } from '../../composables/taskLifecycle'
+import { useTaskStages } from '../../composables/taskStages'
 
 const props = defineProps<{
   task: Task | null
@@ -21,7 +22,7 @@ const emit = defineEmits<{
 }>()
 
 const stage = computed(() => props.task?.current_stage_id || '')
-const stageIndex = computed(() => STAGES.indexOf(stage.value as (typeof STAGES)[number]))
+const { stages: STAGES, index: stageIndex } = useTaskStages(() => props.task)
 const life = computed(() => taskLifecycle(props.task, { busy: props.busy, hasSession: props.hasSession }))
 // Review happens in the gate selector right below the bar, so the bar offers no button for it.
 const action = computed(() => (life.value?.primary?.kind === 'review' || life.value?.primary?.kind === 'assign' || life.value?.primary?.kind === 'approve' ? undefined : life.value?.primary))

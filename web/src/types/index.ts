@@ -112,6 +112,10 @@ export interface TaskAnalysisDTO {
   models: ModelOptionDTO[]
   skills: SkillOptionDTO[]
   skill_suggestions: Record<string, string[]>
+  /** Built-in playbook skill a stage loads without being attached (launch readiness stages). */
+  playbooks?: Record<string, string>
+  /** Tools each launch-readiness stage runs, and whether this machine has them. */
+  stage_tools?: Record<string, StageToolDTO[]>
   evidence_skill?: SkillOptionDTO
   evidence_suggestions?: string[]
 }
@@ -125,6 +129,17 @@ export interface TaskRoutingDTO {
   models: ModelOptionDTO[]
   skills: SkillOptionDTO[]
   skill_suggestions: Record<string, string[]>
+  playbooks?: Record<string, string>
+  stage_tools?: Record<string, StageToolDTO[]>
+}
+
+export interface StageToolDTO {
+  id: string
+  name: string
+  why: string
+  /** A required tool stops the stage until it is installed or you choose to run without it. */
+  required: boolean
+  installed: boolean
 }
 
 export interface TaskRepoWorktreeDTO {
