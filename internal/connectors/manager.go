@@ -632,7 +632,7 @@ func (m *Manager) ensureCatalogLocked() {
 			APIToken:      ghToken,
 			TargetEntity:  "",
 			TargetLabel:   "Default Organization / Repository",
-			Capabilities:  []string{"Issue #ID Detection", "Pull Request Creation", "CI Check Validation"},
+			Capabilities:  []string{"Issue #ID Detection", "Pull Request Creation", "CI Check Validation", "Actions Runs & Job Logs"},
 			MCP: &types.MCPConfig{
 				Enabled:   true,
 				Command:   "npx",
@@ -1580,9 +1580,9 @@ func (m *Manager) testGenericConnector(ctx context.Context, id string, item *typ
 			m.updateItemStatus(id, false, 0, res.Message)
 			return res
 		}
-		reqURL := "https://api.github.com/user"
+		reqURL := githubAPIBase(activeItem.BaseURL) + "/user"
 		if activeItem.TargetEntity != "" && strings.Contains(activeItem.TargetEntity, "/") {
-			reqURL = fmt.Sprintf("https://api.github.com/repos/%s", activeItem.TargetEntity)
+			reqURL = fmt.Sprintf("%s/repos/%s", githubAPIBase(activeItem.BaseURL), activeItem.TargetEntity)
 		}
 		req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, reqURL, nil)
 		if err == nil {
@@ -1778,6 +1778,14 @@ func (m *Manager) testGenericConnector(ctx context.Context, id string, item *typ
 		}
 		if serverHeader == "" {
 			serverHeader = cleanURL
+		}
+
+		if id == "github" && strings.Contains(activeItem.TargetEntity, "/") {
+			if problem := m.githubActionsProblem(probeCtx, activeItem); problem != "" {
+				res := types.TestConnectorResponse{Success: false, LatencyMs: latency, Message: problem, ConnectedAs: userStr}
+				m.updateItemStatus(id, false, latency, problem)
+				return res
+			}
 		}
 
 		res := types.TestConnectorResponse{
