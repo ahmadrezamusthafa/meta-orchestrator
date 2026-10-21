@@ -80,14 +80,18 @@ var stackConnectors = []stackConnector{
 	{
 		item: types.ConnectorItem{
 			ID: "grafana", Name: "Grafana", Category: types.ConnectorCategoryObservability, CategoryLabel: "Observability",
-			Description: "Lets agents check dashboards, alerts and the Prometheus, Loki and Tempo data behind them — e.g. that new OpenTelemetry spans and metrics really arrive. Use a service account with the Viewer role.",
+			Description: "Lets agents check dashboards, alerts and the Prometheus, Loki and Tempo data behind them — e.g. that new OpenTelemetry spans and metrics really arrive. Signs in with a service account token (Viewer role recommended), a username and password, or anonymously; the server always runs without write and admin tools.",
 			Icon:        "grafana", Color: "orange", ConfigMode: "mcp", Status: "unconfigured",
 			TargetLabel:  "Default dashboard folder (optional)",
 			Capabilities: []string{"Dashboard Search", "PromQL / LogQL Queries", "Alert Rules", "Trace Lookup"},
-			AgentAccess:  "Read-only when the service account has the Viewer role: dashboards, alerts, Prometheus, Loki and Tempo queries",
+			AgentAccess:  "Read-only (--disable-write --disable-admin), whatever the credential may do: dashboards, alerts, Prometheus, Loki and Tempo queries",
 		},
 		launchers: []types.MCPConfig{
-			{Enabled: true, Command: "mcp-grafana", Args: []string{}, Transport: "stdio"},
+			{Enabled: true, Command: "mcp-grafana", Args: grafanaReadOnly, Transport: "stdio"},
+			dockerLauncher("mcp/grafana", grafanaEnv, append([]string{"-t", "stdio"}, grafanaReadOnly...)...),
+		},
+		retired: []types.MCPConfig{
+			{Command: "mcp-grafana"},
 			dockerLauncher("mcp/grafana", []string{"GRAFANA_URL", "GRAFANA_SERVICE_ACCOUNT_TOKEN"}, "-t", "stdio"),
 		},
 		tokenKey: "GRAFANA_SERVICE_ACCOUNT_TOKEN",
@@ -328,7 +332,7 @@ func (s stackConnector) isBuiltinLauncher(mcp *types.MCPConfig) bool {
 }
 
 func cloneMCP(m types.MCPConfig) types.MCPConfig {
-	m.Args = append([]string(nil), m.Args...)
+	m.Args = append([]string{}, m.Args...) // never nil: the UI edits args as a list
 	env := map[string]string{}
 	for k, v := range m.Env {
 		env[k] = v
@@ -426,18 +430,16 @@ func (m *Manager) runtimeMCPLocked(it *types.ConnectorItem) (types.MCPConfig, bo
 			fresh.Enabled = mcp.Enabled
 			mcp = fresh
 		}
-		if s.tokenKey != "" {
+		if it.ID == "grafana" {
+			if !m.grafanaRuntimeLocked(s, it, &mcp) {
+				return types.MCPConfig{}, false
+			}
+		} else if s.tokenKey != "" {
 			tok, _ := m.stackTokenLocked(s, it)
 			if tok == "" {
 				return types.MCPConfig{}, false
 			}
 			mcp.Env[s.tokenKey] = tok
-		}
-		if it.ID == "grafana" {
-			if strings.TrimSpace(it.BaseURL) == "" {
-				return types.MCPConfig{}, false
-			}
-			mcp.Env["GRAFANA_URL"] = strings.TrimRight(it.BaseURL, "/")
 		}
 		if it.ID == "github" {
 			if host := githubHost(it.BaseURL); host != "" {
@@ -584,23 +586,10 @@ func (m *Manager) testStackConnector(ctx context.Context, it *types.ConnectorIte
 	var who, info string
 	switch it.ID {
 	case "grafana":
-		base := strings.TrimRight(strings.TrimSpace(it.BaseURL), "/")
-		if base == "" {
-			return fail("Grafana URL is required (e.g. https://grafana.example.com)")
+		var problem string
+		if who, info, problem = m.checkGrafana(ctx, it); problem != "" {
+			return fail(problem)
 		}
-		if token == "" {
-			return fail("A Grafana service account token is required (create one with the Viewer role; or set GRAFANA_SERVICE_ACCOUNT_TOKEN)")
-		}
-		code, body, err := m.getJSON(ctx, base+"/api/search?limit=1", token)
-		switch {
-		case err != nil:
-			return fail("Could not reach Grafana: " + err.Error())
-		case code == http.StatusUnauthorized || code == http.StatusForbidden:
-			return fail(fmt.Sprintf("Grafana rejected the token (HTTP %d) — check it is a valid service account token", code))
-		case code != http.StatusOK:
-			return fail(fmt.Sprintf("Grafana answered HTTP %d: %s", code, firstLine(body)))
-		}
-		who, info = "service account", base
 	case "cloudflare":
 		if token == "" {
 			return fail("A Cloudflare API token is required (read-only permissions; or set CLOUDFLARE_API_TOKEN)")
@@ -690,6 +679,10 @@ func (m *Manager) getJSON(ctx context.Context, url, token string) (int, string, 
 // doJSON sends a request with the given headers (and body, when set) and returns the status and
 // up to 64 KiB of the answer.
 func (m *Manager) doJSON(ctx context.Context, method, url string, headers map[string]string, body string) (int, string, error) {
+	return doRequest(ctx, m.client, method, url, headers, body)
+}
+
+func doRequest(ctx context.Context, client *http.Client, method, url string, headers map[string]string, body string) (int, string, error) {
 	var rd io.Reader
 	if body != "" {
 		rd = strings.NewReader(body)
@@ -702,7 +695,7 @@ func (m *Manager) doJSON(ctx context.Context, method, url string, headers map[st
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := m.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, "", err
 	}

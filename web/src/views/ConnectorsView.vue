@@ -47,8 +47,8 @@ const STACK_FORMS: Record<string, StackForm> = {
     ],
   },
   grafana: {
-    baseUrl: { label: 'Grafana URL', placeholder: 'https://grafana.example.com' },
-    token: { label: 'Service account token (Viewer role)' },
+    baseUrl: { label: 'Grafana URL', placeholder: 'https://grafana.example.com or http://127.0.0.1:3000' },
+    token: { label: 'Service account token (Viewer role recommended)' },
     targetPlaceholder: 'e.g. Payments',
     steps: [
       'In Grafana: Administration › Users and access › Service accounts › Add service account, with the Viewer role.',
@@ -134,7 +134,50 @@ const STACK_FORMS: Record<string, StackForm> = {
     ],
   },
 }
-const stackForm = computed<StackForm | null>(() => (selectedConnector.value ? STACK_FORMS[selectedConnector.value.id] || null : null))
+/** How the Grafana connector signs in (extra_settings.auth_mode); the server is read-only in every mode. */
+type GrafanaAuthMode = 'token' | 'basic' | 'anonymous'
+const GRAFANA_AUTH: { value: GrafanaAuthMode; label: string; hint: string }[] = [
+  { value: 'token', label: 'Service account token', hint: 'Recommended: a service account with the Viewer role.' },
+  { value: 'basic', label: 'Username & password', hint: 'Any Grafana user, e.g. admin on a local Grafana. Agents still get read-only tools.' },
+  { value: 'anonymous', label: 'Anonymous', hint: 'For a Grafana with [auth.anonymous] enabled, e.g. a local docker compose stack.' },
+]
+const GRAFANA_FORMS: Record<GrafanaAuthMode, StackForm> = {
+  token: STACK_FORMS.grafana,
+  basic: {
+    ...STACK_FORMS.grafana,
+    username: { label: 'Username', placeholder: 'admin' },
+    token: { label: 'Password' },
+    steps: [
+      'Enter the Grafana URL and the username and password you sign in with (or set GRAFANA_USERNAME and GRAFANA_PASSWORD).',
+      'The MCP server runs with --disable-write and --disable-admin, so even an admin login only reads.',
+      'Enable the connector, save, and press Test MCP.',
+    ],
+  },
+  anonymous: {
+    ...STACK_FORMS.grafana,
+    token: false,
+    steps: [
+      'Grafana must allow anonymous access: [auth.anonymous] enabled = true (GF_AUTH_ANONYMOUS_ENABLED=true in docker compose).',
+      'Enter the Grafana URL, enable the connector, save, and press Test MCP.',
+    ],
+  },
+}
+const grafanaAuthMode = computed<GrafanaAuthMode>({
+  get: () => {
+    const m = selectedConnector.value?.extra_settings?.auth_mode
+    return m === 'basic' || m === 'anonymous' ? m : 'token'
+  },
+  set: (m) => {
+    if (!selectedConnector.value) return
+    selectedConnector.value.extra_settings = { ...(selectedConnector.value.extra_settings || {}), auth_mode: m }
+  },
+})
+const stackForm = computed<StackForm | null>(() => {
+  const c = selectedConnector.value
+  if (!c) return null
+  if (c.id === 'grafana') return GRAFANA_FORMS[grafanaAuthMode.value]
+  return STACK_FORMS[c.id] || null
+})
 const activeEditTab = ref<'rest' | 'mcp' | 'explorer'>('rest')
 
 // Catalog state
@@ -442,6 +485,9 @@ function openConnectorSetup(c: ConnectorItem) {
   }
   if (!selectedConnector.value?.mcp.env) {
     selectedConnector.value!.mcp.env = {}
+  }
+  if (!selectedConnector.value?.mcp.args) {
+    selectedConnector.value!.mcp.args = []
   }
   testResult.value = null
   mcpTestResult.value = null
@@ -1485,6 +1531,26 @@ onUnmounted(() => {
                     </ol>
                   </div>
 
+                  <!-- Grafana: how to sign in -->
+                  <div v-if="selectedConnector.id === 'grafana'" class="md:col-span-2">
+                    <label class="block text-xs font-medium text-slate-300 mb-1.5">Sign in with</label>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2" role="radiogroup" aria-label="Grafana sign-in method">
+                      <button
+                        v-for="opt in GRAFANA_AUTH"
+                        :key="opt.value"
+                        type="button"
+                        role="radio"
+                        :aria-checked="grafanaAuthMode === opt.value"
+                        @click="grafanaAuthMode = opt.value"
+                        class="text-left p-3 rounded-lg border text-xs transition"
+                        :class="grafanaAuthMode === opt.value ? 'border-orange-500/70 bg-orange-950/30 text-orange-200' : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-700'"
+                      >
+                        <div class="font-semibold">{{ opt.label }}</div>
+                        <div class="text-[11px] text-slate-400 mt-0.5">{{ opt.hint }}</div>
+                      </button>
+                    </div>
+                  </div>
+
                   <!-- Base URL -->
                   <div v-if="!stackForm || stackForm.baseUrl" class="md:col-span-2">
                     <label class="block text-xs font-medium text-slate-300 mb-1.5">
@@ -1543,6 +1609,24 @@ onUnmounted(() => {
                       <span class="text-[10px] text-teal-400/80 bg-teal-900/50 px-1.5 py-0.5 rounded border border-teal-700/50 whitespace-nowrap">Auto-detected</span>
                     </div>
                   </div>
+
+                  <!-- Grafana: organization and TLS -->
+                  <template v-if="selectedConnector.id === 'grafana'">
+                    <div>
+                      <label class="block text-xs font-medium text-slate-300 mb-1.5">Organization ID (optional)</label>
+                      <input
+                        v-model="selectedConnector.extra_settings!.org_id"
+                        type="text"
+                        inputmode="numeric"
+                        placeholder="1"
+                        class="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                    <label class="flex items-center gap-2 self-end h-9 text-xs text-slate-300 cursor-pointer select-none">
+                      <input v-model="selectedConnector.extra_settings!.tls_skip_verify" type="checkbox" class="accent-orange-500" />
+                      Skip TLS verification (self-signed certificate)
+                    </label>
+                  </template>
 
                   <!-- Target Entity -->
                   <div class="md:col-span-2">
@@ -1890,7 +1974,7 @@ onUnmounted(() => {
                       Server Arguments (Command Line Args)
                     </label>
                     <input
-                      :value="selectedConnector.mcp.args.join(' ')"
+                      :value="(selectedConnector.mcp.args || []).join(' ')"
                       @input="(e: any) => selectedConnector!.mcp!.args = e.target.value.split(' ').filter(Boolean)"
                       type="text"
                       placeholder="-y @modelcontextprotocol/server-..."

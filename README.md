@@ -158,7 +158,7 @@ Agents can read live state from third-party services through MCP servers. Each c
 | Connector | MCP server | Agent access | Credential |
 |---|---|---|---|
 | GitHub | GitHub's official server (`github-mcp-server`, else its Docker image) | Read-only: repos, issues, PRs, Actions runs and logs | Fine-grained PAT (Read) or `GITHUB_TOKEN` |
-| Grafana | `mcp-grafana`, else Docker `mcp/grafana` | Dashboards, alerts, Prometheus/Loki/Tempo queries (Viewer role) | Service account token |
+| Grafana | `mcp-grafana`, else Docker `mcp/grafana`, always with `--disable-write --disable-admin` | Read-only: dashboards, alerts, Prometheus/Loki/Tempo queries, whatever the credential may do | Service account token, username + password (e.g. a local admin), or anonymous; optional org ID and skip-TLS |
 | Azure | `@azure/mcp` with `--read-only` | Resources and Container Apps | `az login` |
 | Cloudflare | Cloudflare Observability server via `mcp-remote` | Workers logs and analytics | Read-only API token |
 | ClickUp | `@hauptsache.net/clickup-mcp` with `CLICKUP_MCP_MODE=read` | Tasks, comments, lists, spaces, docs | Personal API token (`pk_…`) + workspace ID |
