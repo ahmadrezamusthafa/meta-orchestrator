@@ -26,9 +26,9 @@ make dev
 ### Step 3: Open Mission Control
 Open your web browser and navigate to:
 ```
-http://localhost:5173
+http://127.0.0.1:5180
 ```
-* **Frontend UI:** `http://localhost:5173`
+* **Frontend UI:** `http://127.0.0.1:5180`
 * **Daemon REST API:** `http://127.0.0.1:8080/api/v1`
 * **WebSocket Streaming Hub:** `ws://127.0.0.1:8080/ws`
 * **Health Check:** `http://127.0.0.1:8080/healthz`
@@ -39,7 +39,7 @@ http://localhost:5173
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────────────┐
-│                       VUE 3 FRONTEND MISSION CONTROL (:5173)                      │
+│                       VUE 3 FRONTEND MISSION CONTROL (:5180)                      │
 ├────────────────────┬────────────────────┬───────────────────┬─────────────────────┤
 │  Kanban Board      │  Execution Split   │ Tool Hub Catalog  │ Settings & Pipeline │
 │  Dynamic Columns   │  Agent Console     │ Health Checks     │ Custom Workflows    │
@@ -227,7 +227,7 @@ The daemon runs agents with shell access and holds provider and connector creden
 |---|---|
 | `make setup` | Installs required system tools (Node.js, Git, Claude Code) and all project dependencies |
 | `make install-deps` | Installs/updates Go and frontend dependencies (`npm install` in `web/`) |
-| `make dev` | **Runs both backend Go daemon (:8080) and frontend Vite server (:5173)** (auto-installs dependencies on first run) |
+| `make dev` | **Runs both backend Go daemon (:8080) and frontend Vite server (:5180)** (auto-installs dependencies on first run) |
 | `make run-daemon` | Starts the Go daemon server in the current terminal |
 | `make run-web` | Starts the frontend Vite dev server in the current terminal (ensures npm dependencies installed) |
 | `make build` | Builds `bin/daemon` binary and compiles production frontend to `web/dist/` |
