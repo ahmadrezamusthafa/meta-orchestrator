@@ -36,7 +36,7 @@ make dev
 *(On first run, `make dev` automatically verifies your environment, downloads Go modules, and installs missing frontend dependencies via `npm install` before launching).*
 
 This starts:
-* **Go Daemon:** Listening on `http://127.0.0.1:8080` (REST API & WebSockets)
+* **Go Daemon:** Listening on `http://127.0.0.1:5181` (REST API & WebSockets)
 * **Vite Dev Server:** Listening on `http://127.0.0.1:5180` (Frontend Mission Control)
 
 ### Method B: Separate Terminals
@@ -54,7 +54,7 @@ go run cmd/daemon/main.go
 [Config] Active SDLC: general_ai_sdlc | Router Strategy: BEST_PRACTICE
 [Tools] Registered 6 installable packages
 [Recovery] Successfully recovered 0 active tasks in < 5s RTO
-[HTTP] WebSocket & Health API server listening on :8080
+[HTTP] WebSocket & Health API server listening on :5181
 ```
 
 #### Terminal 2 — Start the Frontend
@@ -175,14 +175,14 @@ Click on any task card on the Kanban board to enter the **Active Task Detail Vie
 
 ## 4. Troubleshooting & FAQ
 
-### Q1: Port 8080 is already in use
-* Check what process is using port 8080: `lsof -i :8080`.
+### Q1: Port 5181 is already in use
+* Check what process is using port 5181: `lsof -i :5181`.
 * Either stop the conflicting process or adjust the daemon port in `cmd/daemon/main.go` and `web/vite.config.ts`.
 
 ### Q2: Frontend shows "Daemon Offline" or "Reconnecting..."
 * Ensure the Go daemon is running (`go run cmd/daemon/main.go`).
-* Verify health check responds: `curl http://127.0.0.1:8080/healthz`. Should return `{"status":"healthy","version":"1.0.0"}`.
-* In browser DevTools, verify the WebSocket connection to `ws://127.0.0.1:8080/ws` or `ws://127.0.0.1:5180/ws` is open.
+* Verify health check responds: `curl http://127.0.0.1:5181/healthz`. Should return `{"status":"healthy","version":"1.0.0"}`.
+* In browser DevTools, verify the WebSocket connection to `ws://127.0.0.1:5181/ws` or `ws://127.0.0.1:5180/ws` is open.
 
 ### Q3: Terminal Canvas does not resize properly
 * Click the "Resume Scroll" button or resize your browser window; `@xterm/addon-fit` automatically recalculates column and row geometries on window resize events.

@@ -1,8 +1,8 @@
 # Meta-Orchestrator REST API & WebSocket Protocol Reference
 
 **Version:** 1.0.0  
-**Base URL:** `http://127.0.0.1:8080/api/v1`  
-**WebSocket Endpoint:** `ws://127.0.0.1:8080/ws`  
+**Base URL:** `http://127.0.0.1:5181/api/v1`  
+**WebSocket Endpoint:** `ws://127.0.0.1:5181/ws`  
 
 ---
 
@@ -286,8 +286,8 @@ Project dependencies (React, Go modules, Flutter packages, …) of each register
 
 ## 3. WebSocket Streaming Protocol
 
-* **URL:** `ws://127.0.0.1:8080/ws`
-* **Filter by Task:** `ws://127.0.0.1:8080/ws?task_id=TASK-8942`
+* **URL:** `ws://127.0.0.1:5181/ws`
+* **Filter by Task:** `ws://127.0.0.1:5181/ws?task_id=TASK-8942`
 
 ### Message Schema
 ```json

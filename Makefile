@@ -8,8 +8,8 @@ help:
 	@echo "AI-Driven SDLC Meta-Orchestrator Control Targets:"
 	@echo "  make setup        - Install required system tools (Node.js, Git, Claude Code) and dependencies"
 	@echo "  make install-deps - Install/update Go and frontend dependencies"
-	@echo "  make dev          - Run both Go Daemon (:8080) and Vue 3 Frontend (:5180) (auto-installs dependencies)"
-	@echo "  make run-daemon   - Start the Go Daemon server (:8080)"
+	@echo "  make dev          - Run both Go Daemon (:5181) and Vue 3 Frontend (:5180) (auto-installs dependencies)"
+	@echo "  make run-daemon   - Start the Go Daemon server (:5181)"
 	@echo "  make run-web      - Start the Vite dev frontend (:5180)"
 	@echo "  make build        - Compile Go daemon binary and build frontend production bundle"
 	@echo "  make test         - Run all Go test suites and Vue TypeScript typechecks"
@@ -49,9 +49,9 @@ setup:
 	cd web && npm install
 	@echo "Platform setup complete! You can now run 'make dev'."
 
-# Start Go Daemon (:8080)
+# Start Go Daemon (:5181)
 run-daemon: check-prereqs install-go
-	@echo "Starting Meta-Orchestrator Go Daemon on :8080..."
+	@echo "Starting Meta-Orchestrator Go Daemon on :5181..."
 	go run cmd/daemon/main.go
 
 # Start Frontend Dev Server (:5180)
@@ -62,7 +62,7 @@ run-web: check-prereqs install-web
 # Run development mode (Daemon in background, Web in foreground)
 dev: check-prereqs install-go install-web
 	@echo "Launching Meta-Orchestrator Platform in Development Mode..."
-	@echo "Backend API & WS: http://localhost:8080"
+	@echo "Backend API & WS: http://localhost:5181"
 	@echo "Frontend Web:     http://127.0.0.1:5180"
 	@trap 'kill 0' EXIT; \
 	go run cmd/daemon/main.go & \

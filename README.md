@@ -29,9 +29,9 @@ Open your web browser and navigate to:
 http://127.0.0.1:5180
 ```
 * **Frontend UI:** `http://127.0.0.1:5180`
-* **Daemon REST API:** `http://127.0.0.1:8080/api/v1`
-* **WebSocket Streaming Hub:** `ws://127.0.0.1:8080/ws`
-* **Health Check:** `http://127.0.0.1:8080/healthz`
+* **Daemon REST API:** `http://127.0.0.1:5181/api/v1`
+* **WebSocket Streaming Hub:** `ws://127.0.0.1:5181/ws`
+* **Health Check:** `http://127.0.0.1:5181/healthz`
 
 ---
 
@@ -49,7 +49,7 @@ http://127.0.0.1:5180
           │ (HTTP REST /api/v1)│                    │                    │
           │ (WebSocket ws://)  │                    │                    │
 ┌─────────▼────────────────────▼────────────────────▼────────────────────▼──────────┐
-│                         GO DAEMON CORE ENGINE (:8080)                             │
+│                         GO DAEMON CORE ENGINE (:5181)                             │
 ├───────────────────────────────────────────────────────────────────────────────────┤
 │ • Stage Pool: bounded concurrent stage runs (MO_MAX_CONCURRENT_STAGES, default 10)│
 │ • Workflows: 8-stage default SDLC, built-in variants, custom workflows (API/YAML) │
@@ -203,7 +203,7 @@ go run ./cmd/daemon packages update|uninstall <id>
 
 ### 11. Local-Only Access & Security
 The daemon runs agents with shell access and holds provider and connector credentials, so it accepts only local requests:
-* It binds `127.0.0.1:8080`. `MO_LISTEN_ADDR` overrides the address.
+* It binds `127.0.0.1:5181`. `MO_LISTEN_ADDR` overrides the address.
 * Requests whose `Host` is not a loopback name are refused, which stops DNS rebinding.
 * Browser requests and WebSocket upgrades whose `Origin` is not loopback are refused. CORS is answered only for allowed origins, never `*`.
 * `MO_ALLOWED_HOSTS` (comma-separated) adds hostnames deliberately, e.g. a LAN name.
@@ -211,7 +211,7 @@ The daemon runs agents with shell access and holds provider and connector creden
 
 | Variable | Effect |
 |---|---|
-| `MO_LISTEN_ADDR` | Listen address (default `127.0.0.1:8080`) |
+| `MO_LISTEN_ADDR` | Listen address (default `127.0.0.1:5181`) |
 | `MO_ALLOWED_HOSTS` | Extra hostnames allowed in `Host`/`Origin` |
 | `MO_MAX_CONCURRENT_STAGES` | Stage runs at once (default 10; up to 100 more wait in a queue) |
 | `MO_EVIDENCE_SIGNING_KEY` | HMAC key for evidence manifests (default: generated `.sdlc/evidence-signing.key`) |
@@ -227,7 +227,7 @@ The daemon runs agents with shell access and holds provider and connector creden
 |---|---|
 | `make setup` | Installs required system tools (Node.js, Git, Claude Code) and all project dependencies |
 | `make install-deps` | Installs/updates Go and frontend dependencies (`npm install` in `web/`) |
-| `make dev` | **Runs both backend Go daemon (:8080) and frontend Vite server (:5180)** (auto-installs dependencies on first run) |
+| `make dev` | **Runs both backend Go daemon (:5181) and frontend Vite server (:5180)** (auto-installs dependencies on first run) |
 | `make run-daemon` | Starts the Go daemon server in the current terminal |
 | `make run-web` | Starts the frontend Vite dev server in the current terminal (ensures npm dependencies installed) |
 | `make build` | Builds `bin/daemon` binary and compiles production frontend to `web/dist/` |
