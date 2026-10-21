@@ -1061,6 +1061,7 @@ export interface JiraSyncConfig {
 
 export interface JiraSyncStatus {
   connected: boolean
+  enabled: boolean // the JIRA connector is switched on in Connectors
   running: boolean
   last_run_at?: string
   last_error?: string

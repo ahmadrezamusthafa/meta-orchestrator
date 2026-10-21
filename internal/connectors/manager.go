@@ -1842,7 +1842,13 @@ func (m *Manager) updateItemStatus(id string, success bool, latency int64, errMs
 	}
 	item.LastTestedAt = time.Now()
 	item.LatencyMs = latency
-	if success {
+	if !item.Enabled {
+		item.Status = "disabled" // a test never switches a connector back on
+		item.ErrorMessage = ""
+		if !success {
+			item.ErrorMessage = errMsg
+		}
+	} else if success {
 		item.Status = "connected"
 		item.ErrorMessage = ""
 	} else {
@@ -2479,6 +2485,12 @@ func (m *Manager) TestConfluence(ctx context.Context, cfg types.ConfluenceConfig
 // ErrJiraNotConnected is returned when JIRA has no live credentials, so no issue data can be real.
 var ErrJiraNotConnected = errors.New("JIRA is not connected: set base URL, username and API token in Connectors")
 
+// ErrJiraDisabled is returned when the JIRA connector is switched off in Connectors.
+var ErrJiraDisabled = errors.New("JIRA connector is disabled: enable it in Connectors")
+
+// ErrConfluenceDisabled is returned when the Confluence connector is switched off in Connectors.
+var ErrConfluenceDisabled = errors.New("Confluence connector is disabled: enable it in Connectors")
+
 // jiraIssueFields is the JIRA REST shape shared by search and single-issue lookups.
 type jiraIssueFields struct {
 	Key    string `json:"key"`
@@ -2606,8 +2618,25 @@ func (m *Manager) JiraConnected() bool {
 	return ok
 }
 
+// JiraEnabled reports whether the JIRA connector is switched on in Connectors.
+func (m *Manager) JiraEnabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.config.Jira.Enabled
+}
+
+// ConfluenceEnabled reports whether the Confluence connector is switched on in Connectors.
+func (m *Manager) ConfluenceEnabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.config.Confluence.Enabled
+}
+
 // QueryJiraIssues runs a JQL search against the live JIRA API.
 func (m *Manager) QueryJiraIssues(ctx context.Context, jql string, maxResults int) ([]types.JiraIssueDTO, error) {
+	if !m.JiraEnabled() {
+		return nil, ErrJiraDisabled
+	}
 	baseURL, username, token, ok := m.jiraCredentials()
 	if !ok {
 		return nil, ErrJiraNotConnected
@@ -2760,6 +2789,9 @@ func (m *Manager) GetJiraURL(key string) string {
 // GetJiraIssue retrieves a single issue from the live JIRA API.
 func (m *Manager) GetJiraIssue(ctx context.Context, key string) (*types.JiraIssueDTO, error) {
 	key = strings.ToUpper(strings.TrimSpace(key))
+	if !m.JiraEnabled() {
+		return nil, ErrJiraDisabled
+	}
 	baseURL, username, token, ok := m.jiraCredentials()
 	if !ok {
 		return nil, ErrJiraNotConnected
@@ -2891,6 +2923,9 @@ func (m *Manager) UpdateJiraSyncConfig(cfg types.JiraSyncConfig) (types.JiraSync
 
 // PublishToConfluence publishes a technical document, PRD, or ATDD report directly to Confluence.
 func (m *Manager) PublishToConfluence(ctx context.Context, req types.ConfluencePublishRequest) (*types.ConfluencePublishResponse, error) {
+	if !m.ConfluenceEnabled() {
+		return nil, ErrConfluenceDisabled
+	}
 	token, _ := m.ResolveToken("confluence", "")
 	username, _ := m.ResolveUsername("confluence", "")
 	baseURL := m.ResolveBaseURL("confluence", "", username)

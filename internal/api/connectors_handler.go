@@ -67,6 +67,9 @@ func (r *Router) handleConnectorItemAction(w http.ResponseWriter, req *http.Requ
 			r.writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
+		if id == "jira" {
+			r.jiraConnectorChanged()
+		}
 		r.writeJSON(w, http.StatusOK, connectors.Masked(updated))
 		return
 	}
@@ -141,6 +144,9 @@ func (r *Router) handleConnectorItemAction(w http.ResponseWriter, req *http.Requ
 			r.writeError(w, http.StatusInternalServerError, "Failed to update connector: "+err.Error())
 			return
 		}
+		if id == "jira" {
+			r.jiraConnectorChanged()
+		}
 		r.writeJSON(w, http.StatusOK, connectors.Masked(updated))
 
 	default:
@@ -161,6 +167,7 @@ func (r *Router) handleConnectorJira(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	defer r.jiraConnectorChanged()
 	if err := r.cfg.ConnectorsManager.UpdateJira(jiraCfg); err != nil {
 		r.writeError(w, http.StatusInternalServerError, "Failed to save JIRA configuration: "+err.Error())
 		return
@@ -240,7 +247,7 @@ func (r *Router) handleJiraIssues(w http.ResponseWriter, req *http.Request) {
 	}
 
 	issues, err := r.cfg.ConnectorsManager.SearchJiraIssues(req.Context(), query)
-	if errors.Is(err, connectors.ErrJiraNotConnected) {
+	if errors.Is(err, connectors.ErrJiraNotConnected) || errors.Is(err, connectors.ErrJiraDisabled) {
 		r.writeError(w, http.StatusPreconditionFailed, err.Error())
 		return
 	}
@@ -282,7 +289,7 @@ func (r *Router) handleJiraImport(w http.ResponseWriter, req *http.Request) {
 	issue, err := r.cfg.ConnectorsManager.GetJiraIssue(req.Context(), key)
 	if err != nil {
 		status := http.StatusBadGateway
-		if errors.Is(err, connectors.ErrJiraNotConnected) {
+		if errors.Is(err, connectors.ErrJiraNotConnected) || errors.Is(err, connectors.ErrJiraDisabled) {
 			status = http.StatusPreconditionFailed
 		}
 		r.writeError(w, status, fmt.Sprintf("Could not load JIRA issue %s: %v", key, err))
@@ -383,7 +390,7 @@ func (r *Router) handleJiraSyncRun(w http.ResponseWriter, req *http.Request) {
 		r.writeJSON(w, http.StatusOK, settings)
 	case errors.Is(err, errJiraSyncBusy):
 		r.writeJSON(w, http.StatusConflict, map[string]interface{}{"error": err.Error(), "config": settings.Config, "status": status})
-	case !status.Connected:
+	case !status.Enabled || !status.Connected:
 		r.writeJSON(w, http.StatusPreconditionFailed, map[string]interface{}{"error": err.Error(), "config": settings.Config, "status": status})
 	default:
 		r.writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error(), "config": settings.Config, "status": status})
@@ -479,6 +486,10 @@ func (r *Router) handleConfluencePublish(w http.ResponseWriter, req *http.Reques
 
 	// Publish via Connector Manager
 	resp, err := r.cfg.ConnectorsManager.PublishToConfluence(req.Context(), pubReq)
+	if errors.Is(err, connectors.ErrConfluenceDisabled) {
+		r.writeError(w, http.StatusPreconditionFailed, err.Error())
+		return
+	}
 	if err != nil {
 		r.writeError(w, http.StatusInternalServerError, "Failed to publish to Confluence: "+err.Error())
 		return

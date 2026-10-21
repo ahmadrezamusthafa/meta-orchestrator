@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/connectors"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
@@ -228,6 +229,10 @@ func (r *Router) syncJiraBoard(ctx context.Context) (types.JiraSyncStatus, error
 
 	mgr := r.cfg.ConnectorsManager
 	result.Connected = mgr.JiraConnected()
+	result.Enabled = mgr.JiraEnabled()
+	if !result.Enabled {
+		return finish(connectors.ErrJiraDisabled)
+	}
 	if !result.Connected {
 		return finish(fmt.Errorf("JIRA is not connected: add base URL, username and API token in Connectors"))
 	}
@@ -325,6 +330,7 @@ func (r *Router) jiraSyncStatus() types.JiraSyncStatus {
 	st.Running = r.jira.running
 	r.jira.mu.Unlock()
 	st.Connected = r.cfg.ConnectorsManager.JiraConnected()
+	st.Enabled = r.cfg.ConnectorsManager.JiraEnabled()
 	r.mu.RLock()
 	st.LinkedTasks = len(r.jiraTaskIndexLocked())
 	st.Dismissed = len(r.dismissedJira)
@@ -354,7 +360,7 @@ func (r *Router) startJiraSync() {
 			if wait < time.Minute {
 				wait = time.Minute
 			}
-			if !cfg.Enabled || !r.cfg.ConnectorsManager.JiraConnected() {
+			if !cfg.Enabled || !r.cfg.ConnectorsManager.JiraEnabled() || !r.cfg.ConnectorsManager.JiraConnected() {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -364,6 +370,17 @@ func (r *Router) startJiraSync() {
 			cancel()
 		}
 	}()
+}
+
+// jiraConnectorChanged refreshes the board's sync status after the JIRA connector is switched
+// on or off, and syncs right away when it comes back on.
+func (r *Router) jiraConnectorChanged() {
+	if r.cfg.ConnectorsManager.JiraEnabled() {
+		r.kickJiraSync()
+	}
+	if r.cfg.WSHub != nil {
+		r.cfg.WSHub.BroadcastEvent(&types.OrchestratorEvent{Type: types.EventJiraSync, Timestamp: time.Now(), Payload: r.jiraSyncStatus()})
+	}
 }
 
 // kickJiraSync schedules an immediate sync on the background loop.

@@ -243,7 +243,7 @@ func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {
 		}
 
 		// Automatically detect JIRA key in title or description if connector is active
-		if r.cfg.ConnectorsManager != nil && r.cfg.ConnectorsManager.GetConfig().Jira.AutoDetectKeys {
+		if r.cfg.ConnectorsManager != nil && r.cfg.ConnectorsManager.JiraEnabled() && r.cfg.ConnectorsManager.GetConfig().Jira.AutoDetectKeys {
 			if detectedKey := r.cfg.ConnectorsManager.DetectJiraKey(body.Title + " " + body.Description); detectedKey != "" {
 				newTask.Metadata["jira_key"] = detectedKey
 				newTask.Metadata["jira_url"] = r.cfg.ConnectorsManager.GetJiraURL(detectedKey)
