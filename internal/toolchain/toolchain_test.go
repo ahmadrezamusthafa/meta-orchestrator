@@ -227,7 +227,7 @@ func TestCatalogIsConsistent(t *testing.T) {
 	}
 	// Every tool a stack can ask for is in the catalog.
 	for _, id := range []string{"go", "golangci-lint", "node", "pnpm", "yarn", "bun", "java", "maven", "gradle", "android-sdk",
-		"flutter", "dart", "tofu", "terragrunt", "zed", "actionlint", "docker"} {
+		"flutter", "dart", "tofu", "terragrunt", "zed", "nginx", "openresty", "luacheck", "actionlint", "docker"} {
 		if !seen[id] {
 			t.Errorf("stack needs %s but the catalog has no entry", id)
 		}

@@ -208,7 +208,7 @@ func appFromStack(id string, r RepoRef) (App, bool) {
 		}
 	case kind == "api" && oidc:
 		app.SignIn = []string{
-			"Get an access token for your UAT test client or test user from this environment's Keycloak realm — never a production or personal account.",
+			"Get an access token for your UAT test client (client-credentials grant) or test user from this environment's Keycloak realm — never a production or personal account.",
 			"Call the " + r.Name + " API with `Authorization: Bearer <token>` from the team's Postman collection or curl.",
 		}
 	case kind == "api":

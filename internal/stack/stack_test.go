@@ -70,6 +70,45 @@ var infraLive = map[string]string{
 	"grafana/dashboards/billing.json":  `{"panels": [], "schemaVersion": 39}`,
 }
 
+// gateway is an OpenResty gateway with per-client rate limiting in Lua, run by docker compose.
+var gateway = map[string]string{
+	"gateway/nginx.conf":         "events {}\nhttp {\n  lua_shared_dict limits 10m;\n  server { location /oauth/token { access_by_lua_block { require(\"limit\").check() } } }\n}",
+	"gateway/lua/limit.lua":      "local limit_req = require \"resty.limit.req\"\nlocal _M = {}\nreturn _M",
+	"gateway/conf.d/routes.conf": "location /v1/ { proxy_pass http://px-api:8080; }",
+	"docker-compose.yml":         "services:\n  gateway:\n    image: openresty/openresty:alpine\n",
+}
+
+func TestDetectGateway(t *testing.T) {
+	p := Detect(writeRepo(t, gateway), Deep)
+	want := []string{"docker", "nginx", "openresty"}
+	if got := ids(p); !reflect.DeepEqual(got, want) {
+		t.Fatalf("techs = %v, want %v", got, want)
+	}
+	if s := p.Surface(); s != "" {
+		t.Errorf("a gateway alone has no UAT surface, got %q", s)
+	}
+	brief := Brief([]Repo{{Name: "edge", Profile: p}})
+	for _, want := range []string{
+		"- edge: Containers (Docker), Nginx (gateway, gateway/conf.d), OpenResty (Lua)\n",
+		"- edge/gateway: `openresty -t -p \"$PWD\" -c \"$PWD/nginx.conf\"` — upstream names must resolve",
+		"- edge/gateway: `luacheck .` (if installed)",
+		"the key it limits by (e.g. the OAuth client_id)",
+		"never log Authorization headers",
+		"OpenResty (Lua): `local` everything",
+		"`nginx -s reload|stop`",
+	} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("brief is missing %q\n%s", want, brief)
+		}
+	}
+
+	// Snippets alone cannot be tested on their own, so the agent tests the whole config in the container.
+	snippets := Brief([]Repo{{Name: "edge", Profile: Detect(writeRepo(t, map[string]string{"conf.d/api.conf": "location / { proxy_pass http://api; }"}), Deep)}})
+	if !strings.Contains(snippets, "- edge: `nginx -t` — inside the gateway container") {
+		t.Errorf("a snippet-only gateway is tested in its container:\n%s", snippets)
+	}
+}
+
 func TestDetectGoService(t *testing.T) {
 	p := Detect(writeRepo(t, goService), Deep)
 	want := []string{"go", "postgresql", "keycloak", "spicedb", "azure-container-apps", "github-actions", "docker", "opentelemetry", "openapi"}
@@ -191,6 +230,8 @@ func TestBrief(t *testing.T) {
 		"`az containerapp create|update|up|delete`",
 		"`wrangler deploy|publish|delete`",
 		"`zed schema write`",
+		"machine-to-machine clients use the client-credentials grant",
+		"a cross-tenant read",
 	} {
 		if !strings.Contains(brief, want) {
 			t.Errorf("brief is missing %q\n%s", want, brief)
