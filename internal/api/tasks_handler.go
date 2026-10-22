@@ -481,7 +481,7 @@ func (r *Router) handleTaskItem(w http.ResponseWriter, req *http.Request) {
 			return
 
 		case "pull-request":
-			r.handleTaskPullRequest(w, req, taskSnapshot)
+			r.handleTaskPullRequest(w, req, taskSnapshot, parts)
 			return
 
 		case "uat-guide":

@@ -11,7 +11,7 @@ import type {
   OAuthStatus, RouterMode, PriorityModelItem, RouterSettingsDTO, RoutePreviewDTO, TierAssignmentDTO,
   BenchmarksResponseDTO, TelemetrySummaryDTO, TelemetryTrendsDTO, TelemetryWindow,
   TaskActivityResponse, TaskChatResponse, TaskDiffDTO, DiffAgainst, TaskArtifactDTO,
-  PullRequestDraftDTO, PullRequestOpenedDTO, PushDivergenceDTO, UATGuideStatusDTO, UATGuideSettings,
+  PullRequestDraftDTO, PullRequestOpenedDTO, CommitDoneDTO, PushDivergenceDTO, UATGuideStatusDTO, UATGuideSettings,
   TaskAnalysisDTO, TaskRoutingDTO, StageRoute, RouteMatrixCellDTO, TaskEvidenceDTO, EvidenceVerifyDTO,
   PackagesResponse, PackageVersions, PackageJob, PackageManual, PackageSetupResult,
   ProjectDependencies, DependencyInstallCommand
@@ -315,7 +315,7 @@ export const api = {
   },
 
   /** Throws PushRejectedError when origin refuses the push because the branch history diverged. */
-  async openPullRequest(taskId: string, body: { repo: string; title: string; body: string; force_with_lease?: string }): Promise<PullRequestOpenedDTO> {
+  async openPullRequest(taskId: string, body: { repo: string; title: string; body: string; commit_message?: string; force_with_lease?: string }): Promise<PullRequestOpenedDTO> {
     const res = await fetch(`${BASE_URL}/tasks/${taskId}/pull-request`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -324,6 +324,18 @@ export const api = {
     const data = await res.json().catch(() => null)
     if (res.status === 409 && data?.push_rejected) throw new PushRejectedError(data.error, data.push_rejected)
     if (!res.ok) throw new Error(data?.error || `Could not open the pull request for ${taskId}`)
+    return data
+  },
+
+  /** Commits the checkout's pending edits on the task branch without pushing. */
+  async commitPending(taskId: string, body: { repo: string; message: string }): Promise<CommitDoneDTO> {
+    const res = await fetch(`${BASE_URL}/tasks/${taskId}/pull-request/commit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.error || `Could not commit the pending edits for ${taskId}`)
     return data
   },
 

@@ -5,7 +5,7 @@ import { api, PushRejectedError } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import MarkdownView from '../common/MarkdownView.vue'
 import type { Task, PullRequestDraftDTO, PushDivergenceDTO } from '../../types'
-import { GitPullRequest, GitBranch, ExternalLink, Loader2, RefreshCw, AlertCircle, Copy, Check, Eye, Pencil, UploadCloud, CheckCircle2, AlertTriangle, X } from 'lucide-vue-next'
+import { GitPullRequest, GitBranch, ExternalLink, Loader2, RefreshCw, AlertCircle, Copy, Check, Eye, Pencil, UploadCloud, CheckCircle2, AlertTriangle, X, GitCommitHorizontal } from 'lucide-vue-next'
 
 const props = defineProps<{ task: Task; /** bumped when the worktree's git state changes, also from outside the orchestrator */ revision?: number }>()
 const emit = defineEmits<{ (e: 'refresh'): void }>()
@@ -17,8 +17,11 @@ const error = ref('')
 const selected = ref('')
 const title = ref('')
 const body = ref('')
+const commitMsg = ref('')
 const mode = ref<'preview' | 'edit'>('preview')
 const opening = ref(false)
+const committing = ref(false)
+const busy = computed(() => opening.value || committing.value)
 const copied = ref('')
 /** set when origin refused the push: the operator force-pushes with a lease or cancels */
 const rejected = ref<{ repo: string; divergence: PushDivergenceDTO } | null>(null)
@@ -30,11 +33,13 @@ const actionLabel = computed(() => {
   if (!draft.value?.existing_url) return 'Commit, push & open pull request'
   return outOfSync.value ? 'Commit, push & update pull request' : 'Update pull request'
 })
-const edited = computed(() => !!draft.value && (title.value !== draft.value.title || body.value !== draft.value.body))
+const edited = computed(() => !!draft.value && (title.value !== draft.value.title || body.value !== draft.value.body ||
+  commitMsg.value !== draft.value.commit_message))
 
 function adopt(d: PullRequestDraftDTO | null) {
   title.value = d?.title || ''
   body.value = d?.body || ''
+  commitMsg.value = d?.commit_message || ''
 }
 
 async function load(keepEdits = false) {
@@ -59,10 +64,11 @@ function pick(repo: string) {
 
 async function open(forceWithLease = '') {
   const d = draft.value
-  if (!d || !d.can_create || opening.value) return
+  if (!d || !d.can_create || busy.value) return
   opening.value = true
   try {
-    const res = await api.openPullRequest(props.task.id, { repo: d.repo, title: title.value, body: body.value, force_with_lease: forceWithLease || undefined })
+    const res = await api.openPullRequest(props.task.id, { repo: d.repo, title: title.value, body: body.value,
+      commit_message: d.uncommitted ? commitMsg.value : undefined, force_with_lease: forceWithLease || undefined })
     rejected.value = null
     const pushed = forceWithLease ? 'Branch force-pushed with lease.' : 'Branch pushed.'
     toast.success(res.updated ? `Pull request #${res.number} updated` : `Pull request #${res.number} opened`,
@@ -79,6 +85,25 @@ async function open(forceWithLease = '') {
     }
   } finally {
     opening.value = false
+  }
+}
+
+/** Commits the pending edits on the task branch; nothing is pushed and no pull request is touched. */
+async function commitOnly() {
+  const d = draft.value
+  if (!d || !d.can_commit || busy.value) return
+  committing.value = true
+  try {
+    const res = await api.commitPending(props.task.id, { repo: d.repo, message: commitMsg.value })
+    toast.success(`Committed ${short(res.sha)}`, `${res.message} — not pushed yet.`)
+    await load(true)
+    commitMsg.value = draft.value?.commit_message || '' // the next commit starts from the generated message
+    emit('refresh')
+  } catch (err: any) {
+    toast.error('Could not commit', err?.message || 'Unknown error')
+    await load(true)
+  } finally {
+    committing.value = false
   }
 }
 
@@ -107,7 +132,7 @@ watch(() => [props.task.state, props.task.current_stage_id, props.task.metadata?
 // tab at once. A push diagnosis that no longer matches the branch is closed, so nobody force-pushes
 // against a state that is gone.
 watch(() => props.revision, async () => {
-  if (opening.value) return // our own push; open() reloads when it finishes
+  if (busy.value) return // our own commit or push; it reloads when it finishes
   await load(true)
   const r = rejected.value
   const d = drafts.value.find((x) => x.repo === r?.repo)
@@ -134,7 +159,8 @@ onMounted(() => load())
           <p class="text-xs text-slate-400 leading-relaxed">
             Opens the task branch as a pull request in the standard format: ticket, summary, type of change, changed files,
             acceptance criteria, how to test, risk &amp; rollback and the review checklist. Pending edits in the worktree are
-            committed first. Opening again refreshes the existing pull request.
+            committed first. Opening again refreshes the existing pull request. <span class="text-slate-200">Commit only</span>
+            records the pending edits on the task branch without pushing or touching the pull request.
           </p>
           <p class="text-xs text-slate-400 leading-relaxed">
             An opened pull request is <span class="text-slate-200">not updated automatically</span>: changes the agent or you make
@@ -188,9 +214,11 @@ onMounted(() => load())
           <div v-else-if="draft.sync === 'in_sync'" role="status" class="text-[11px] text-emerald-300 flex items-center gap-1.5">
             <CheckCircle2 class="w-3.5 h-3.5" /> {{ draft.sync_note }}
           </div>
-          <div v-if="draft.uncommitted" class="text-[11px] text-slate-400">
-            Pending edits are committed as <code class="font-mono text-slate-200">{{ draft.commit_message }}</code>
-          </div>
+          <label v-if="draft.uncommitted" class="block space-y-1">
+            <span class="text-[11px] uppercase tracking-wide text-slate-500">Commit message for pending edits</span>
+            <input v-model="commitMsg" type="text" :placeholder="draft.commit_message"
+              class="w-full h-9 px-3 rounded-lg bg-slate-950 border border-slate-700 font-mono text-xs text-slate-100 focus:outline-none focus:border-violet-500" />
+          </label>
           <div v-if="draft.blocker" class="p-2.5 rounded-lg border border-amber-800/60 bg-amber-950/30 text-xs text-amber-200 flex items-start gap-2">
             <AlertCircle class="w-4 h-4 flex-shrink-0 mt-px" /> {{ draft.blocker }}
           </div>
@@ -220,12 +248,20 @@ onMounted(() => load())
 
           <div class="flex items-center gap-2 pt-1">
             <button v-if="edited" type="button" @click="adopt(draft)" class="text-xs text-slate-400 hover:text-slate-100">Reset to standard format</button>
-            <button type="button" @click="open()" :disabled="!draft.can_create || opening || running"
-              :title="running ? 'Wait for the stage to finish' : draft.blocker || ''"
-              class="ml-auto h-9 px-4 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
-              <Loader2 v-if="opening" class="w-3.5 h-3.5 animate-spin" /><GitPullRequest v-else class="w-3.5 h-3.5" />
-              {{ actionLabel }}
-            </button>
+            <div class="ml-auto flex items-center gap-2">
+              <button type="button" @click="commitOnly()" :disabled="!draft.can_commit || busy || running"
+                :title="running ? 'Wait for the stage to finish' : draft.commit_blocker || 'Commit the pending edits without pushing'"
+                class="h-9 px-4 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-100 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                <Loader2 v-if="committing" class="w-3.5 h-3.5 animate-spin" /><GitCommitHorizontal v-else class="w-3.5 h-3.5" />
+                Commit only
+              </button>
+              <button type="button" @click="open()" :disabled="!draft.can_create || busy || running"
+                :title="running ? 'Wait for the stage to finish' : draft.blocker || ''"
+                class="h-9 px-4 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                <Loader2 v-if="opening" class="w-3.5 h-3.5 animate-spin" /><GitPullRequest v-else class="w-3.5 h-3.5" />
+                {{ actionLabel }}
+              </button>
+            </div>
           </div>
         </section>
       </template>
