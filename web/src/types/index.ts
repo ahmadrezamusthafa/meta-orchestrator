@@ -456,6 +456,40 @@ export interface TaskDiffDTO {
   repos: RepoDiffDTO[]
 }
 
+/** One gap or piece of work a launch-readiness stage found still missing. */
+export interface FollowUpItemDTO {
+  id: string
+  title: string
+  detail?: string
+  priority: 'high' | 'medium' | 'low'
+  evidence?: string
+}
+
+/** A follow-up task a readiness stage proposes: related items grouped so the board gets few tasks. */
+export interface FollowUpProposalDTO {
+  id: string
+  stage: string
+  stage_name: string
+  title: string
+  summary?: string
+  repos?: string[]
+  items: FollowUpItemDTO[]
+  /** The task created from this proposal, while it is still on the board. */
+  created_task_id?: string
+  created_task_state?: TaskState
+}
+
+export interface TaskFollowUpsDTO {
+  task_id: string
+  proposals: FollowUpProposalDTO[]
+  stages: Array<{ id: string; name: string; has_report: boolean; listed: boolean }>
+}
+
+export interface CreateFollowUpRequest {
+  selections: Array<{ proposal_id: string; item_ids?: string[] }>
+  title?: string
+}
+
 export interface TaskDependencyInfoDTO {
   task_id: string
   dependencies: string[]

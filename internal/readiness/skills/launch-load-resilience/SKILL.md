@@ -82,5 +82,7 @@ Running a load test is always the operator's call, against staging or a performa
 ## Runbooks & drills
 ## Capacity plan
 ## Operator actions
+## Follow-up tasks
+(the `followups` JSON block from the stage brief: remaining gaps grouped into a few tasks)
 ## Summary
 ```

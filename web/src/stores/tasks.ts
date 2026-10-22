@@ -235,6 +235,11 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
+  /** Adds a task created elsewhere (e.g. from follow-ups) unless the live sync already did. */
+  function addTask(created: Task) {
+    if (!tasks.value.some((t) => t.id === created.id)) tasks.value.unshift(created)
+  }
+
   function replaceTask(updated: Task) {
     const idx = tasks.value.findIndex((t) => t.id === updated.id)
     if (idx !== -1) tasks.value[idx] = updated
@@ -409,6 +414,7 @@ export const useTaskStore = defineStore('tasks', () => {
     fetchTasks,
     fetchTask,
     createTask,
+    addTask,
     executeTask,
     resumeTask,
     pauseTask,

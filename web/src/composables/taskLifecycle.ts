@@ -30,6 +30,11 @@ const STAGE_NAMES: Record<string, string> = {
   load_resilience: 'Test Heavy Traffic & Prepare for Problems',
 }
 
+/** Launch-readiness stages: each proposes follow-up tasks for what it found still missing. */
+export const READINESS_STAGES = new Set([
+  'release_audit', 'release_automation', 'observability_alerting', 'security_automation', 'customer_api_setup', 'load_resilience',
+])
+
 export function stageName(id?: string): string {
   if (!id) return 'Unknown stage'
   return STAGE_NAMES[id] || id.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
