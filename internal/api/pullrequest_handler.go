@@ -57,6 +57,10 @@ type prDraft struct {
 	SyncNote  string `json:"sync_note,omitempty"`
 	CanCreate bool   `json:"can_create"`
 	Blocker   string `json:"blocker,omitempty"` // why the pull request cannot be opened yet
+	// CanCommit is true when the pending edits can be committed on their own, without pushing;
+	// CommitBlocker says why not. Remote, provider and stage do not matter for a local commit.
+	CanCommit     bool   `json:"can_commit"`
+	CommitBlocker string `json:"commit_blocker,omitempty"`
 
 	wt     taskWorktree
 	remote gitwt.Remote
@@ -145,6 +149,7 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 		if d.Blocker == "" && wt.Exists && wt.Error == "" {
 			if deps, err := gitwt.AddedDependencyFiles(ctx, wt.Checkout, wt.BaseRef); err == nil && len(deps) > 0 {
 				d.Blocker = dependencyBlocker(deps)
+				d.CommitBlocker = d.Blocker
 			}
 		}
 		if d.Blocker == "" && wt.Exists && wt.Error == "" {
@@ -152,6 +157,7 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 			// markers and all, and push it.
 			if c, err := gitwt.Conflicts(ctx, wt.Checkout, wt.BaseRef); err == nil && c.Unresolved() {
 				d.Blocker = conflictBlocker(c)
+				d.CommitBlocker = d.Blocker
 			}
 		}
 		if d.Blocker == "" {
@@ -177,6 +183,9 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 				if d.Blocker == "" {
 					d.Blocker = branchBlocker(d)
 				}
+				if d.CommitBlocker == "" {
+					d.CommitBlocker = branchBlocker(d)
+				}
 			}
 			in.Commits, _ = gitwt.CommitSubjects(ctx, wt.Checkout, wt.BaseRef, wt.SubPath)
 			if d.Uncommitted {
@@ -192,8 +201,18 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 		if d.Blocker == "" && !prAllowed(t) {
 			d.Blocker = "pull requests open from the task_implementation stage onward"
 		}
+		switch {
+		case wt.Error != "":
+			d.CommitBlocker = wt.Error
+		case !wt.Exists:
+			d.CommitBlocker = "no worktree yet — run the task first"
+		case d.CommitBlocker == "" && !d.Uncommitted:
+			d.CommitBlocker = "the worktree has no uncommitted edits"
+		}
 		d.Blocker = redactURLCredentials(d.Blocker) // git errors may quote a remote URL with its token
+		d.CommitBlocker = redactURLCredentials(d.CommitBlocker)
 		d.CanCreate = d.Blocker == ""
+		d.CanCommit = d.CommitBlocker == ""
 		d.Sync, d.SyncNote = prSync(d)
 		d.Title, d.Body = pullrequest.Title(in), pullrequest.Body(in)
 	}
@@ -320,6 +339,8 @@ type PullRequestRequest struct {
 	Repo  string `json:"repo"`
 	Title string `json:"title"`
 	Body  string `json:"body"`
+	// CommitMessage replaces the generated message for pending edits committed before the push.
+	CommitMessage string `json:"commit_message,omitempty"`
 	// ForceWithLease is origin's branch tip the operator reviewed in the push-rejected dialog; when
 	// set the branch is force-pushed, but only while origin still points there.
 	ForceWithLease string `json:"force_with_lease,omitempty"`
@@ -334,7 +355,11 @@ func (e *pushRejected) Error() string {
 }
 
 // handleTaskPullRequest serves GET (drafts) and POST (open) /api/v1/tasks/{id}/pull-request.
-func (r *Router) handleTaskPullRequest(w http.ResponseWriter, req *http.Request, t *types.Task) {
+func (r *Router) handleTaskPullRequest(w http.ResponseWriter, req *http.Request, t *types.Task, parts []string) {
+	if len(parts) > 2 && parts[2] == "commit" {
+		r.handleTaskCommit(w, req, t)
+		return
+	}
 	switch req.Method {
 	case http.MethodGet:
 		ctx, cancel := context.WithTimeout(req.Context(), time.Minute)
@@ -372,6 +397,101 @@ type prOpened struct {
 	Committed bool   `json:"committed"`
 }
 
+// CommitRequest commits a checkout's pending edits without pushing; an empty message uses the
+// draft's generated commit message.
+type CommitRequest struct {
+	Repo    string `json:"repo"`
+	Message string `json:"message"`
+}
+
+type commitDone struct {
+	Repo    string `json:"repo"`
+	Message string `json:"message"`
+	SHA     string `json:"sha"`
+}
+
+// handleTaskCommit serves POST /api/v1/tasks/{id}/pull-request/commit.
+func (r *Router) handleTaskCommit(w http.ResponseWriter, req *http.Request, t *types.Task) {
+	if req.Method != http.MethodPost {
+		r.writeError(w, http.StatusMethodNotAllowed, "POST required for commit")
+		return
+	}
+	var body CommitRequest
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		r.writeError(w, http.StatusBadRequest, "Invalid commit payload")
+		return
+	}
+	res, err := r.commitPending(req.Context(), t.ID, body)
+	if err != nil {
+		r.writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, res)
+}
+
+// commitPending commits the pending edits of one checkout on the task branch. Nothing is pushed:
+// an opened pull request turns out of sync until it is updated.
+func (r *Router) commitPending(ctx context.Context, taskID string, body CommitRequest) (*commitDone, error) {
+	key := "pr:" + taskID // shares the lock with openPullRequest, which commits too
+	if _, busy := r.busyOps.LoadOrStore(key, true); busy {
+		return nil, fmt.Errorf("a commit or pull request for %s is already in progress", taskID)
+	}
+	defer r.busyOps.Delete(key)
+
+	t := r.taskSnapshot(taskID)
+	if t == nil {
+		return nil, errTaskNotFound
+	}
+	if t.State == types.TaskStateRunning {
+		return nil, fmt.Errorf("pause %s or wait for the stage to finish before committing", taskID)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	d := pickDraft(r.buildPRDrafts(ctx, t), body.Repo)
+	if d == nil {
+		return nil, fmt.Errorf("%s has no repository %q with a worktree", taskID, body.Repo)
+	}
+	if !d.CanCommit {
+		return nil, fmt.Errorf("cannot commit %s: %s", d.Repo, d.CommitBlocker)
+	}
+	msg := strings.TrimSpace(body.Message)
+	if msg == "" {
+		msg = d.CommitMsg
+	}
+
+	if err := r.preCommitHooks(ctx, t, d.wt.Dir); err != nil {
+		return nil, err
+	}
+	committed, err := gitwt.CommitAll(ctx, d.wt.Checkout, d.wt.SubPath, msg)
+	if err != nil {
+		return nil, fmt.Errorf("commit pending changes: %s", redactURLCredentials(err.Error()))
+	}
+	if !committed {
+		return nil, fmt.Errorf("%s has nothing to commit", d.Repo)
+	}
+	r.postCommitHooks(t, d.wt.Dir)
+	sha, _ := gitwt.BranchTips(ctx, d.wt.Checkout, d.SourceBranch)
+
+	r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, Content: fmt.Sprintf(
+		"Committed pending edits in %s on %s as %q (%s). Nothing was pushed.", d.Repo, d.SourceBranch, msg, shortSHA(sha))})
+	r.notePRSync(taskID, "") // an opened pull request now lacks this commit
+	r.broadcastTask(r.taskSnapshot(taskID))
+	return &commitDone{Repo: d.Repo, Message: msg, SHA: sha}, nil
+}
+
+// pickDraft returns the draft whose checkout serves repo, or the first one when repo is empty.
+func pickDraft(drafts []*prDraft, repo string) *prDraft {
+	for _, d := range drafts {
+		for _, x := range d.Repos {
+			if repo == "" || x == repo {
+				return d
+			}
+		}
+	}
+	return nil
+}
+
 // openPullRequest commits pending work, pushes the branch and files the pull request.
 func (r *Router) openPullRequest(ctx context.Context, taskID string, body PullRequestRequest) (*prOpened, error) {
 	key := "pr:" + taskID
@@ -390,17 +510,7 @@ func (r *Router) openPullRequest(ctx context.Context, taskID string, body PullRe
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
 
-	var d *prDraft
-	for _, x := range r.buildPRDrafts(ctx, t) {
-		for _, repo := range x.Repos {
-			if body.Repo == "" || repo == body.Repo {
-				d = x
-			}
-		}
-		if d != nil {
-			break
-		}
-	}
+	d := pickDraft(r.buildPRDrafts(ctx, t), body.Repo)
 	if d == nil {
 		return nil, fmt.Errorf("%s has no repository %q with a worktree", taskID, body.Repo)
 	}
@@ -418,11 +528,15 @@ func (r *Router) openPullRequest(ctx context.Context, taskID string, body PullRe
 	if desc == "" {
 		desc = d.Body
 	}
+	commitMsg := strings.TrimSpace(body.CommitMessage)
+	if commitMsg == "" {
+		commitMsg = d.CommitMsg
+	}
 
 	if err := r.preCommitHooks(ctx, t, d.wt.Dir); err != nil {
 		return nil, err
 	}
-	committed, err := gitwt.CommitAll(ctx, d.wt.Checkout, d.wt.SubPath, d.CommitMsg)
+	committed, err := gitwt.CommitAll(ctx, d.wt.Checkout, d.wt.SubPath, commitMsg)
 	if err != nil {
 		return nil, fmt.Errorf("commit pending changes: %s", redactURLCredentials(err.Error()))
 	}
@@ -464,7 +578,7 @@ func (r *Router) openPullRequest(ctx context.Context, taskID string, body PullRe
 	}
 	note := fmt.Sprintf("%s pull request #%d for %s (%s → %s): %s", verb, res.Number, d.Repo, d.SourceBranch, d.TargetBranch, res.URL)
 	if committed {
-		note += "\nPending edits were committed as \"" + d.CommitMsg + "\"."
+		note += "\nPending edits were committed as \"" + commitMsg + "\"."
 	}
 	if forced {
 		note += "\nThe rewritten branch was force-pushed with a lease on " + shortSHA(body.ForceWithLease) + "."

@@ -201,6 +201,9 @@ export interface PullRequestDraftDTO {
   sync_note?: string
   can_create: boolean
   blocker?: string
+  /** pending edits can be committed locally without pushing */
+  can_commit: boolean
+  commit_blocker?: string
 }
 
 /** A commit on origin's branch that the local branch lacks. */
@@ -225,6 +228,12 @@ export interface PushDivergenceDTO {
   merge_base?: string
   safe_to_force: boolean
   explanation: string
+}
+
+export interface CommitDoneDTO {
+  repo: string
+  message: string
+  sha: string
 }
 
 export interface PullRequestOpenedDTO {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -64,5 +65,56 @@ func TestRedactURLCredentials(t *testing.T) {
 		if got := redactURLCredentials(in); got != want {
 			t.Errorf("redactURLCredentials(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Commit only records the pending edits on the task branch; it needs no remote, provider or
+// credentials, and pushes nothing.
+func TestCommitOnlyCommitsPendingEditsWithoutPushing(t *testing.T) {
+	r, _ := worktreeRouter(t)
+	r.mu.Lock()
+	r.tasks["TASK-1"] = &types.Task{ID: "TASK-1", Title: "x", CurrentStageID: "task_implementation",
+		State: types.TaskStateWaitingGateApproval, AssignedRepos: []string{"app"}, Metadata: map[string]string{}}
+	r.mu.Unlock()
+	dir := r.resolveWorkDir(r.taskSnapshot("TASK-1"))
+	runGit(t, dir, "config", "user.name", "t")
+	runGit(t, dir, "config", "user.email", "t@t")
+
+	draft := func() prDraft {
+		t.Helper()
+		var res struct{ Drafts []prDraft }
+		w := do(r, http.MethodGet, "/api/v1/tasks/TASK-1/pull-request", "")
+		if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil || len(res.Drafts) != 1 {
+			t.Fatalf("drafts → %d %s", w.Code, w.Body.String())
+		}
+		return res.Drafts[0]
+	}
+	if d := draft(); d.CanCommit || !strings.Contains(d.CommitBlocker, "no uncommitted edits") {
+		t.Fatalf("a clean worktree has nothing to commit: %+v", d)
+	}
+	if w := do(r, http.MethodPost, "/api/v1/tasks/TASK-1/pull-request/commit", `{"repo":"app"}`); w.Code != http.StatusConflict {
+		t.Fatalf("commit of a clean worktree must be refused, got %d %s", w.Code, w.Body.String())
+	}
+
+	_ = os.WriteFile(filepath.Join(dir, "refund.go"), []byte("package main\n"), 0o644)
+	d := draft()
+	if !d.CanCommit || d.CanCreate {
+		t.Fatalf("pending edits without an origin: commit allowed, pull request blocked; got %+v", d)
+	}
+
+	w := do(r, http.MethodPost, "/api/v1/tasks/TASK-1/pull-request/commit", `{"repo":"app","message":"feat: refund retries"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("commit → %d %s", w.Code, w.Body.String())
+	}
+	var done commitDone
+	_ = json.Unmarshal(w.Body.Bytes(), &done)
+	if done.SHA == "" || done.Message != "feat: refund retries" {
+		t.Fatalf("unexpected commit result: %+v", done)
+	}
+	if got := strings.TrimSpace(runGitOut(t, dir, "log", "-1", "--format=%s")); got != "feat: refund retries" {
+		t.Fatalf("HEAD subject = %q", got)
+	}
+	if d := draft(); d.Uncommitted || d.CanCommit || d.Commits != 1 || d.OnRemote {
+		t.Fatalf("after commit the edits are in one local, unpushed commit: %+v", d)
 	}
 }
