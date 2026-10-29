@@ -12,6 +12,7 @@ import (
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/atdd"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/evidence"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/testenv"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/uat"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
@@ -61,11 +62,13 @@ func builtinEvidenceSkill(dir string) *types.UniversalSkillContract {
 type evidencePrep struct {
 	Skill      *types.UniversalSkillContract
 	Builtin    bool
-	Dir        string // evidence directory (absolute)
-	Recorder   string // command that records one case, for the built-in skill
-	Presenter  string // command that records the presentation video, for the built-in skill
-	Explorer   string // command that signs in as a session and lists what is on pages of the app, for the built-in skill
-	RecorderOK bool   // playwright-core is installed for the built-in recorder
+	Dir        string       // evidence directory (absolute)
+	Recorder   string       // command that records one case, for the built-in skill
+	Presenter  string       // command that records the presentation video, for the built-in skill
+	Explorer   string       // command that signs in as a session and lists what is on pages of the app, for the built-in skill
+	RecorderOK bool         // playwright-core is installed for the built-in recorder
+	TestEnv    *testenv.Env // throwaway datastores the repositories need; nil when none or they could not start
+	EnvProblem string       // why the test environment is missing, for the brief
 }
 
 // ensureEvidencePlaywright installs playwright-core for the built-in recorder, sharing the UAT
@@ -80,8 +83,9 @@ var ensureEvidencePlaywright = func(r *Router, ctx context.Context) (string, err
 }
 
 // prepareEvidence resolves the evidence skill for the task's current stage and readies its
-// directory. It returns nil when the stage records no evidence, and notes for the operator.
-func (r *Router) prepareEvidence(ctx context.Context, task *types.Task) (p *evidencePrep, notes []string) {
+// directory and the test environment. It returns nil when the stage records no evidence, and
+// notes for the operator.
+func (r *Router) prepareEvidence(ctx context.Context, task *types.Task, turnID string) (p *evidencePrep, notes []string) {
 	enabled, name := evidenceSetting(task, task.CurrentStageID)
 	if !enabled {
 		return nil, nil
@@ -89,6 +93,7 @@ func (r *Router) prepareEvidence(ctx context.Context, task *types.Task) (p *evid
 	p = &evidencePrep{Dir: r.evidenceDir(task.ID)}
 	_ = os.MkdirAll(p.Dir, 0o755)
 	r.writeEvidenceSpec(task, p.Dir)
+	p.TestEnv, p.EnvProblem = r.prepareTestEnv(ctx, task, turnID)
 	if name != "" {
 		if s, ok := r.attachableSkills()[name]; ok {
 			p.Skill = s
@@ -109,6 +114,9 @@ func (r *Router) prepareEvidence(ctx context.Context, task *types.Task) (p *evid
 	base := fmt.Sprintf("node %s %s", shellQuote(script), shellQuote(filepath.Join(p.Dir, "storyboard.json")))
 	if pwDir != "" {
 		base = "EVIDENCE_PLAYWRIGHT_DIR=" + shellQuote(pwDir) + " " + base
+	}
+	if p.TestEnv != nil {
+		base = "EVIDENCE_TESTENV=" + shellQuote(p.TestEnv.File) + " " + base
 	}
 	p.Recorder, p.Presenter = base+" --case <id>", base+" --summary"
 	p.Explorer = base + " --session <name> --explore <path>"
@@ -198,8 +206,11 @@ func (r *Router) evidenceBrief(task *types.Task, p *evidencePrep) string {
 		`   "cases": [{"id": "ABC-TC-001", "kind": "flow|acceptance|suite", "title": "…", "covers": ["ABC-TC-001"], "status": "passed|failed|blocked", "video": "ABC-TC-001.mp4", "notes": "…"}],` + "\n" +
 		`   "suites": [{"repository": "…", "command": "…", "status": "passed|failed", "passed": 0, "failed": 0}]}` + "\n")
 	b.WriteString("- Use fake test data only, never a production or shared environment, and never put credentials into commands, storyboards or videos.\n")
+	b.WriteString("- Do the setup yourself: install the repository's dependencies, start every service the flows pass through, migrate and seed. " +
+		"Report a case as not run or blocked only for what truly cannot run on this machine (a third-party service, hardware), never for setup you can do.\n")
 	b.WriteString("- Add a \"## Test evidence\" section to your report: per case its id, kind, title, status and video file; the acceptance cases " +
 		"without evidence and why; and the suite results per repository.")
+	b.WriteString(testEnvBrief(p.TestEnv, p.EnvProblem))
 	b.WriteString(r.specBrief(task))
 	return b.String()
 }

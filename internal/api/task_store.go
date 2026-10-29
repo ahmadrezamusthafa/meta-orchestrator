@@ -242,6 +242,7 @@ func (r *Router) deleteTask(taskID string) (*types.Task, error) {
 	r.console.mu.Unlock()
 	r.removeConsoleFile(taskID)
 
+	go teardownTestEnv(r, taskID)
 	if kept := r.removeTaskWorktrees(removed); len(kept) > 0 {
 		fmt.Printf("[Tasks] Kept worktrees with uncommitted work for deleted %s: %s\n", taskID, strings.Join(kept, ", "))
 	}

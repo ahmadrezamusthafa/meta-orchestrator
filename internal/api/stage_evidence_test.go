@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,12 +13,17 @@ import (
 
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/evidence"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/testenv"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
 )
 
 func init() {
 	// Tests never install Playwright: the recorder command is still briefed, without its tool dir.
 	ensureEvidencePlaywright = func(*Router, context.Context) (string, error) { return "", nil }
+	// Nor start containers: TestEvidenceRunGetsAThrowawayTestDatabase drives a fake docker.
+	provisionTestEnv = func(*Router, context.Context, *types.Task, func([]testenv.Kind, map[testenv.Kind]string)) (*testenv.Env, error) {
+		return nil, nil
+	}
 }
 
 // evidenceStub records the stage request and lets the test act as the agent during the turn.
@@ -467,4 +473,102 @@ func TestCoverageStatus(t *testing.T) {
 			t.Errorf("coverageStatus(%v) = %s, want %s", c.refs, got, c.want)
 		}
 	}
+}
+
+// fakeDocker answers the docker CLI calls of a test environment, holding the containers it ran.
+func fakeDocker(down bool) testenv.Docker {
+	var mu sync.Mutex
+	running := map[string]string{}
+	return func(_ context.Context, args ...string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch args[0] {
+		case "info":
+			if down {
+				return "", errors.New("Cannot connect to the Docker daemon")
+			}
+		case "inspect":
+			if img, ok := running[args[len(args)-1]]; ok {
+				return "true|" + img, nil
+			}
+			return "", errors.New("No such object")
+		case "run":
+			running[args[3]] = args[len(args)-2] // the image, then the server flag
+		case "port":
+			return "127.0.0.1:55001\n", nil
+		}
+		return "", nil
+	}
+}
+
+func TestEvidenceRunGetsAThrowawayTestDatabase(t *testing.T) {
+	stub := &evidenceStub{}
+	r, root := evidenceRouter(t, stub)
+	repo := t.TempDir() // a Rails app on MySQL whose .env.template has no usable credentials
+	_ = os.WriteFile(filepath.Join(repo, "Gemfile"), []byte("gem 'mysql2'\n"), 0o644)
+	_ = os.MkdirAll(filepath.Join(repo, "config"), 0o755)
+	_ = os.WriteFile(filepath.Join(repo, "config", "database.yml"), []byte("default:\n  adapter: mysql2\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(repo, ".env.template"), []byte("DB_HOST=\nDB_USERNAME=\nDB_PASSWORD=\nDB_TEST_NAME=\n"), 0o644)
+	var mgr *testenv.Manager
+	prev := provisionTestEnv
+	t.Cleanup(func() { provisionTestEnv = prev })
+	down := false
+	provisionTestEnv = func(r *Router, ctx context.Context, task *types.Task, starting func([]testenv.Kind, map[testenv.Kind]string)) (*testenv.Env, error) {
+		mgr = &testenv.Manager{Docker: fakeDocker(down), Root: filepath.Join(root, ".sdlc", "testenv")}
+		repos := []testenv.Repo{{Name: "billing", Dirs: []string{repo}}}
+		_, kinds, images := testenv.Plan(repos)
+		starting(kinds, images)
+		return mgr.Ensure(ctx, task.ID, repos)
+	}
+	r.mu.Lock()
+	r.tasks["TASK-DB"] = &types.Task{ID: "TASK-DB", Title: "Invoice export", CurrentStageID: "task_implementation", State: types.TaskStatePending,
+		AssignedRepos: []string{"billing"}, Metadata: map[string]string{"complexity": "LOW"}}
+	r.mu.Unlock()
+
+	if w := do(r, "POST", "/api/v1/tasks/TASK-DB/execute", ""); w.Code != 200 {
+		t.Fatalf("execute → %d %s", w.Code, w.Body.String())
+	}
+	waitState(t, r, "TASK-DB", types.TaskStateWaitingGateApproval)
+	stub.mu.Lock()
+	prompt := stub.reqs[len(stub.reqs)-1].Messages[len(stub.reqs[len(stub.reqs)-1].Messages)-1].Content
+	stub.mu.Unlock()
+	envFile := filepath.Join(root, ".sdlc", "testenv", "TASK-DB", "env.json")
+	for _, want := range []string{"Test environment (provided — do not ask for database credentials)", "MySQL (mysql:8.0) on 127.0.0.1:55001",
+		"billing.env.sh", "DB_PASSWORD, DB_TEST_NAME", "- billing: bin/rails db:prepare", "EVIDENCE_TESTENV=" + envFile, "never for setup you can do"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("brief is missing %q:\n%s", want, prompt)
+		}
+	}
+	raw, _ := os.ReadFile(envFile)
+	var doc struct{ Redact []string }
+	if err := json.Unmarshal(raw, &doc); err != nil || len(doc.Redact) != 1 || strings.Contains(prompt, doc.Redact[0]) {
+		t.Fatalf("the password must reach the env file only (err %v)", err)
+	}
+	log := consoleText(r, "TASK-DB")
+	for _, want := range []string{"🧪 Preparing the test environment: MySQL (mysql:8.0)", "✓ Test environment ready: MySQL on 127.0.0.1:55001; billing gets databases billing_development and billing_test"} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("console is missing %q:\n%s", want, log)
+		}
+	}
+
+	// Without Docker the operator is told the one thing to do, and the agent falls back to compose.
+	down = true
+	r.mu.Lock()
+	r.tasks["TASK-DB"].State = types.TaskStatePending
+	r.mu.Unlock()
+	if w := do(r, "POST", "/api/v1/tasks/TASK-DB/evidence", ""); w.Code != 200 {
+		t.Fatalf("record evidence → %d %s", w.Code, w.Body.String())
+	}
+	waitState(t, r, "TASK-DB", types.TaskStateWaitingGateApproval)
+	if log := consoleText(r, "TASK-DB"); !strings.Contains(log, "⚠ Docker is not running") || !strings.Contains(log, "no credentials needed") {
+		t.Fatalf("console:\n%s", log)
+	}
+	stub.mu.Lock()
+	last := stub.reqs[len(stub.reqs)-1].Messages
+	stub.mu.Unlock()
+	if p := last[len(last)-1].Content; !strings.Contains(p, "from the repository's own docker compose file") {
+		t.Fatalf("fallback not briefed:\n%s", p)
+	}
+
+	teardownTestEnv(r, "TASK-DB") // real docker is never reached: the state dir is checked first
 }

@@ -341,7 +341,7 @@ func (r *Router) executeStage(run *stageRun) {
 	if evidenceOnly {
 		skills, missing = nil, nil // the turn only records evidence: just the evidence skill
 	}
-	ev, evNotes := r.prepareEvidence(run.ctx, task)
+	ev, evNotes := r.prepareEvidence(run.ctx, task, run.turnID)
 	for _, n := range evNotes {
 		r.addEntry(taskID, types.ConsoleEntry{Kind: types.ConsoleKindSystem, TurnID: run.turnID, Content: n})
 	}
