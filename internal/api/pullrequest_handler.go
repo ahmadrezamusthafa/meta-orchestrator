@@ -88,7 +88,7 @@ var leadingComment = regexp.MustCompile(`^\s*(<!--[\s\S]*?-->\s*)+`)
 
 // prInput gathers the description content from the task and its approved stage documents.
 func (r *Router) prInput(t *types.Task) pullrequest.Input {
-	impl := r.readStageDoc(t.ID, "task_implementation")
+	impl := pullrequest.WithoutEvidence(r.readStageDoc(t.ID, "task_implementation")) // evidence stays in the Evidence tab
 	design := r.readStageDoc(t.ID, "techdoc_rfc")
 	prd := r.readStageDoc(t.ID, "prd_discovery")
 	atdd := r.readStageDoc(t.ID, "atdd_creation")

@@ -133,3 +133,30 @@ func TestOpenGitHub(t *testing.T) {
 		t.Fatalf("github → %+v, %v", res, err)
 	}
 }
+
+func TestWithoutEvidenceKeepsTheReviewerPartsOnly(t *testing.T) {
+	doc := "## Summary\n" +
+		"- Voiding a self-checkout PI now deletes its contract, behind the `rls_void_pi_delete_contract` toggle.\n" +
+		"- Recorded the test evidence: 4 videos in /Users/x/.sdlc/artifacts/TASK-1/evidence\n" +
+		"  - FLOW-1.mp4 passed\n" +
+		"  - SUMMARY.mp4\n" +
+		"- Seven new unit examples, including toggle OFF.\n\n" +
+		"The storyboard was re-recorded twice.\n\n" +
+		"## Test evidence\n| Case | Status |\n|---|---|\n| FLOW-1 | passed |\n\n" +
+		"### Suites\nbilling: 812 passed\n\n" +
+		"## How to test\n1. Turn the toggle on.\n2. Void a self-checkout PI and check its contract is gone.\n3. Watch FLOW-1.mp4 in the Evidence tab.\n"
+	got := WithoutEvidence(doc)
+	for _, gone := range []string{"Recorded the test evidence", "FLOW-1.mp4", "SUMMARY.mp4", "storyboard", "## Test evidence", "812 passed", "Evidence tab"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("%q is still in:\n%s", gone, got)
+		}
+	}
+	for _, kept := range []string{"deletes its contract", "Seven new unit examples", "## How to test", "2. Void a self-checkout PI"} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("%q was dropped:\n%s", kept, got)
+		}
+	}
+	if s := Section(got, "summary"); strings.Contains(s, "evidence") || !strings.HasSuffix(s, "toggle OFF.") {
+		t.Errorf("summary section = %q", s)
+	}
+}

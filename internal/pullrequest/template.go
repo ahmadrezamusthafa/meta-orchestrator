@@ -193,3 +193,67 @@ func Section(doc string, keywords ...string) string {
 	}
 	return ""
 }
+
+// Test evidence is for the orchestrator's Evidence tab, not for the reviewer reading the pull
+// request: the agent's report mentions the recorder, its videos and storyboard, local evidence
+// paths and how its environment was set up. WithoutEvidence drops those parts of a stage document
+// before its sections become the description.
+
+// evidenceHeading matches a section about the evidence ("## Test evidence", "### Evidence videos").
+var evidenceHeading = regexp.MustCompile(`(?i)\bevidence\b`)
+
+// evidenceLine matches a line that talks about recording evidence rather than about the change.
+var evidenceLine = regexp.MustCompile(`(?i)(test[ -]evidence|evidence (video|recorder|run|turn|dir|directory|folder|tab|file|case)s?\b|` +
+	`record(ed|ing|s)? (the |no |any |all )?(test )?(evidence|videos?)\b|evidence\.json|record-evidence|storyboard|` +
+	`\.(mp4|webm)\b|summary\.png|\.sdlc/|test environment|throwaway (database|container))`)
+
+// WithoutEvidence returns doc without its evidence sections and without the lines (and the
+// sub-items under them) that report on recording evidence.
+func WithoutEvidence(doc string) string {
+	lines := strings.Split(doc, "\n")
+	out := make([]string, 0, len(lines))
+	skipLevel := 0   // inside an evidence section of this heading level
+	dropIndent := -1 // dropping the sub-items of a dropped list item indented this much
+	for _, line := range lines {
+		if m := heading.FindStringSubmatch(line); m != nil {
+			level := len(m[1])
+			if skipLevel > 0 && level > skipLevel {
+				continue
+			}
+			skipLevel, dropIndent = 0, -1
+			if evidenceHeading.MatchString(m[2]) {
+				skipLevel = level
+				continue
+			}
+			out = append(out, line)
+			continue
+		}
+		if skipLevel > 0 {
+			continue
+		}
+		trimmed := strings.TrimLeft(line, " \t")
+		indent := len(line) - len(trimmed)
+		if dropIndent >= 0 {
+			if trimmed != "" && indent > dropIndent {
+				continue
+			}
+			dropIndent = -1
+		}
+		if trimmed != "" && evidenceLine.MatchString(line) {
+			if listItem.MatchString(trimmed) {
+				dropIndent = indent
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	return collapseBlank(strings.Join(out, "\n"))
+}
+
+var listItem = regexp.MustCompile(`^([-*+]|\d+[.)])\s`)
+
+var blankRun = regexp.MustCompile(`\n{3,}`)
+
+func collapseBlank(s string) string {
+	return strings.TrimSpace(blankRun.ReplaceAllString(s, "\n\n")) + "\n"
+}
