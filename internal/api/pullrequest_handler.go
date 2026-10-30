@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/evidence"
 	gitwt "github.com/ahmadrezamusthafa/meta-orchestrator/internal/git"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/pullrequest"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/router"
@@ -64,6 +65,7 @@ type prDraft struct {
 
 	wt     taskWorktree
 	remote gitwt.Remote
+	in     pullrequest.Input // the description's content, rendered once every draft is built
 }
 
 // prStages are the stages from which a pull request may be opened.
@@ -86,9 +88,10 @@ func (r *Router) readStageDoc(taskID, stage string) string {
 
 var leadingComment = regexp.MustCompile(`^\s*(<!--[\s\S]*?-->\s*)+`)
 
-// prInput gathers the description content from the task and its approved stage documents.
-func (r *Router) prInput(t *types.Task) pullrequest.Input {
-	impl := pullrequest.WithoutEvidence(r.readStageDoc(t.ID, "task_implementation")) // evidence stays in the Evidence tab
+// prInput gathers the description content from the task and its approved stage documents; impl is
+// the implementation report, from which each repository's changes are taken.
+func (r *Router) prInput(t *types.Task) (in pullrequest.Input, impl string) {
+	impl = pullrequest.WithoutEvidence(r.readStageDoc(t.ID, "task_implementation")) // the evidence's results are added from evidence.json
 	design := r.readStageDoc(t.ID, "techdoc_rfc")
 	prd := r.readStageDoc(t.ID, "prd_discovery")
 	atdd := r.readStageDoc(t.ID, "atdd_creation")
@@ -111,18 +114,74 @@ func (r *Router) prInput(t *types.Task) pullrequest.Input {
 		JiraURL:  t.Metadata["jira_url"],
 		Title:    t.Title,
 		TaskType: taskType,
+		Context:  first(pullrequest.Section(prd, "problem", "background", "context", "goal"), t.Description),
 		Summary: first(pullrequest.Section(impl, "summary"), pullrequest.Section(design, "summary", "approach", "overview"),
 			t.Description),
 		Testing: first(pullrequest.Section(impl, "verif", "how to test", "testing"),
 			pullrequest.Section(atdd, "summary", "scenario")),
 		AcceptanceCriteria: first(pullrequest.Section(prd, "acceptance"), pullrequest.Section(atdd, "acceptance")),
 		Risks:              first(pullrequest.Section(design, "risk"), pullrequest.Section(impl, "risk")),
+		Evidence:           r.prEvidence(t),
+	}, impl
+}
+
+// prEvidence is the outcome of the task's recorded test evidence, or nil when none was recorded.
+func (r *Router) prEvidence(t *types.Task) *pullrequest.Evidence {
+	rep := evidence.Collect(r.evidenceDir(t.ID))
+	if rep.Manifest == nil || len(rep.Manifest.Cases)+len(rep.Manifest.Suites) == 0 {
+		return nil
 	}
+	ev := &pullrequest.Evidence{}
+	for _, c := range rep.Manifest.Cases {
+		if c.Kind == evidence.KindSuite {
+			continue // listed with its suite
+		}
+		ev.Cases = append(ev.Cases, pullrequest.EvidenceCase{ID: c.ID, Kind: c.Kind, Title: c.Title, Status: c.Status})
+	}
+	for _, s := range rep.Manifest.Suites {
+		ev.Suites = append(ev.Suites, pullrequest.EvidenceSuite{Repository: s.Repository, Command: publicCommand(s.Command),
+			Status: s.Status, Passed: s.Passed, Failed: s.Failed})
+	}
+	spec := r.evidenceSpec(t, rep)
+	ev.Covered, ev.Total = spec.Covered, len(spec.Cases)
+	return ev
+}
+
+// envPrefix matches the variable assignments in front of a command ("DATABASE_URL=… bundle exec rspec").
+var envPrefix = regexp.MustCompile(`^(\s*(export\s+)?[A-Za-z_][A-Za-z0-9_]*=('[^']*'|"[^"]*"|\S*)\s+)+`)
+
+// publicCommand is a suite command fit for the pull request: without the environment it ran with
+// (the throwaway test environment's credentials) or credentials embedded in URLs.
+func publicCommand(cmd string) string {
+	return strings.TrimSpace(redactURLCredentials(envPrefix.ReplaceAllString(cmd, "")))
+}
+
+// evidenceFor narrows the evidence to the suites of repos; every suite is kept when none matches
+// by name.
+func evidenceFor(ev *pullrequest.Evidence, repos []string) *pullrequest.Evidence {
+	if ev == nil {
+		return nil
+	}
+	var own []pullrequest.EvidenceSuite
+	for _, s := range ev.Suites {
+		for _, repo := range repos {
+			if strings.EqualFold(s.Repository, repo) || strings.HasSuffix(strings.ToLower(s.Repository), "/"+strings.ToLower(repo)) {
+				own = append(own, s)
+				break
+			}
+		}
+	}
+	if len(own) == 0 {
+		return ev
+	}
+	out := *ev
+	out.Suites = own
+	return &out
 }
 
 // buildPRDrafts builds one draft per git checkout of the task.
 func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
-	base := r.prInput(t)
+	base, impl := r.prInput(t)
 	var drafts []*prDraft
 	byCheckout := map[string]*prDraft{}
 	for _, wt := range r.describeWorktrees(ctx, t) {
@@ -214,6 +273,18 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 		d.CanCreate = d.Blocker == ""
 		d.CanCommit = d.CommitBlocker == ""
 		d.Sync, d.SyncNote = prSync(d)
+		d.in = in
+	}
+	// The description is rendered once every checkout is known: each one names the others.
+	for _, d := range drafts {
+		in := d.in
+		in.Details = pullrequest.Changes(impl, d.Repo)
+		in.Evidence = evidenceFor(base.Evidence, d.Repos)
+		for _, o := range drafts {
+			if o != d {
+				in.Related = append(in.Related, pullrequest.Related{Repo: o.Repo, URL: o.ExistingURL})
+			}
+		}
 		d.Title, d.Body = pullrequest.Title(in), pullrequest.Body(in)
 	}
 	return drafts

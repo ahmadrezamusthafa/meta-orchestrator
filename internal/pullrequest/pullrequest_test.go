@@ -160,3 +160,48 @@ func TestWithoutEvidenceKeepsTheReviewerPartsOnly(t *testing.T) {
 		t.Errorf("summary section = %q", s)
 	}
 }
+
+func TestBodyDescribesTheTaskChangesAndEvidence(t *testing.T) {
+	passed, failed := 812, 0
+	in := Input{TaskID: "TASK-3", Title: "Void PI deletes contract", Context: "Voided self-checkout PIs leave orphan contracts.",
+		Summary: "Voiding a PI deletes its contract.", Details: "- `void_service.rb`: deletes the contract in the void transaction.",
+		Files: []FileChange{{Path: "app/void_service.rb", Status: "modified"}, {Path: "spec/void_service_spec.rb", Status: "added"}},
+		Related: []Related{{Repo: "billing-fe", URL: "https://bitbucket.org/ws/billing-fe/pull-requests/4"}, {Repo: "api"}},
+		Evidence: &Evidence{Covered: 2, Total: 3,
+			Cases:  []EvidenceCase{{ID: "FLOW-1", Kind: "flow", Title: "Void a PI | end to end", Status: "passed"}},
+			Suites: []EvidenceSuite{{Repository: "billing", Command: "bundle exec rspec", Status: "passed", Passed: &passed, Failed: &failed}}}}
+	body := Body(in)
+	for _, want := range []string{"## Context\nVoided self-checkout PIs leave orphan contracts.",
+		"## Changes\n- `void_service.rb`: deletes the contract in the void transaction.\n\n2 file(s)",
+		"## Related pull requests\n- billing-fe: https://bitbucket.org/ws/billing-fe/pull-requests/4\n- api: not opened yet",
+		"## Test evidence\n2 of 3 acceptance case(s)", "| FLOW-1 — Void a PI \\| end to end | flow | passed |",
+		"| billing | `bundle exec rspec` | passed (812 passed, 0 failed) |", "- [x] Unit / integration tests added or updated",
+		"- [ ] Documentation updated where needed"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q:\n%s", want, body)
+		}
+	}
+	plain := Body(Input{TaskID: "TASK-4", Context: "Same text.", Summary: "Same text."})
+	for _, gone := range []string{"## Test evidence", "## Related pull requests", "## Context\nSame text."} {
+		if strings.Contains(plain, gone) {
+			t.Errorf("%q should not be in:\n%s", gone, plain)
+		}
+	}
+}
+
+func TestChangesNarrowsToTheRepositoryAndDropsDiffs(t *testing.T) {
+	doc := "## Summary\nx\n\n## Changes\n### billing-internal-fe\n- Shows the toggle.\n\n### billing\n- `void.rb`: deletes the contract.\n\n" +
+		"```diff\n- old\n+ new\n```\n\n## How to test\n1. run\n"
+	if got := Changes(doc, "billing"); got != "- `void.rb`: deletes the contract.\n" {
+		t.Fatalf("billing changes = %q", got)
+	}
+	if got := Changes(doc, "billing-internal-fe"); got != "- Shows the toggle.\n" {
+		t.Fatalf("fe changes = %q", got)
+	}
+	if got := Changes(doc, "other"); !strings.Contains(got, "Shows the toggle.") || strings.Contains(got, "+ new") {
+		t.Fatalf("unmatched repo keeps the whole section without diffs: %q", got)
+	}
+	if Changes("## Summary\nx\n", "billing") != "" {
+		t.Fatal("no changes section should be empty")
+	}
+}

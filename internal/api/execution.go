@@ -36,8 +36,10 @@ var stageInstructions = map[string]string{
 	"task_breakdown":   "Break the work into small ordered sub-tasks, each with the repository, files and how it will be verified.",
 	"red_verification": "Explain which acceptance tests are expected to fail before implementation and why.",
 	"task_implementation": "Implement the change. Show concrete code changes per file (unified diff where possible) and how to verify them. " +
-		"Organize the report under the headings \"## Summary\" (what changed and why), \"## How to test\" (steps a reviewer follows) and " +
-		"\"## Risks\" (impact and rollback) — they become the standard pull request description.",
+		"Organize the report under the headings \"## Summary\" (what changed and why, tied to the task's goal), \"## Changes\" (per " +
+		"repository — a \"### <repository>\" sub-heading each when there are several — every changed component or file and what changed " +
+		"in it and why, in prose; diffs may follow in code blocks), \"## How to test\" (steps a reviewer follows) and \"## Risks\" " +
+		"(impact and rollback) — they become the standard pull request description, so describe the change actually in the diff.",
 	"e2e_validation":   "Describe the end-to-end validation: scenarios, commands or scripts to run, and expected results.",
 	"uat_verification": uatStageInstruction,
 	"signoff_merge":    "Prepare the sign-off: summary of changes, risks, rollout notes and a pull request description.",

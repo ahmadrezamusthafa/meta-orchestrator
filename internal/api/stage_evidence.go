@@ -209,9 +209,10 @@ func (r *Router) evidenceBrief(task *types.Task, p *evidencePrep) string {
 	b.WriteString("- Do the setup yourself: install the repository's dependencies, start every service the flows pass through, migrate and seed. " +
 		"Report a case as not run or blocked only for what truly cannot run on this machine (a third-party service, hardware), never for setup you can do.\n")
 	b.WriteString("- Add a \"## Test evidence\" section to your report: per case its id, kind, title, status and video file; the acceptance cases " +
-		"without evidence and why; and the suite results per repository. Keep everything about the evidence there: the Summary, How to test and " +
-		"Risks sections become the pull request description, so they describe the change for a reviewer — no recorder, videos, storyboard, " +
-		"evidence paths or test-environment setup. Sections whose heading says \"evidence\" are left out of the pull request.")
+		"without evidence and why; and the suite results per repository. Keep everything about the evidence there: the Summary, Changes, How to test " +
+		"and Risks sections become the pull request description, so they describe the change for a reviewer — no recorder, videos, storyboard, " +
+		"evidence paths or test-environment setup. Sections whose heading says \"evidence\" are left out of the pull request; it lists the " +
+		"case and suite results from evidence.json instead.")
 	b.WriteString(testEnvBrief(p.TestEnv, p.EnvProblem))
 	b.WriteString(r.specBrief(task))
 	return b.String()

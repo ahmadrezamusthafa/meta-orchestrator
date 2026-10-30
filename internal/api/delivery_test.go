@@ -48,7 +48,12 @@ func TestPullRequestCommitsPushesAndOpensStandardPR(t *testing.T) {
 		State: types.TaskStateWaitingGateApproval, AssignedRepos: []string{"app"},
 		Metadata: map[string]string{"jira_key": "PAY-42", "jira_url": "https://jira.example/browse/PAY-42", "task_type": "bugfix"}}
 	r.mu.Unlock()
-	r.saveStageDocument("TASK-1", "task_implementation", "m", "Did it.\n\n## Summary\nRetries refund webhooks.\n\n## How to test\n1. Replay a webhook\n")
+	r.saveStageDocument("TASK-1", "task_implementation", "m", "Did it.\n\n## Summary\nRetries refund webhooks.\n\n"+
+		"## Changes\n- `main.go`: retries the webhook.\n\n```diff\n+func retry() {}\n```\n\n## How to test\n1. Replay a webhook\n")
+	evDir := r.evidenceDir("TASK-1")
+	_ = os.MkdirAll(evDir, 0o755)
+	_ = os.WriteFile(filepath.Join(evDir, "evidence.json"), []byte(`{"cases":[{"id":"FLOW-1","kind":"flow","title":"Replay","status":"passed","video":"FLOW-1.mp4"}],`+
+		`"suites":[{"repository":"app","command":"DATABASE_URL=postgres://u:secret@localhost/app_test go test ./...","status":"passed"}]}`), 0o644)
 
 	dir := r.resolveWorkDir(r.taskSnapshot("TASK-1"))
 	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc retry() {}\n"), 0o644)
@@ -64,7 +69,10 @@ func TestPullRequestCommitsPushesAndOpensStandardPR(t *testing.T) {
 	d := drafts.Drafts[0]
 	if !d.CanCreate || d.Provider != "bitbucket" || d.TargetBranch != "master" || !d.Uncommitted ||
 		d.Title != "[PAY-42] fix: Refund webhook retries" || !strings.Contains(d.Body, "## Summary\nRetries refund webhooks.") ||
-		!strings.Contains(d.Body, "## How to test\n1. Replay a webhook") {
+		!strings.Contains(d.Body, "## How to test\n1. Replay a webhook") ||
+		!strings.Contains(d.Body, "## Changes\n- `main.go`: retries the webhook.\n\n1 file(s)") ||
+		!strings.Contains(d.Body, "| FLOW-1 — Replay | flow | passed |") || !strings.Contains(d.Body, "| app | `go test ./...` | passed |") ||
+		strings.Contains(d.Body, "u:secret") || strings.Contains(d.Body, "DATABASE_URL") || strings.Contains(d.Body, "+func retry") || strings.Contains(d.Body, ".mp4") {
 		t.Fatalf("draft = %+v", d)
 	}
 
