@@ -54,10 +54,13 @@ type prDraft struct {
 	HeldBy     string `json:"held_by,omitempty"`
 	// Sync tells whether an opened pull request shows the worktree: prNotOpened, prInSync or
 	// prOutOfSync; SyncNote says what is missing from it.
-	Sync      string `json:"sync"`
-	SyncNote  string `json:"sync_note,omitempty"`
-	CanCreate bool   `json:"can_create"`
-	Blocker   string `json:"blocker,omitempty"` // why the pull request cannot be opened yet
+	// SummarySource says where the description's Summary comes from: "generated" from the diff and
+	// the task, or "report" (the implementation report, when no summary could be generated).
+	SummarySource string `json:"summary_source"`
+	Sync          string `json:"sync"`
+	SyncNote      string `json:"sync_note,omitempty"`
+	CanCreate     bool   `json:"can_create"`
+	Blocker       string `json:"blocker,omitempty"` // why the pull request cannot be opened yet
 	// CanCommit is true when the pending edits can be committed on their own, without pushing;
 	// CommitBlocker says why not. Remote, provider and stage do not matter for a local commit.
 	CanCommit     bool   `json:"can_commit"`
@@ -66,6 +69,8 @@ type prDraft struct {
 	wt     taskWorktree
 	remote gitwt.Remote
 	in     pullrequest.Input // the description's content, rendered once every draft is built
+	patch  string            // the diff against the target branch, for the generated summary
+	cut    bool              // patch was truncated
 }
 
 // prStages are the stages from which a pull request may be opened.
@@ -179,8 +184,10 @@ func evidenceFor(ev *pullrequest.Evidence, repos []string) *pullrequest.Evidence
 	return &out
 }
 
-// buildPRDrafts builds one draft per git checkout of the task.
-func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
+// buildPRDrafts builds one draft per git checkout of the task. With summarize, a Summary that is
+// not cached yet is generated from the diff (the operator is looking at the description);
+// otherwise only a cached one is used.
+func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task, summarize bool) []*prDraft {
 	base, impl := r.prInput(t)
 	var drafts []*prDraft
 	byCheckout := map[string]*prDraft{}
@@ -229,6 +236,7 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 		if wt.Exists && wt.Error == "" {
 			if diff, err := gitwt.Diff(ctx, wt.Checkout, wt.BaseRef, gitwt.DiffAgainstBase, wt.SubPath); err == nil {
 				d.Commits, d.Files = len(diff.Commits), len(diff.Files)
+				d.patch, d.cut = diff.Patch, diff.Truncated
 				for _, f := range diff.Files {
 					in.Files = append(in.Files, pullrequest.FileChange{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions})
 				}
@@ -277,15 +285,17 @@ func (r *Router) buildPRDrafts(ctx context.Context, t *types.Task) []*prDraft {
 	}
 	// The description is rendered once every checkout is known: each one names the others.
 	for _, d := range drafts {
-		in := d.in
-		in.Details = pullrequest.Changes(impl, d.Repo)
-		in.Evidence = evidenceFor(base.Evidence, d.Repos)
+		d.in.Details = pullrequest.Changes(impl, d.Repo)
+		d.in.Evidence = evidenceFor(base.Evidence, d.Repos)
 		for _, o := range drafts {
 			if o != d {
-				in.Related = append(in.Related, pullrequest.Related{Repo: o.Repo, URL: o.ExistingURL})
+				d.in.Related = append(d.in.Related, pullrequest.Related{Repo: o.Repo, URL: o.ExistingURL})
 			}
 		}
-		d.Title, d.Body = pullrequest.Title(in), pullrequest.Body(in)
+	}
+	r.summarizeDrafts(ctx, t, drafts, summarize)
+	for _, d := range drafts {
+		d.Title, d.Body = pullrequest.Title(d.in), pullrequest.Body(d.in)
 	}
 	return drafts
 }
@@ -353,7 +363,7 @@ func (r *Router) notePRSync(taskID, turnID string) {
 	defer cancel()
 	var stale []string
 	var notes []string
-	for _, d := range r.buildPRDrafts(ctx, t) {
+	for _, d := range r.buildPRDrafts(ctx, t, false) {
 		if d.Sync != prOutOfSync {
 			continue
 		}
@@ -435,7 +445,7 @@ func (r *Router) handleTaskPullRequest(w http.ResponseWriter, req *http.Request,
 	case http.MethodGet:
 		ctx, cancel := context.WithTimeout(req.Context(), time.Minute)
 		defer cancel()
-		r.writeJSON(w, http.StatusOK, map[string]interface{}{"task_id": t.ID, "stage_ready": prAllowed(t), "drafts": r.buildPRDrafts(ctx, t)})
+		r.writeJSON(w, http.StatusOK, map[string]interface{}{"task_id": t.ID, "stage_ready": prAllowed(t), "drafts": r.buildPRDrafts(ctx, t, true)})
 		go r.notePRSync(t.ID, "") // the worktree may have changed outside an agent turn; keep the tab badge current
 		r.fetchTaskBranches(t.ID) // pushes from another clone show up through the git watcher
 	case http.MethodPost:
@@ -519,7 +529,7 @@ func (r *Router) commitPending(ctx context.Context, taskID string, body CommitRe
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	d := pickDraft(r.buildPRDrafts(ctx, t), body.Repo)
+	d := pickDraft(r.buildPRDrafts(ctx, t, false), body.Repo)
 	if d == nil {
 		return nil, fmt.Errorf("%s has no repository %q with a worktree", taskID, body.Repo)
 	}
@@ -581,7 +591,7 @@ func (r *Router) openPullRequest(ctx context.Context, taskID string, body PullRe
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
 
-	d := pickDraft(r.buildPRDrafts(ctx, t), body.Repo)
+	d := pickDraft(r.buildPRDrafts(ctx, t, true), body.Repo)
 	if d == nil {
 		return nil, fmt.Errorf("%s has no repository %q with a worktree", taskID, body.Repo)
 	}

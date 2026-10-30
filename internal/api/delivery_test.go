@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/llm"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/pullrequest"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/internal/uat"
 	"github.com/ahmadrezamusthafa/meta-orchestrator/pkg/types"
@@ -48,7 +50,11 @@ func TestPullRequestCommitsPushesAndOpensStandardPR(t *testing.T) {
 		State: types.TaskStateWaitingGateApproval, AssignedRepos: []string{"app"},
 		Metadata: map[string]string{"jira_key": "PAY-42", "jira_url": "https://jira.example/browse/PAY-42", "task_type": "bugfix"}}
 	r.mu.Unlock()
-	r.saveStageDocument("TASK-1", "task_implementation", "m", "Did it.\n\n## Summary\nRetries refund webhooks.\n\n"+
+	summarizer := &summaryStub{reply: "## Summary\n- Retries a failed refund webhook.\n\n```go\nfunc retry() {}\n```"}
+	for _, p := range []string{"claude", "antigravity", "openai", "opencode"} {
+		r.clientFactory.OverrideProvider(p, summarizer)
+	}
+	r.saveStageDocument("TASK-1", "task_implementation", "m", "Did it.\n\n## Summary\nRebased on master; push it yourself.\n\n"+
 		"## Changes\n- `main.go`: retries the webhook.\n\n```diff\n+func retry() {}\n```\n\n## How to test\n1. Replay a webhook\n")
 	evDir := r.evidenceDir("TASK-1")
 	_ = os.MkdirAll(evDir, 0o755)
@@ -68,12 +74,21 @@ func TestPullRequestCommitsPushesAndOpensStandardPR(t *testing.T) {
 	}
 	d := drafts.Drafts[0]
 	if !d.CanCreate || d.Provider != "bitbucket" || d.TargetBranch != "master" || !d.Uncommitted ||
-		d.Title != "[PAY-42] fix: Refund webhook retries" || !strings.Contains(d.Body, "## Summary\nRetries refund webhooks.") ||
+		d.Title != "[PAY-42] fix: Refund webhook retries" || !strings.Contains(d.Body, "## Summary\n- Retries a failed refund webhook.\n\n## Type") || d.SummarySource != "generated" || strings.Contains(d.Body, "push it yourself") ||
 		!strings.Contains(d.Body, "## How to test\n1. Replay a webhook") ||
 		!strings.Contains(d.Body, "## Changes\n- `main.go`: retries the webhook.\n\n1 file(s)") ||
 		!strings.Contains(d.Body, "| FLOW-1 — Replay | flow | passed |") || !strings.Contains(d.Body, "| app | `go test ./...` | passed |") ||
 		strings.Contains(d.Body, "u:secret") || strings.Contains(d.Body, "DATABASE_URL") || strings.Contains(d.Body, "+func retry") || strings.Contains(d.Body, ".mp4") {
 		t.Fatalf("draft = %+v", d)
+	}
+
+	if prompt := summarizer.lastPrompt(); summarizer.calls() != 1 || !strings.Contains(prompt, "+func retry() {}") ||
+		!strings.Contains(prompt, "Repository of this pull request: app") || !strings.Contains(prompt, "Task: Refund webhook retries") {
+		t.Fatalf("summary calls = %d, prompt:\n%s", summarizer.calls(), prompt)
+	}
+	do(r, http.MethodGet, "/api/v1/tasks/TASK-1/pull-request", "")
+	if summarizer.calls() != 1 {
+		t.Fatalf("an unchanged diff must reuse the cached summary; calls = %d", summarizer.calls())
 	}
 
 	w = do(r, http.MethodPost, "/api/v1/tasks/TASK-1/pull-request", `{"repo":"app"}`)
@@ -426,4 +441,37 @@ func TestNextSeedTag(t *testing.T) {
 			t.Errorf("nextSeedTag(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+// summaryStub answers the pull request summary call and records its prompts.
+type summaryStub struct {
+	reply   string
+	mu      sync.Mutex
+	prompts []string
+}
+
+func (s *summaryStub) Complete(ctx context.Context, req *llm.LLMRequest) (*llm.LLMResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prompts = append(s.prompts, req.Messages[len(req.Messages)-1].Content)
+	return &llm.LLMResponse{Content: s.reply, Provider: "stub", Model: req.Model}, nil
+}
+func (s *summaryStub) Stream(ctx context.Context, req *llm.LLMRequest, ch chan<- types.ThoughtChunk) (*llm.LLMResponse, error) {
+	return s.Complete(ctx, req)
+}
+func (s *summaryStub) CountTokens(req *llm.LLMRequest) int64 { return 0 }
+
+func (s *summaryStub) calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.prompts)
+}
+
+func (s *summaryStub) lastPrompt() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.prompts) == 0 {
+		return ""
+	}
+	return s.prompts[len(s.prompts)-1]
 }

@@ -91,6 +91,12 @@ func planStages(start, halt string) []string {
 
 // classifier sends the complexity prompt to the analysis model, trying its fallbacks in order.
 func (r *Router) classifier() router.Classifier {
+	return r.analysisCall("complexity-analysis", "complexity_analysis", 600, analysisTimeout)
+}
+
+// analysisCall is a one-shot call to the analysis model, trying its fallbacks in order; nil when no
+// model is configured. taskID and stage label its telemetry.
+func (r *Router) analysisCall(taskID, stage string, maxTokens int, timeout time.Duration) router.Classifier {
 	if r.clientFactory == nil || r.strategyRouter == nil {
 		return nil
 	}
@@ -114,10 +120,10 @@ func (r *Router) classifier() router.Classifier {
 				continue
 			}
 			if r.telemetry != nil {
-				client = r.telemetry.tracker.Instrument(client, telemetry.CallMeta{TaskID: "complexity-analysis",
-					StageID: "complexity_analysis", Model: model, Tier: router.TierLogParse})
+				client = r.telemetry.tracker.Instrument(client, telemetry.CallMeta{TaskID: taskID,
+					StageID: stage, Model: model, Tier: router.TierLogParse})
 			}
-			resp, err := client.Complete(ctx, &llm.LLMRequest{Model: modelID, MaxTokens: 600, Timeout: analysisTimeout,
+			resp, err := client.Complete(ctx, &llm.LLMRequest{Model: modelID, MaxTokens: maxTokens, Timeout: timeout,
 				Messages: []llm.Message{{Role: llm.RoleSystem, Content: system}, {Role: llm.RoleUser, Content: prompt}}})
 			if err != nil {
 				lastErr = err

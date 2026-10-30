@@ -442,7 +442,7 @@ func TestPullRequestIsBlockedWhileAConflictIsUnfinished(t *testing.T) {
 	r, _ := interactionRouter(t, "task_implementation", llm.ApprovalRequest{})
 	dir := r.resolveWorkDir(r.taskSnapshot("TASK-P"))
 	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> origin/master\n"), 0o644)
-	drafts := r.buildPRDrafts(context.Background(), r.taskSnapshot("TASK-P"))
+	drafts := r.buildPRDrafts(context.Background(), r.taskSnapshot("TASK-P"), false)
 	if len(drafts) != 1 || drafts[0].CanCreate || !strings.Contains(drafts[0].Blocker, "conflict markers at main.go:") {
 		t.Fatalf("a pull request must not be opened over conflict markers: %+v", drafts[0])
 	}

@@ -36,6 +36,9 @@ func worktreeRouter(t *testing.T) (*Router, string) {
 		t.Fatalf("create project: %v", err)
 	}
 	r := NewRouter(RouterConfig{RootDir: root, ProjectManager: pm})
+	for _, p := range []string{"claude", "antigravity", "openai", "opencode"} {
+		r.clientFactory.OverrideProvider(p, stubProvider{}) // e.g. the pull request summary must not reach a real model
+	}
 	return r, src
 }
 

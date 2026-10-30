@@ -165,7 +165,7 @@ func TestBodyDescribesTheTaskChangesAndEvidence(t *testing.T) {
 	passed, failed := 812, 0
 	in := Input{TaskID: "TASK-3", Title: "Void PI deletes contract", Context: "Voided self-checkout PIs leave orphan contracts.",
 		Summary: "Voiding a PI deletes its contract.", Details: "- `void_service.rb`: deletes the contract in the void transaction.",
-		Files: []FileChange{{Path: "app/void_service.rb", Status: "modified"}, {Path: "spec/void_service_spec.rb", Status: "added"}},
+		Files:   []FileChange{{Path: "app/void_service.rb", Status: "modified"}, {Path: "spec/void_service_spec.rb", Status: "added"}},
 		Related: []Related{{Repo: "billing-fe", URL: "https://bitbucket.org/ws/billing-fe/pull-requests/4"}, {Repo: "api"}},
 		Evidence: &Evidence{Covered: 2, Total: 3,
 			Cases:  []EvidenceCase{{ID: "FLOW-1", Kind: "flow", Title: "Void a PI | end to end", Status: "passed"}},
@@ -203,5 +203,33 @@ func TestChangesNarrowsToTheRepositoryAndDropsDiffs(t *testing.T) {
 	}
 	if Changes("## Summary\nx\n", "billing") != "" {
 		t.Fatal("no changes section should be empty")
+	}
+}
+
+func TestSummaryPromptIsScopedToTheRepository(t *testing.T) {
+	patch := "diff --git a/a.rb b/a.rb\n+one\n" + "diff --git a/b.rb b/b.rb\n" + strings.Repeat("+x\n", maxPromptPatch)
+	system, user := SummaryPrompt(SummaryInput{Title: "[MIB-1] Void PI", Description: "Delete the contract.", Repo: "billing",
+		OtherRepos: []string{"billing-fe"}, Commits: []string{"feat(MIB-1): void"}, ReportChanges: "- `a.rb`: voids.", Patch: patch})
+	for _, want := range []string{"Task: Void PI\n", "Repository of this pull request: billing", "not this one): billing-fe",
+		"- feat(MIB-1): void", "- `a.rb`: voids.", "(cut short;", "+one"} {
+		if !strings.Contains(user, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+	if strings.Contains(user, "b/b.rb") || len(user) > maxPromptPatch+1000 {
+		t.Errorf("the diff must be cut at a file boundary (len %d)", len(user))
+	}
+	if !strings.Contains(system, "Describe only what the diff contains") || !strings.Contains(system, "Never reproduce secrets") {
+		t.Errorf("system prompt = %q", system)
+	}
+}
+
+func TestCleanSummary(t *testing.T) {
+	got := CleanSummary("## Summary\n- Voids the PI.\n\n```ruby\ncontract.destroy\n```\n\n### Notes\n- Behind a toggle.\n")
+	if got != "- Voids the PI.\n\n**Notes**\n- Behind a toggle.\n" {
+		t.Fatalf("CleanSummary = %q", got)
+	}
+	if CleanSummary("  \n```\ncode\n```\n") != "" {
+		t.Fatal("nothing usable should be empty")
 	}
 }
