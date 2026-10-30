@@ -197,6 +197,8 @@ export interface PullRequestDraftDTO {
   /** the other checkout that has source_branch */
   held_by?: string
   /** whether the opened pull request has every change in the worktree */
+  // generated: the Summary was written from the diff and the task; report: taken from the implementation report
+  summary_source?: 'generated' | 'report'
   sync: 'not_opened' | 'in_sync' | 'out_of_sync'
   sync_note?: string
   can_create: boolean

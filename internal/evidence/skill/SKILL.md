@@ -94,7 +94,10 @@ spec coverage, a chapter per case with its key annotated steps, and the results.
    keep it and say so.
 3. **Start the system** from the task worktrees, the way the repositories document it (dev server,
    `docker compose`), every application the journeys pass through, against a local or test
-   database seeded with fake data that matches the cases' preconditions.
+   database seeded with fake data that matches the cases' preconditions. When the brief lists a
+   **test environment**, its databases are already running and empty, reserved for this task: load
+   the repository's env file in each command, create the schema the repository's own way, and seed
+   (see **Test environment** below). Never stop at "no usable test database" — set it up.
 4. **Sign in once and explore.** For every role the cases act as (Finance, Admin, a customer), add
    a session to the storyboard's `sessions` (see **Sessions** below) with a test user — credentials
    from the environment, `${NAME}`. Check it signs in:
@@ -142,6 +145,39 @@ spec coverage, a chapter per case with its key annotated steps, and the results.
 11. **Report** a `## Test evidence` section: per case its id, kind, title, status and video file; the
    acceptance cases that are blocked or without evidence, and why; the full-suite results per
    repository (counts); any pre-existing failure, or console error the change causes.
+
+## Test environment
+
+The orchestrator starts the datastores the repositories need — MySQL, PostgreSQL, SQL Server,
+Redis, MongoDB — as throwaway Docker containers with fresh credentials and empty databases
+(`<repo>_development`, `<repo>_test`). It finds them in any stack — Ruby, Go, Node (Prisma,
+TypeORM, Knex, Sequelize), Python (Django, SQLAlchemy), PHP (Laravel, Symfony), Java/Kotlin
+(Spring), .NET, Elixir, Rust, Dart — at the root and in the sub-projects of a monorepo, and writes
+each repository's variables to a file the brief names, in the form its framework reads:
+
+- the names its `.env` template declares (`DB_HOST`, `DB_DATABASE`, `REDIS_URL`, a Prisma
+  `env("…")`, a `*_DSN`), plus `DATABASE_URL` / `TEST_DATABASE_URL` (not for Rails, where it
+  would override every environment);
+- `SPRING_DATASOURCE_*` and `SPRING_DATA_REDIS_*` for Spring Boot, `ConnectionStrings__<name>` for
+  .NET, and the `MYSQL_*` / `PG*` defaults the client libraries read on their own.
+
+The brief also lists how each repository creates its schema (`bin/rails db:prepare`,
+`php artisan migrate`, `python manage.py migrate`, `npx prisma migrate deploy`, `mix ecto.setup`,
+`dotnet ef database update`, its Makefile or npm task, …). Use it like this:
+
+- Every command that runs the app, a migration or a suite outside the recorder loads the file:
+  `. <file> && bin/rails db:prepare && bundle exec rspec`. The Bash tool keeps no variables between
+  calls.
+- The recorder loads it on its own for every `run` and `start` step whose `cwd` is in that
+  repository, and blurs the generated password in videos, screenshots and logs.
+- Create the schema and seed fake data before recording; the databases are yours to wipe.
+- Other services a flow needs (a queue, a mock of a third party) come from the repository's own
+  `docker compose` file or a small mock receiver — start only what the flows need.
+- Never print the file or its values, and never copy them into the repository or a storyboard.
+
+When the brief says the test environment could not start (Docker is not running), start the
+datastores from the repository's own compose file instead; only when nothing can run, mark the
+cases blocked with the exact reason.
 
 ## Storyboard
 

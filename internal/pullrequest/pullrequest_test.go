@@ -133,3 +133,103 @@ func TestOpenGitHub(t *testing.T) {
 		t.Fatalf("github → %+v, %v", res, err)
 	}
 }
+
+func TestWithoutEvidenceKeepsTheReviewerPartsOnly(t *testing.T) {
+	doc := "## Summary\n" +
+		"- Voiding a self-checkout PI now deletes its contract, behind the `rls_void_pi_delete_contract` toggle.\n" +
+		"- Recorded the test evidence: 4 videos in /Users/x/.sdlc/artifacts/TASK-1/evidence\n" +
+		"  - FLOW-1.mp4 passed\n" +
+		"  - SUMMARY.mp4\n" +
+		"- Seven new unit examples, including toggle OFF.\n\n" +
+		"The storyboard was re-recorded twice.\n\n" +
+		"## Test evidence\n| Case | Status |\n|---|---|\n| FLOW-1 | passed |\n\n" +
+		"### Suites\nbilling: 812 passed\n\n" +
+		"## How to test\n1. Turn the toggle on.\n2. Void a self-checkout PI and check its contract is gone.\n3. Watch FLOW-1.mp4 in the Evidence tab.\n"
+	got := WithoutEvidence(doc)
+	for _, gone := range []string{"Recorded the test evidence", "FLOW-1.mp4", "SUMMARY.mp4", "storyboard", "## Test evidence", "812 passed", "Evidence tab"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("%q is still in:\n%s", gone, got)
+		}
+	}
+	for _, kept := range []string{"deletes its contract", "Seven new unit examples", "## How to test", "2. Void a self-checkout PI"} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("%q was dropped:\n%s", kept, got)
+		}
+	}
+	if s := Section(got, "summary"); strings.Contains(s, "evidence") || !strings.HasSuffix(s, "toggle OFF.") {
+		t.Errorf("summary section = %q", s)
+	}
+}
+
+func TestBodyDescribesTheTaskChangesAndEvidence(t *testing.T) {
+	passed, failed := 812, 0
+	in := Input{TaskID: "TASK-3", Title: "Void PI deletes contract", Context: "Voided self-checkout PIs leave orphan contracts.",
+		Summary: "Voiding a PI deletes its contract.", Details: "- `void_service.rb`: deletes the contract in the void transaction.",
+		Files:   []FileChange{{Path: "app/void_service.rb", Status: "modified"}, {Path: "spec/void_service_spec.rb", Status: "added"}},
+		Related: []Related{{Repo: "billing-fe", URL: "https://bitbucket.org/ws/billing-fe/pull-requests/4"}, {Repo: "api"}},
+		Evidence: &Evidence{Covered: 2, Total: 3,
+			Cases:  []EvidenceCase{{ID: "FLOW-1", Kind: "flow", Title: "Void a PI | end to end", Status: "passed"}},
+			Suites: []EvidenceSuite{{Repository: "billing", Command: "bundle exec rspec", Status: "passed", Passed: &passed, Failed: &failed}}}}
+	body := Body(in)
+	for _, want := range []string{"## Context\nVoided self-checkout PIs leave orphan contracts.",
+		"## Changes\n- `void_service.rb`: deletes the contract in the void transaction.\n\n2 file(s)",
+		"## Related pull requests\n- billing-fe: https://bitbucket.org/ws/billing-fe/pull-requests/4\n- api: not opened yet",
+		"## Test evidence\n2 of 3 acceptance case(s)", "| FLOW-1 — Void a PI \\| end to end | flow | passed |",
+		"| billing | `bundle exec rspec` | passed (812 passed, 0 failed) |", "- [x] Unit / integration tests added or updated",
+		"- [ ] Documentation updated where needed"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q:\n%s", want, body)
+		}
+	}
+	plain := Body(Input{TaskID: "TASK-4", Context: "Same text.", Summary: "Same text."})
+	for _, gone := range []string{"## Test evidence", "## Related pull requests", "## Context\nSame text."} {
+		if strings.Contains(plain, gone) {
+			t.Errorf("%q should not be in:\n%s", gone, plain)
+		}
+	}
+}
+
+func TestChangesNarrowsToTheRepositoryAndDropsDiffs(t *testing.T) {
+	doc := "## Summary\nx\n\n## Changes\n### billing-internal-fe\n- Shows the toggle.\n\n### billing\n- `void.rb`: deletes the contract.\n\n" +
+		"```diff\n- old\n+ new\n```\n\n## How to test\n1. run\n"
+	if got := Changes(doc, "billing"); got != "- `void.rb`: deletes the contract.\n" {
+		t.Fatalf("billing changes = %q", got)
+	}
+	if got := Changes(doc, "billing-internal-fe"); got != "- Shows the toggle.\n" {
+		t.Fatalf("fe changes = %q", got)
+	}
+	if got := Changes(doc, "other"); !strings.Contains(got, "Shows the toggle.") || strings.Contains(got, "+ new") {
+		t.Fatalf("unmatched repo keeps the whole section without diffs: %q", got)
+	}
+	if Changes("## Summary\nx\n", "billing") != "" {
+		t.Fatal("no changes section should be empty")
+	}
+}
+
+func TestSummaryPromptIsScopedToTheRepository(t *testing.T) {
+	patch := "diff --git a/a.rb b/a.rb\n+one\n" + "diff --git a/b.rb b/b.rb\n" + strings.Repeat("+x\n", maxPromptPatch)
+	system, user := SummaryPrompt(SummaryInput{Title: "[MIB-1] Void PI", Description: "Delete the contract.", Repo: "billing",
+		OtherRepos: []string{"billing-fe"}, Commits: []string{"feat(MIB-1): void"}, ReportChanges: "- `a.rb`: voids.", Patch: patch})
+	for _, want := range []string{"Task: Void PI\n", "Repository of this pull request: billing", "not this one): billing-fe",
+		"- feat(MIB-1): void", "- `a.rb`: voids.", "(cut short;", "+one"} {
+		if !strings.Contains(user, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+	if strings.Contains(user, "b/b.rb") || len(user) > maxPromptPatch+1000 {
+		t.Errorf("the diff must be cut at a file boundary (len %d)", len(user))
+	}
+	if !strings.Contains(system, "Describe only what the diff contains") || !strings.Contains(system, "Never reproduce secrets") {
+		t.Errorf("system prompt = %q", system)
+	}
+}
+
+func TestCleanSummary(t *testing.T) {
+	got := CleanSummary("## Summary\n- Voids the PI.\n\n```ruby\ncontract.destroy\n```\n\n### Notes\n- Behind a toggle.\n")
+	if got != "- Voids the PI.\n\n**Notes**\n- Behind a toggle.\n" {
+		t.Fatalf("CleanSummary = %q", got)
+	}
+	if CleanSummary("  \n```\ncode\n```\n") != "" {
+		t.Fatal("nothing usable should be empty")
+	}
+}

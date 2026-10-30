@@ -280,6 +280,9 @@ func (r *Router) recalibrate(ctx context.Context) (feedback.CalibrationResult, e
 
 // onTaskCompleted hands a completed production task to the shadow daemon. Callers may hold r.mu.
 func (r *Router) onTaskCompleted(task *types.Task) {
+	if task != nil {
+		go teardownTestEnv(r, task.ID)
+	}
 	if r.telemetry == nil || r.telemetry.daemon == nil || task == nil {
 		return
 	}

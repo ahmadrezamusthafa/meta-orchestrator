@@ -99,6 +99,7 @@ type Router struct {
 	toolchain     *toolchain.Toolchain // checks and installs the tools the stacks need
 	evidenceJobs  sync.WaitGroup       // background evidence finalization (transcode, signed manifest)
 	busyOps       sync.Map             // "pr:<task>" / "uat:<task>" while a delivery job runs
+	prSummaries   sync.Map             // "<task>/<repo>" → *sync.Mutex: one summary generation at a time
 	prClient      *pullrequest.Client  // opens pull requests; tests point it at a fake API
 	uatRunner     uatScreenshotRunner  // captures UAT screenshots; tests stub it
 

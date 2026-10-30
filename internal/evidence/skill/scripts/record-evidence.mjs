@@ -84,7 +84,19 @@ const REDACT = [
   [/\b\d{13,19}\b/g, '«number»'], // card, NIK and account numbers
   [/(?:\+62|\b08)\d{8,12}\b/g, '«phone»'],
 ]
-const redact = (t) => REDACT.reduce((s, [re, to]) => s.replace(re, to), String(t ?? ''))
+// The test environment the orchestrator started (EVIDENCE_TESTENV): each repository's variables,
+// given to the run and start steps under it, and the generated passwords, never shown.
+const TESTENV = (() => {
+  try { return JSON.parse(readFileSync(process.env.EVIDENCE_TESTENV, 'utf8')) } catch { return { repos: [], redact: [] } }
+})()
+const SECRETS = [].concat(TESTENV.redact || []).filter((v) => typeof v === 'string' && v.length >= 6)
+const redact = (t) => SECRETS.reduce((s, v) => s.split(v).join('«redacted»'),
+  REDACT.reduce((s, [re, to]) => s.replace(re, to), String(t ?? '')))
+const testEnvFor = (cwd) => {
+  const dir = resolvePath(cwd)
+  const repo = (TESTENV.repos || []).find((r) => (r.dirs || []).some((d) => dir === d || dir.startsWith(d.replace(/\/+$/, '') + '/')))
+  return repo?.vars || {}
+}
 const esc = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 // eslint-disable-next-line no-control-regex
 const stripAnsi = (t) => String(t ?? '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
@@ -604,7 +616,7 @@ function spawnProc(st, logPath, background = false) {
   out.write(`$ ${redact(st.command)}\n# cwd: ${st.cwd || boardDir}\n# started: ${startedAt}\n\n`)
   const extra = Object.fromEntries(Object.entries(st.env || {}).map(([k, v]) => [k, env(v)]))
   const child = spawn(st.command, { cwd: st.cwd || boardDir, shell: true, detached: true,
-    env: { ...process.env, ...extra, CI: '1', FORCE_COLOR: '0', NO_COLOR: '1' } })
+    env: { ...process.env, ...testEnvFor(st.cwd || boardDir), ...extra, CI: '1', FORCE_COLOR: '0', NO_COLOR: '1' } })
   // count: lines ever written; lines: the last 4000 of them. A mark is a count.
   const h = { child, lines: [], count: 0, mark: 0, started, startedAt, done: false, code: null, timedOut: false, seconds: 0 }
   let partial = ''

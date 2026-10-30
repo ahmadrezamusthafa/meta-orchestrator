@@ -244,6 +244,11 @@ onMounted(() => load())
             <div v-else class="p-4 rounded-lg bg-slate-950 border border-slate-800 max-h-[560px] overflow-y-auto">
               <MarkdownView :source="body" />
             </div>
+            <p class="mt-1.5 text-[11px] text-slate-500">
+              {{ draft.summary_source === 'generated'
+                ? 'Summary written from this repository\'s diff and the task.'
+                : 'Summary taken from the implementation report (no summary could be generated from the diff).' }}
+            </p>
           </div>
 
           <div class="flex items-center gap-2 pt-1">
